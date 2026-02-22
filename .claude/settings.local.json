@@ -8,7 +8,8 @@
       "Bash(npm install:*)",
       "Bash(python3:*)",
       "Bash(npm run build:*)",
-      "Bash(/Users/wj/Downloads/work/claude-gateway/cmd/server/main.go:*)"
+      "Bash(/Users/wj/Downloads/work/claude-gateway/cmd/server/main.go:*)",
+      "Bash(go test:*)"
     ]
   }
 }

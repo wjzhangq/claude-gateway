@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 	"os"
 
 	"github.com/gin-contrib/sessions"
@@ -82,6 +83,7 @@ func main() {
 	appH := handler.NewApplicationHandler(database)
 
 	apiAuth := r.Group("/api/auth")
+	apiAuth.Use(middleware.RateLimit(10, time.Minute))
 	{
 		apiAuth.POST("/send-code", authH.SendCode)
 		apiAuth.POST("/login", authH.Login)
