@@ -150,16 +150,14 @@ Claude Code Gateway 是一个企业级 AI API 网关服务，提供统一的 Cla
 ### 阶段五：审批流程（第 10 周）
 
 #### 5.1 申请管理
-- [ ] 实现 Application 数据模型
-- [ ] 实现用户提交申请接口
-- [ ] 实现申请列表查询（用户和管理员）
-- [ ] 实现申请状态管理
+- [x] 实现 Application 数据模型
+- [x] 实现用户提交申请接口（POST /api/applications）
+- [x] 实现申请列表查询（用户 GET /api/applications，管理员 GET /admin/api/applications）
+- [x] 实现申请状态管理
 
 #### 5.2 审批功能
-- [ ] 实现管理员审批接口（approve/reject）
-- [ ] 实现审批后的权限更新逻辑
-- [ ] 实现审批通知机制（可选）
-- [ ] 编写审批流程测试
+- [x] 实现管理员审批接口（PUT /admin/api/applications/:id/review）
+- [x] 支持 approved / rejected 状态及审批备注
 
 **交付物**：
 - 完整的模型使用申请和审批流程

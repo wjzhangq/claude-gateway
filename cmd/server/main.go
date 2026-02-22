@@ -90,6 +90,7 @@ func main() {
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database)
 	statsH := handler.NewStatsHandler(database)
+	appH := handler.NewApplicationHandler(database)
 
 	// Public auth routes
 	apiAuth := r.Group("/api/auth")
@@ -118,6 +119,8 @@ func main() {
 		apiUser.PUT("/keys/:id/enable", keyH.EnableKey)
 		apiUser.DELETE("/keys/:id", keyH.DeleteKey)
 		apiUser.GET("/usage", statsH.GetMyUsage)
+		apiUser.POST("/applications", appH.Submit)
+		apiUser.GET("/applications", appH.ListMine)
 	}
 
 	// Admin routes (session auth)
@@ -131,6 +134,8 @@ func main() {
 		adminAPI.PUT("/users/:id", userH.UpdateUser)
 		adminAPI.GET("/usage", statsH.GetUsage)
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
+		adminAPI.GET("/applications", appH.ListAll)
+		adminAPI.PUT("/applications/:id/review", appH.Review)
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
