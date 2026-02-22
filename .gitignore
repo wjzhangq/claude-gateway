@@ -55,3 +55,4 @@ web/.env.local
 # Temp files
 tmp/
 temp/
+config/config.yaml
