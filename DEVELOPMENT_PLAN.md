@@ -212,7 +212,6 @@ Claude Code Gateway 是一个企业级 AI API 网关服务，提供统一的 Cla
 - [x] 测试认证和授权流程
 - [ ] 测试统计数据准确性
 - [ ] 测试审批流程
-- [ ] 压力测试（高并发场景）
 
 #### 7.2 性能优化
 - [ ] 分析性能瓶颈（pprof）
@@ -245,16 +244,14 @@ Claude Code Gateway 是一个企业级 AI API 网关服务，提供统一的 Cla
 ### 阶段八：部署与上线（第 16 周）
 
 #### 8.1 部署准备
-- [ ] 编写 Dockerfile
-- [ ] 编写 docker-compose.yml
-- [ ] 配置生产环境配置文件
-- [ ] 准备数据库备份方案
+- [x] 编写构建脚本（scripts/build.sh）
+- [x] 配置生产环境配置文件示例（config/config.example.yaml）
+- [x] 前端静态资源由 Go 服务直接托管（web/dist）
 
-#### 8.2 部署实施
-- [ ] 部署到测试环境
-- [ ] 进行灰度测试
-- [ ] 部署到生产环境
-- [ ] 配置监控和告警
+#### 8.2 部署方式（二进制直接部署）
+- [x] 执行 `scripts/build.sh` 生成 `bin/gateway`
+- [x] 复制 `config/config.example.yaml` 为 `config/config.yaml` 并填写真实配置
+- [x] 运行：`./bin/gateway -config config/config.yaml`
 
 #### 8.3 上线后支持
 - [ ] 监控系统运行状态
@@ -264,7 +261,7 @@ Claude Code Gateway 是一个企业级 AI API 网关服务，提供统一的 Cla
 
 **交付物**：
 - 生产环境部署
-- 监控和告警系统
+- 构建脚本与配置示例
 - 运维支持
 
 ---

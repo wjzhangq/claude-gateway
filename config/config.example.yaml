@@ -1,0 +1,35 @@
+server:
+  port: 8080
+  mode: release          # debug | release
+
+database:
+  path: data/gateway.db  # SQLite 文件路径，目录需可写
+
+log:
+  level: info            # debug | info | warn | error
+  format: json           # json | text
+
+auth:
+  # 用于签名 Session Cookie，生产环境必须替换为随机字符串
+  # 生成命令：openssl rand -hex 32
+  session_secret: "REPLACE_WITH_RANDOM_SECRET"
+  session_max_age: 86400  # Session 有效期（秒），默认 24 小时
+  code_expiry: 5m         # 验证码有效期
+  admin_phone: "13800000000"  # 首次启动自动创建管理员账号
+
+usage_sync_time: 5m       # 使用量聚合间隔
+
+backends:
+  # 主要后端（权重越高，分配流量越多）
+  - name: claude-primary
+    url: https://api.anthropic.com
+    api_key: "sk-ant-api03-YOUR_KEY_HERE"
+    weight: 10
+    enabled: true
+
+  # 备用后端（可选，多后端自动负载均衡）
+  # - name: claude-secondary
+  #   url: https://api.anthropic.com
+  #   api_key: "sk-ant-api03-ANOTHER_KEY"
+  #   weight: 5
+  #   enabled: true
