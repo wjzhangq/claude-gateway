@@ -13,7 +13,7 @@ auth:
   session_secret: "change-me-in-production"
   session_max_age: 86400
   code_expiry: 5m
-  admin_phone: ""
+  admin_itcode: ""
 
 usage_sync_time: 5m
 

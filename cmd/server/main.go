@@ -44,8 +44,8 @@ func main() {
 	}
 	defer database.Close()
 
-	if cfg.Auth.AdminPhone != "" {
-		if err := database.EnsureAdmin(cfg.Auth.AdminPhone); err != nil {
+	if cfg.Auth.AdminItcode != "" {
+		if err := database.EnsureAdmin(cfg.Auth.AdminItcode); err != nil {
 			logger.Warnf("ensure admin: %v", err)
 		}
 	}

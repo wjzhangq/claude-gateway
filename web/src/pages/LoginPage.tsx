@@ -4,7 +4,7 @@ import { sendCode, login } from '../api'
 import { useAuth } from '../context/AuthContext'
 
 export default function LoginPage() {
-  const [phone, setPhone] = useState('')
+  const [itcode, setItcode] = useState('')
   const [code, setCode] = useState('')
   const [countdown, setCountdown] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -27,10 +27,10 @@ export default function LoginPage() {
   }
 
   const handleSendCode = async () => {
-    if (!phone) { setError('请输入手机号'); return }
+    if (!itcode) { setError('请输入 itcode'); return }
     setError('')
     try {
-      await sendCode(phone)
+      await sendCode(itcode)
       startCountdown()
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
@@ -40,11 +40,11 @@ export default function LoginPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!phone || !code) { setError('请填写手机号和验证码'); return }
+    if (!itcode || !code) { setError('请填写 itcode 和验证码'); return }
     setError('')
     setLoading(true)
     try {
-      const res = await login(phone, code)
+      const res = await login(itcode, code)
       setUser(res.data.user)
       navigate('/dashboard')
     } catch (e: unknown) {
@@ -59,7 +59,7 @@ export default function LoginPage() {
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
       <div className="w-full max-w-sm bg-white rounded-xl shadow-sm border border-gray-200 p-8">
         <h2 className="text-2xl font-bold text-gray-900 mb-2">Claude Gateway</h2>
-        <p className="text-sm text-gray-500 mb-6">使用手机号验证码登录</p>
+        <p className="text-sm text-gray-500 mb-6">使用 itcode 验证码登录</p>
 
         {error && (
           <div className="mb-4 px-3 py-2 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">
@@ -69,12 +69,12 @@ export default function LoginPage() {
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">手机号</label>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Itcode</label>
             <input
-              type="tel"
-              value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              placeholder="请输入手机号"
+              type="text"
+              value={itcode}
+              onChange={(e) => setItcode(e.target.value)}
+              placeholder="请输入 itcode"
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>

@@ -27,29 +27,29 @@ func NewCodeStore(expiry time.Duration) *CodeStore {
 	return cs
 }
 
-// Set stores a code for the given phone number.
-func (cs *CodeStore) Set(phone, code string) {
+// Set stores a code for the given itcode.
+func (cs *CodeStore) Set(itcode, code string) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	cs.codes[phone] = codeEntry{
+	cs.codes[itcode] = codeEntry{
 		code:      code,
 		expiresAt: time.Now().Add(cs.expiry),
 	}
 }
 
 // Verify checks the code and removes it on success.
-func (cs *CodeStore) Verify(phone, code string) bool {
+func (cs *CodeStore) Verify(itcode, code string) bool {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
-	entry, ok := cs.codes[phone]
+	entry, ok := cs.codes[itcode]
 	if !ok || time.Now().After(entry.expiresAt) {
-		delete(cs.codes, phone)
+		delete(cs.codes, itcode)
 		return false
 	}
 	if entry.code != code {
 		return false
 	}
-	delete(cs.codes, phone)
+	delete(cs.codes, itcode)
 	return true
 }
 
@@ -59,9 +59,9 @@ func (cs *CodeStore) cleanupLoop() {
 	for range ticker.C {
 		cs.mu.Lock()
 		now := time.Now()
-		for phone, entry := range cs.codes {
+		for itcode, entry := range cs.codes {
 			if now.After(entry.expiresAt) {
-				delete(cs.codes, phone)
+				delete(cs.codes, itcode)
 			}
 		}
 		cs.mu.Unlock()

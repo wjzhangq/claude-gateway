@@ -13,9 +13,9 @@ import (
 func (d *DB) CreateUser(u *model.User) error {
 	now := time.Now()
 	res, err := d.Exec(
-		`INSERT INTO users (phone, name, role, status, quota_tokens, created_at, updated_at)
+		`INSERT INTO users (itcode, name, role, status, quota_tokens, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		u.Phone, u.Name, u.Role, u.Status, u.QuotaTokens, now, now,
+		u.Itcode, u.Name, u.Role, u.Status, u.QuotaTokens, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create user: %w", err)
@@ -26,12 +26,12 @@ func (d *DB) CreateUser(u *model.User) error {
 	return nil
 }
 
-func (d *DB) GetUserByPhone(phone string) (*model.User, error) {
+func (d *DB) GetUserByItcode(itcode string) (*model.User, error) {
 	u := &model.User{}
 	err := d.QueryRow(
-		`SELECT id, phone, name, role, status, quota_tokens, created_at, updated_at
-		 FROM users WHERE phone = ?`, phone,
-	).Scan(&u.ID, &u.Phone, &u.Name, &u.Role, &u.Status, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt)
+		`SELECT id, itcode, name, role, status, quota_tokens, created_at, updated_at
+		 FROM users WHERE itcode = ?`, itcode,
+	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -41,9 +41,9 @@ func (d *DB) GetUserByPhone(phone string) (*model.User, error) {
 func (d *DB) GetUserByID(id int64) (*model.User, error) {
 	u := &model.User{}
 	err := d.QueryRow(
-		`SELECT id, phone, name, role, status, quota_tokens, created_at, updated_at
+		`SELECT id, itcode, name, role, status, quota_tokens, created_at, updated_at
 		 FROM users WHERE id = ?`, id,
-	).Scan(&u.ID, &u.Phone, &u.Name, &u.Role, &u.Status, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -52,7 +52,7 @@ func (d *DB) GetUserByID(id int64) (*model.User, error) {
 
 func (d *DB) ListUsers() ([]*model.User, error) {
 	rows, err := d.Query(
-		`SELECT id, phone, name, role, status, quota_tokens, created_at, updated_at FROM users ORDER BY id`)
+		`SELECT id, itcode, name, role, status, quota_tokens, created_at, updated_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func (d *DB) ListUsers() ([]*model.User, error) {
 	var users []*model.User
 	for rows.Next() {
 		u := &model.User{}
-		if err := rows.Scan(&u.ID, &u.Phone, &u.Name, &u.Role, &u.Status, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -78,7 +78,7 @@ func (d *DB) UpdateUser(u *model.User) error {
 }
 
 // EnsureAdmin creates the admin user if no admin exists yet.
-func (d *DB) EnsureAdmin(phone string) error {
+func (d *DB) EnsureAdmin(itcode string) error {
 	var count int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM users WHERE role='admin'`).Scan(&count); err != nil {
 		return err
@@ -87,7 +87,7 @@ func (d *DB) EnsureAdmin(phone string) error {
 		return nil
 	}
 	admin := &model.User{
-		Phone:  phone,
+		Itcode: itcode,
 		Name:   "Admin",
 		Role:   "admin",
 		Status: "active",

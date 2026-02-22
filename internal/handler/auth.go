@@ -26,7 +26,7 @@ func NewAuthHandler(database *db.DB, cs *auth.CodeStore) *AuthHandler {
 // SendCode godoc: POST /api/auth/send-code
 func (h *AuthHandler) SendCode(c *gin.Context) {
 	var req struct {
-		Phone string `json:"phone" binding:"required"`
+		Itcode string `json:"itcode" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -34,11 +34,11 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 	}
 
 	code := fmt.Sprintf("%06d", rand.Intn(1000000))
-	h.codeStore.Set(req.Phone, code)
+	h.codeStore.Set(req.Itcode, code)
 
 	// In production, call an SMS gateway here.
 	// For development, log the code.
-	logger.Infof("verification code for %s: %s", req.Phone, code)
+	logger.Infof("verification code for %s: %s", req.Itcode, code)
 
 	c.JSON(http.StatusOK, gin.H{"message": "code sent"})
 }
@@ -46,7 +46,7 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 // Login godoc: POST /api/auth/login
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req struct {
-		Phone string `json:"phone" binding:"required"`
+		Itcode string `json:"itcode" binding:"required"`
 		Code  string `json:"code"  binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -54,12 +54,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	if !h.codeStore.Verify(req.Phone, req.Code) {
+	if !h.codeStore.Verify(req.Itcode, req.Code) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired code"})
 		return
 	}
 
-	user, err := h.db.GetUserByPhone(req.Phone)
+	user, err := h.db.GetUserByItcode(req.Itcode)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
@@ -84,7 +84,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
 			"id":    user.ID,
-			"phone": user.Phone,
+			"itcode": user.Itcode,
 			"role":  user.Role,
 		},
 	})

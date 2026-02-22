@@ -72,7 +72,7 @@ export default function Layout() {
           )}
         </nav>
         <div className="px-4 py-4 border-t border-gray-200">
-          <p className="text-xs text-gray-500 mb-2">{user?.phone}</p>
+          <p className="text-xs text-gray-500 mb-2">{user?.itcode}</p>
           <button
             onClick={handleLogout}
             className="w-full text-sm text-gray-600 hover:text-red-600 text-left"

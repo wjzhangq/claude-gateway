@@ -5,7 +5,7 @@ import "time"
 // User represents a gateway user.
 type User struct {
 	ID          int64     `db:"id"`
-	Phone       string    `db:"phone"`
+	Itcode      string    `db:"itcode"`
 	Name        string    `db:"name"`
 	Role        string    `db:"role"`   // admin | user
 	Status      string    `db:"status"` // active | disabled

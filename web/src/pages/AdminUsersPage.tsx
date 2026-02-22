@@ -3,7 +3,7 @@ import { adminListUsers, adminUpdateUser, adminCreateUser } from '../api'
 
 interface User {
   id: number
-  phone: string
+  itcode: string
   role: string
   status: string
   quota_tokens: number
@@ -14,7 +14,7 @@ export default function AdminUsersPage() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
-  const [newPhone, setNewPhone] = useState('')
+  const [newItcode, setNewItcode] = useState('')
   const [newRole, setNewRole] = useState('user')
   const [newQuota, setNewQuota] = useState('1000000')
   const [creating, setCreating] = useState(false)
@@ -37,17 +37,17 @@ export default function AdminUsersPage() {
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newPhone) { setError('请输入手机号'); return }
+    if (!newItcode) { setError('请输入 itcode'); return }
     setCreating(true)
     setError('')
     try {
       await adminCreateUser({
-        phone: newPhone,
+        itcode: newItcode,
         role: newRole,
         quota_tokens: parseInt(newQuota) || 1000000,
       })
       setShowCreate(false)
-      setNewPhone('')
+      setNewItcode('')
       load()
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
@@ -75,10 +75,10 @@ export default function AdminUsersPage() {
           <form onSubmit={handleCreate} className="space-y-3">
             <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="block text-sm text-gray-600 mb-1">手机号</label>
+                <label className="block text-sm text-gray-600 mb-1">Itcode</label>
                 <input
-                  value={newPhone}
-                  onChange={(e) => setNewPhone(e.target.value)}
+                  value={newItcode}
+                  onChange={(e) => setNewItcode(e.target.value)}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 />
               </div>
@@ -131,7 +131,7 @@ export default function AdminUsersPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
-                {['手机号', '角色', '状态', 'Token 配额', '注册时间', '操作'].map((h) => (
+                {['Itcode', '角色', '状态', 'Token 配额', '注册时间', '操作'].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500">
                     {h}
                   </th>
@@ -141,7 +141,7 @@ export default function AdminUsersPage() {
             <tbody className="divide-y divide-gray-100">
               {users.map((u) => (
                 <tr key={u.id}>
-                  <td className="px-4 py-3 font-medium">{u.phone}</td>
+                  <td className="px-4 py-3 font-medium">{u.itcode}</td>
                   <td className="px-4 py-3">
                     <span
                       className={`px-2 py-0.5 rounded text-xs ${

@@ -47,7 +47,7 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 // CreateUser godoc: POST /admin/api/users
 func (h *UserHandler) CreateUser(c *gin.Context) {
 	var req struct {
-		Phone       string `json:"phone" binding:"required"`
+		Itcode      string `json:"itcode" binding:"required"`
 		Name        string `json:"name"`
 		Role        string `json:"role"`
 		QuotaTokens int64  `json:"quota_tokens"`
@@ -60,7 +60,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		req.Role = "user"
 	}
 	user := &model.User{
-		Phone:       req.Phone,
+		Itcode:      req.Itcode,
 		Name:        req.Name,
 		Role:        req.Role,
 		Status:      "active",

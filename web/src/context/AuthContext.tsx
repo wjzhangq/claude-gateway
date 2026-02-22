@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 
 interface AuthUser {
   id: number
-  phone: string
+  itcode: string
   role: string
 }
 

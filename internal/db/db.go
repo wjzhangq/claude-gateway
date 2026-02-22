@@ -42,7 +42,7 @@ func (d *DB) migrate() error {
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    phone        TEXT    NOT NULL UNIQUE,
+    itcode       TEXT    NOT NULL UNIQUE,
     name         TEXT    NOT NULL DEFAULT '',
     role         TEXT    NOT NULL DEFAULT 'user',
     status       TEXT    NOT NULL DEFAULT 'active',

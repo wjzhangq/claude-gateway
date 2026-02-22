@@ -15,7 +15,7 @@ auth:
   session_secret: "REPLACE_WITH_RANDOM_SECRET"
   session_max_age: 86400  # Session 有效期（秒），默认 24 小时
   code_expiry: 5m         # 验证码有效期
-  admin_phone: "13800000000"  # 首次启动自动创建管理员账号
+  admin_itcode: "admin001"  # 首次启动自动创建管理员账号  # 首次启动自动创建管理员账号
 
 usage_sync_time: 5m       # 使用量聚合间隔
 
