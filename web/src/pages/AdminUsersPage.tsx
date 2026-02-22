@@ -12,7 +12,8 @@ interface User {
   quota_tokens: number
   created_at: string
   last_used_at: string | null
-  total_tokens: number
+  requests: number
+  cost_usd: number
 }
 
 interface UsageLog {
@@ -39,7 +40,7 @@ function toDateStr(d: Date) {
 function SkeletonRow() {
   return (
     <tr>
-      {[90, 60, 60, 90, 90, 110, 80, 80].map((w, i) => (
+      {[90, 60, 60, 90, 70, 80, 110, 80, 80].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -102,7 +103,7 @@ function UserChartsModal({ user, onClose }: { user: User; onClose: () => void })
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis dataKey="hour" tick={{ fontSize: 9 }} interval={3} />
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${v}`} />
-                <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} formatter={(v: number) => [`$${v.toFixed(6)}`, '费用']} />
+                <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} formatter={(v) => [`$${Number(v).toFixed(6)}`, '费用']} />
                 <Bar dataKey="cost" fill="#DC2626" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -114,7 +115,7 @@ function UserChartsModal({ user, onClose }: { user: User; onClose: () => void })
                 <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                 <XAxis dataKey="date" tick={{ fontSize: 10 }} />
                 <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${v}`} />
-                <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} formatter={(v: number) => [`$${v.toFixed(6)}`, '费用']} />
+                <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} formatter={(v) => [`$${Number(v).toFixed(6)}`, '费用']} />
                 <Bar dataKey="cost" fill="#DC2626" radius={[3, 3, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
@@ -267,7 +268,7 @@ export default function AdminUsersPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['Itcode', '角色', '状态', 'Token 配额', 'Token 总用量', '最后使用', '注册时间', '操作'].map((h) => (
+              {['Itcode', '角色', '状态', 'Token 配额', '请求数', '费用', '最后使用', '注册时间', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -305,7 +306,8 @@ export default function AdminUsersPage() {
                       </span>
                     </td>
                     <td className="px-4 py-3.5 text-gray-600">{u.quota_tokens?.toLocaleString() || '0'}</td>
-                    <td className="px-4 py-3.5 font-medium text-gray-800">{u.total_tokens?.toLocaleString() || '0'}</td>
+                    <td className="px-4 py-3.5 text-gray-600">{(u.requests || 0).toLocaleString()}</td>
+                    <td className="px-4 py-3.5 font-medium text-gray-800">${(u.cost_usd || 0).toFixed(4)}</td>
                     <td className="px-4 py-3.5 text-gray-400 text-xs">
                       {u.last_used_at ? new Date(u.last_used_at).toLocaleString() : '—'}
                     </td>
@@ -331,7 +333,7 @@ export default function AdminUsersPage() {
                   </tr>
                   {editId === u.id && (
                     <tr key={`edit-${u.id}`}>
-                      <td colSpan={8} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
+                      <td colSpan={9} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
                         <div className="flex items-center gap-3 flex-wrap">
                           <div className="flex items-center gap-1.5">
                             <label className="text-xs text-gray-500 font-medium">角色</label>

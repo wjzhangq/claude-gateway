@@ -132,7 +132,7 @@ export default function DashboardPage() {
               <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${v}`} />
               <Tooltip
                 contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                formatter={(v: number) => [`$${v.toFixed(6)}`, '费用']}
+                formatter={(v) => [`$${Number(v).toFixed(6)}`, '费用']}
               />
               <Bar dataKey="cost" fill="#DC2626" radius={[3, 3, 0, 0]} />
             </BarChart>
@@ -147,7 +147,7 @@ export default function DashboardPage() {
               <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${v}`} />
               <Tooltip
                 contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                formatter={(v: number) => [`$${v.toFixed(6)}`, '费用']}
+                formatter={(v) => [`$${Number(v).toFixed(6)}`, '费用']}
               />
               <Bar dataKey="cost" fill="#DC2626" radius={[3, 3, 0, 0]} />
             </BarChart>

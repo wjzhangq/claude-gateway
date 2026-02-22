@@ -9,12 +9,14 @@ interface APIKey {
   created_at: string
   expires_at: string | null
   last_used_at: string | null
+  requests: number
+  cost_usd: number
 }
 
 function SkeletonRow() {
   return (
     <tr>
-      {[80, 160, 60, 90, 110, 120].map((w, i) => (
+      {[80, 160, 60, 70, 70, 90, 110, 120].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -148,7 +150,7 @@ export default function APIKeysPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['名称', 'Key', '状态', '创建时间', '最后使用', '操作'].map((h) => (
+              {['名称', 'Key', '状态', '请求数', '费用', '创建时间', '最后使用', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -160,7 +162,7 @@ export default function APIKeysPage() {
               Array.from({ length: 3 }).map((_, i) => <SkeletonRow key={i} />)
             ) : keys.length === 0 ? (
               <tr>
-                <td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-400">暂无 API Key</td>
+                <td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">暂无 API Key</td>
               </tr>
             ) : (
               keys.map((k) => (
@@ -184,6 +186,8 @@ export default function APIKeysPage() {
                       {k.status === 'active' ? '启用' : '禁用'}
                     </span>
                   </td>
+                  <td className="px-4 py-3.5 text-gray-600 text-xs">{(k.requests || 0).toLocaleString()}</td>
+                  <td className="px-4 py-3.5 text-gray-600 text-xs">${(k.cost_usd || 0).toFixed(4)}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
                     {new Date(k.created_at).toLocaleDateString()}
                   </td>

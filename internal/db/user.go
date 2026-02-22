@@ -91,15 +91,17 @@ func (d *DB) ListUsers() ([]*model.User, error) {
 // UserWithStats extends User with aggregated usage info.
 type UserWithStats struct {
 	model.User
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	TotalTokens int64      `json:"total_tokens"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+	Requests   int64      `json:"requests"`
+	CostUSD    float64    `json:"cost_usd"`
 }
 
 func (d *DB) ListUsersWithStats() ([]*UserWithStats, error) {
 	rows, err := d.Query(
 		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.quota_tokens, u.created_at, u.updated_at,
 		        MAX(l.created_at) as last_used_at,
-		        COALESCE(SUM(l.total_tokens), 0) as total_tokens
+		        COALESCE(COUNT(l.id), 0) as requests,
+		        COALESCE(SUM(l.cost_usd), 0) as cost_usd
 		 FROM users u
 		 LEFT JOIN usage_logs l ON l.user_id = u.id
 		 GROUP BY u.id
@@ -113,7 +115,7 @@ func (d *DB) ListUsersWithStats() ([]*UserWithStats, error) {
 		u := &UserWithStats{}
 		var lastUsed *string
 		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.QuotaTokens,
-			&u.CreatedAt, &u.UpdatedAt, &lastUsed, &u.TotalTokens); err != nil {
+			&u.CreatedAt, &u.UpdatedAt, &lastUsed, &u.Requests, &u.CostUSD); err != nil {
 			return nil, err
 		}
 		u.LastUsedAt = parseNullableTime(lastUsed)
@@ -182,7 +184,9 @@ func (d *DB) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 	rows, err := d.Query(
 		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.expires_at, k.created_at, k.updated_at,
-		        MAX(l.created_at) as last_used_at
+		        MAX(l.created_at) as last_used_at,
+		        COALESCE(COUNT(l.id), 0) as requests,
+		        COALESCE(SUM(l.cost_usd), 0) as cost_usd
 		 FROM api_keys k
 		 LEFT JOIN usage_logs l ON l.api_key_id = k.id
 		 WHERE k.user_id = ?
@@ -196,7 +200,7 @@ func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 	for rows.Next() {
 		k := &model.APIKey{}
 		var lastUsed *string
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.ExpiresAt, &k.CreatedAt, &k.UpdatedAt, &lastUsed); err != nil {
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.ExpiresAt, &k.CreatedAt, &k.UpdatedAt, &lastUsed, &k.Requests, &k.CostUSD); err != nil {
 			return nil, err
 		}
 		k.LastUsedAt = parseNullableTime(lastUsed)

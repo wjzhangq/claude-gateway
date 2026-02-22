@@ -74,7 +74,7 @@ func main() {
 	aggregator.Start()
 
 	lb := proxy.NewLoadBalancer(cfg.Backends)
-	proxyH := proxy.NewHandler(lb, collector)
+	proxyH := proxy.NewHandler(lb, collector, cfg.ModelReplacements)
 	lb.ValidateBackends()
 
 	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
@@ -94,9 +94,6 @@ func main() {
 	v1 := r.Group("/v1")
 	v1.Use(middleware.AuthMiddleware(keyStore))
 	{
-		v1.POST("/chat/completions", proxyH.ChatCompletions)
-		v1.POST("/messages", proxyH.Messages)
-		v1.GET("/models", proxyH.Models)
 		v1.Any("/*path", proxyH.Passthrough)
 	}
 

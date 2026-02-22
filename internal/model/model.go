@@ -25,6 +25,8 @@ type APIKey struct {
 	CreatedAt  time.Time  `db:"created_at"  json:"created_at"`
 	UpdatedAt  time.Time  `db:"updated_at"  json:"updated_at"`
 	LastUsedAt *time.Time `db:"last_used_at" json:"last_used_at"`
+	Requests   int64      `db:"-"            json:"requests"`
+	CostUSD    float64    `db:"-"            json:"cost_usd"`
 }
 
 // UsageLog records a single API call.

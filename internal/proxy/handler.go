@@ -18,12 +18,13 @@ import (
 
 // Handler forwards requests to upstream Claude backends.
 type Handler struct {
-	lb        *LoadBalancer
-	collector *stats.Collector
+	lb                *LoadBalancer
+	collector         *stats.Collector
+	modelReplacements map[string]string
 }
 
-func NewHandler(lb *LoadBalancer, collector *stats.Collector) *Handler {
-	return &Handler{lb: lb, collector: collector}
+func NewHandler(lb *LoadBalancer, collector *stats.Collector, modelReplacements map[string]string) *Handler {
+	return &Handler{lb: lb, collector: collector, modelReplacements: modelReplacements}
 }
 
 // forward is the shared proxy logic for both OpenAI and Anthropic style endpoints.
@@ -47,6 +48,21 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	}
 	if json.Unmarshal(body, &reqJSON) == nil {
 		reqModel = reqJSON.Model
+	}
+
+	// Apply model replacements: if request model contains a configured pattern, replace it
+	for pattern, replacement := range h.modelReplacements {
+		if strings.Contains(reqModel, pattern) {
+			oldToken := `"model":"` + reqModel + `"`
+			newToken := `"model":"` + replacement + `"`
+			body = bytes.Replace(body, []byte(oldToken), []byte(newToken), 1)
+			// also handle space after colon: "model": "value"
+			oldTokenSpace := `"model": "` + reqModel + `"`
+			newTokenSpace := `"model": "` + replacement + `"`
+			body = bytes.Replace(body, []byte(oldTokenSpace), []byte(newTokenSpace), 1)
+			reqModel = replacement
+			break
+		}
 	}
 
 	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
@@ -257,5 +273,5 @@ func (h *Handler) Models(c *gin.Context) {
 
 // Passthrough forwards any other /v1/* path to the upstream backend.
 func (h *Handler) Passthrough(c *gin.Context) {
-	h.forward(c, "/v1/"+c.Param("path"))
+	h.forward(c, "/v1"+c.Param("path"))
 }

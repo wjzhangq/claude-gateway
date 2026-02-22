@@ -10,12 +10,13 @@ import (
 
 // Config is the root configuration structure.
 type Config struct {
-	Server    ServerConfig    `yaml:"server"`
-	Database  DatabaseConfig  `yaml:"database"`
-	Log       LogConfig       `yaml:"log"`
-	Auth      AuthConfig      `yaml:"auth"`
-	Backends  []BackendAPI    `yaml:"backends"`
-	UsageSync time.Duration   `yaml:"usage_sync_time"`
+	Server            ServerConfig      `yaml:"server"`
+	Database          DatabaseConfig    `yaml:"database"`
+	Log               LogConfig         `yaml:"log"`
+	Auth              AuthConfig        `yaml:"auth"`
+	Backends          []BackendAPI      `yaml:"backends"`
+	UsageSync         time.Duration     `yaml:"usage_sync_time"`
+	ModelReplacements map[string]string `yaml:"model_replacements"`
 }
 
 type ServerConfig struct {
