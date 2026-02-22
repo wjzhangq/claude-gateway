@@ -65,7 +65,7 @@ export default function ApplicationsPage() {
         <h2 className="text-xl font-semibold text-gray-900">申请记录</h2>
         <button
           onClick={() => setShowForm(true)}
-          className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700"
+          className="px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700"
         >
           提交申请
         </button>
@@ -81,7 +81,7 @@ export default function ApplicationsPage() {
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 placeholder="如 claude-opus-4-5"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
               />
             </div>
             <div>
@@ -91,7 +91,7 @@ export default function ApplicationsPage() {
                 onChange={(e) => setReason(e.target.value)}
                 rows={3}
                 placeholder="请说明使用场景和需求..."
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
               />
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
@@ -99,7 +99,7 @@ export default function ApplicationsPage() {
               <button
                 type="submit"
                 disabled={submitting}
-                className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700 disabled:opacity-50"
+                className="px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 disabled:opacity-50"
               >
                 {submitting ? '提交中...' : '提交'}
               </button>

@@ -63,7 +63,7 @@ export default function AdminUsersPage() {
         <h2 className="text-xl font-semibold text-gray-900">用户管理</h2>
         <button
           onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700"
+          className="px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700"
         >
           新建用户
         </button>
@@ -79,7 +79,7 @@ export default function AdminUsersPage() {
                 <input
                   value={newItcode}
                   onChange={(e) => setNewItcode(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
                 />
               </div>
               <div>
@@ -87,7 +87,7 @@ export default function AdminUsersPage() {
                 <select
                   value={newRole}
                   onChange={(e) => setNewRole(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
                 >
                   <option value="user">普通用户</option>
                   <option value="admin">管理员</option>
@@ -99,7 +99,7 @@ export default function AdminUsersPage() {
                   type="number"
                   value={newQuota}
                   onChange={(e) => setNewQuota(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
                 />
               </div>
             </div>
@@ -108,7 +108,7 @@ export default function AdminUsersPage() {
               <button
                 type="submit"
                 disabled={creating}
-                className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700 disabled:opacity-50"
+                className="px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 disabled:opacity-50"
               >
                 {creating ? '创建中...' : '确认'}
               </button>

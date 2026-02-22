@@ -123,6 +123,7 @@ func main() {
 		adminAPI.PUT("/users/:id", userH.UpdateUser)
 		adminAPI.GET("/usage", statsH.GetUsage)
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
+		adminAPI.GET("/backends/stats", statsH.GetBackendStats)
 		adminAPI.GET("/applications", appH.ListAll)
 		adminAPI.PUT("/applications/:id/review", appH.Review)
 	}

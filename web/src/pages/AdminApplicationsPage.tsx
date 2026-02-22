@@ -63,7 +63,7 @@ export default function AdminApplicationsPage() {
             onClick={() => setFilter(s)}
             className={`px-4 py-1.5 text-sm rounded-full border transition-colors ${
               filter === s
-                ? 'bg-indigo-600 text-white border-indigo-600'
+                ? 'bg-red-600 text-white border-red-600'
                 : 'border-gray-300 text-gray-600 hover:bg-gray-50'
             }`}
           >
@@ -108,7 +108,7 @@ export default function AdminApplicationsPage() {
                       {app.status === 'pending' && (
                         <button
                           onClick={() => setReviewId(reviewId === app.id ? null : app.id)}
-                          className="text-xs text-indigo-600 hover:underline"
+                          className="text-xs text-red-600 hover:underline"
                         >
                           审批
                         </button>
@@ -123,7 +123,7 @@ export default function AdminApplicationsPage() {
                             value={note}
                             onChange={(e) => setNote(e.target.value)}
                             placeholder="审批备注（可选）"
-                            className="flex-1 px-3 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            className="flex-1 px-3 py-1.5 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
                           />
                           <button
                             onClick={() => handleReview(app.id, 'approved')}

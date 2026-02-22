@@ -78,7 +78,7 @@ export default function LoginPage() {
               value={itcode}
               onChange={(e) => setItcode(e.target.value)}
               placeholder="请输入 itcode"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
             />
           </div>
 
@@ -89,7 +89,7 @@ export default function LoginPage() {
               value={inviteCode}
               onChange={(e) => setInviteCode(e.target.value)}
               placeholder="请输入邀请码"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
             />
           </div>
 
@@ -102,13 +102,13 @@ export default function LoginPage() {
                 onChange={(e) => setCode(e.target.value)}
                 placeholder="6位验证码"
                 maxLength={6}
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
               />
               <button
                 type="button"
                 onClick={handleSendCode}
                 disabled={countdown > 0}
-                className="px-3 py-2 text-sm bg-indigo-50 text-indigo-600 border border-indigo-200 rounded-md hover:bg-indigo-100 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                className="px-3 py-2 text-sm bg-red-50 text-red-600 border border-red-200 rounded-md hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
               >
                 {countdown > 0 ? `${countdown}s` : '发送验证码'}
               </button>
@@ -118,7 +118,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2 px-4 bg-indigo-600 text-white text-sm font-medium rounded-md hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="w-full py-2 px-4 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? '登录中...' : '登录'}
           </button>

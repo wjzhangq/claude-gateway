@@ -77,3 +77,54 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter string,
 	}
 	return logs, total, rows.Err()
 }
+
+// BackendStat holds aggregated usage for a single backend.
+type BackendStat struct {
+	Backend      string  `json:"backend"`
+	Requests     int     `json:"requests"`
+	TotalTokens  int64   `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	ErrorCount   int     `json:"error_count"`
+}
+
+// GetBackendStats aggregates usage_logs by backend for the given date range.
+func (d *DB) GetBackendStats(startDate, endDate string) ([]*BackendStat, error) {
+	where := "WHERE backend != ''"
+	args := []interface{}{}
+
+	if startDate != "" {
+		where += " AND created_at >= ?"
+		args = append(args, startDate)
+	}
+	if endDate != "" {
+		where += " AND created_at <= ?"
+		args = append(args, endDate+" 23:59:59")
+	}
+
+	rows, err := d.Query(
+		`SELECT backend,
+		        COUNT(*) as requests,
+		        SUM(total_tokens) as total_tokens,
+		        SUM(cost_usd) as cost_usd,
+		        AVG(latency_ms) as avg_latency_ms,
+		        SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as error_count
+		 FROM usage_logs `+where+`
+		 GROUP BY backend
+		 ORDER BY requests DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*BackendStat
+	for rows.Next() {
+		s := &BackendStat{}
+		if err := rows.Scan(&s.Backend, &s.Requests, &s.TotalTokens, &s.CostUSD, &s.AvgLatencyMs, &s.ErrorCount); err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+

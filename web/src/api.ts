@@ -66,3 +66,7 @@ export const adminReviewApplication = (
   status: 'approved' | 'rejected',
   note?: string
 ) => api.put(`/admin/api/applications/${id}/review`, { status, note })
+
+// Admin - Backends
+export const adminGetBackendStats = (params?: Record<string, string>) =>
+  api.get('/admin/api/backends/stats', { params })

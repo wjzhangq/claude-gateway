@@ -10,6 +10,7 @@ import ApplicationsPage from './pages/ApplicationsPage'
 import AdminUsersPage from './pages/AdminUsersPage'
 import AdminApplicationsPage from './pages/AdminApplicationsPage'
 import AdminUsagePage from './pages/AdminUsagePage'
+import AdminBackendsPage from './pages/AdminBackendsPage'
 
 export default function App() {
   return (
@@ -27,6 +28,7 @@ export default function App() {
                 <Route path="/admin/users" element={<AdminUsersPage />} />
                 <Route path="/admin/applications" element={<AdminApplicationsPage />} />
                 <Route path="/admin/usage" element={<AdminUsagePage />} />
+                <Route path="/admin/backends" element={<AdminBackendsPage />} />
               </Route>
             </Route>
           </Route>

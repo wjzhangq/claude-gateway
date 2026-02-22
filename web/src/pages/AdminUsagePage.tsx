@@ -24,7 +24,12 @@ interface UsageLog {
   created_at: string
 }
 
+function toDateStr(d: Date) {
+  return d.toISOString().slice(0, 10)
+}
+
 export default function AdminUsagePage() {
+  const [date, setDate] = useState(() => toDateStr(new Date()))
   const [logs, setLogs] = useState<UsageLog[]>([])
   const [dailyStats, setDailyStats] = useState<DailyStat[]>([])
   const [total, setTotal] = useState(0)
@@ -32,19 +37,28 @@ export default function AdminUsagePage() {
   const [loading, setLoading] = useState(true)
   const pageSize = 20
 
+  // Chart: last 14 days ending at selected date
   useEffect(() => {
-    adminGetDailyStats().then((res) => setDailyStats(res.data.stats || []))
-  }, [])
+    const end = date
+    const start = toDateStr(new Date(new Date(date).getTime() - 13 * 86400000))
+    adminGetDailyStats({ start_date: start, end_date: end })
+      .then((res) => setDailyStats(res.data.stats || []))
+  }, [date])
 
   useEffect(() => {
     setLoading(true)
-    adminGetUsage({ page, page_size: pageSize })
+    adminGetUsage({ page, page_size: pageSize, start_date: date, end_date: date })
       .then((res) => {
         setLogs(res.data.logs || [])
         setTotal(res.data.total || 0)
       })
       .finally(() => setLoading(false))
-  }, [page])
+  }, [date, page])
+
+  const shiftDate = (days: number) => {
+    setPage(1)
+    setDate((d) => toDateStr(new Date(new Date(d).getTime() + days * 86400000)))
+  }
 
   // Aggregate daily stats for chart
   const chartData = dailyStats
@@ -54,25 +68,48 @@ export default function AdminUsagePage() {
       else acc.push({ date: s.date, tokens: s.total_tokens })
       return acc
     }, [])
-    .slice(0, 14)
-    .reverse()
+    .sort((a, b) => a.date.localeCompare(b.date))
 
   const totalPages = Math.ceil(total / pageSize)
+  const isToday = date === toDateStr(new Date())
 
   return (
     <div className="p-8">
-      <h2 className="text-xl font-semibold text-gray-900 mb-6">使用统计（管理员）</h2>
+      <div className="flex items-center gap-4 mb-6">
+        <h2 className="text-xl font-semibold text-gray-900">使用统计（管理员）</h2>
+        <div className="flex items-center gap-1 ml-auto">
+          <button
+            onClick={() => shiftDate(-1)}
+            className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
+          >
+            ‹
+          </button>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => { setPage(1); setDate(e.target.value) }}
+            className="px-3 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
+          />
+          <button
+            onClick={() => shiftDate(1)}
+            disabled={isToday}
+            className="px-2 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50 disabled:opacity-40"
+          >
+            ›
+          </button>
+        </div>
+      </div>
 
       {chartData.length > 0 && (
         <div className="bg-white rounded-lg border border-gray-200 p-5 mb-6">
-          <h3 className="text-sm font-medium text-gray-700 mb-4">每日 Token 消耗（近14天）</h3>
+          <h3 className="text-sm font-medium text-gray-700 mb-4">近14天 Token 消耗</h3>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="date" tick={{ fontSize: 10 }} />
               <YAxis tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Bar dataKey="tokens" fill="#6366f1" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="tokens" fill="#DC2626" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -80,10 +117,14 @@ export default function AdminUsagePage() {
 
       <div className="bg-white rounded-lg border border-gray-200">
         <div className="px-6 py-4 border-b border-gray-200">
-          <h3 className="text-sm font-medium text-gray-700">请求记录（共 {total} 条）</h3>
+          <h3 className="text-sm font-medium text-gray-700">
+            {date} 请求记录（共 {total} 条）
+          </h3>
         </div>
         {loading ? (
           <div className="p-6 text-sm text-gray-400">加载中...</div>
+        ) : logs.length === 0 ? (
+          <div className="p-6 text-sm text-gray-400">当天暂无数据</div>
         ) : (
           <>
             <table className="w-full text-sm">

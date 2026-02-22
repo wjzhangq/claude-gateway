@@ -57,6 +57,19 @@ func (h *StatsHandler) GetDailyStats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"stats": stats})
 }
 
+// GetBackendStats godoc: GET /admin/api/backends/stats
+func (h *StatsHandler) GetBackendStats(c *gin.Context) {
+	start := c.Query("start_date")
+	end := c.Query("end_date")
+
+	stats, err := h.db.GetBackendStats(start, end)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"stats": stats})
+}
+
 // GetMyUsage godoc: GET /api/usage  (user's own stats, session or API key auth)
 func (h *StatsHandler) GetMyUsage(c *gin.Context) {
 	userID := c.GetInt64(middleware.CtxUserID)

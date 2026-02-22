@@ -67,6 +67,7 @@ func (h *APIKeyHandler) CreateKey(c *gin.Context) {
 	h.keyStore.Add(keyStr, &auth.KeyInfo{
 		KeyID:       k.ID,
 		UserID:      userID,
+		Itcode:      func() string { if user != nil { return user.Itcode }; return "" }(),
 		QuotaTokens: quota,
 		UserStatus:  "active",
 	})

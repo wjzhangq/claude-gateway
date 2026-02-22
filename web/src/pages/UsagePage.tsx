@@ -55,7 +55,7 @@ export default function UsagePage() {
               <XAxis dataKey="name" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Line type="monotone" dataKey="tokens" stroke="#6366f1" dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="tokens" stroke="#DC2626" dot={false} strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>
         </div>

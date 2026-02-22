@@ -10,7 +10,10 @@
       "Bash(npm run build:*)",
       "Bash(/Users/wj/Downloads/work/claude-gateway/cmd/server/main.go:*)",
       "Bash(go test:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "WebFetch(domain:www.lenovo.com.cn)",
+      "WebFetch(domain:m.lenovo.com.cn)",
+      "Bash(find:*)"
     ]
   }
 }

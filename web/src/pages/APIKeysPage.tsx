@@ -18,6 +18,14 @@ export default function APIKeysPage() {
   const [creating, setCreating] = useState(false)
   const [newKey, setNewKey] = useState('')
   const [error, setError] = useState('')
+  const [revealedId, setRevealedId] = useState<number | null>(null)
+  const [copied, setCopied] = useState<number | null>(null)
+
+  const handleCopy = (id: number, key: string) => {
+    navigator.clipboard.writeText(key)
+    setCopied(id)
+    setTimeout(() => setCopied(null), 2000)
+  }
 
   const load = () => {
     setLoading(true)
@@ -34,7 +42,7 @@ export default function APIKeysPage() {
     setError('')
     try {
       const res = await createKey(newName)
-      setNewKey(res.data.key)
+      setNewKey(res.data.key?.key ?? res.data.key)
       setNewName('')
       load()
     } catch (e: unknown) {
@@ -63,7 +71,7 @@ export default function APIKeysPage() {
         <h2 className="text-xl font-semibold text-gray-900">API Keys</h2>
         <button
           onClick={() => { setShowCreate(true); setNewKey('') }}
-          className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700"
+          className="px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700"
         >
           创建 Key
         </button>
@@ -91,12 +99,12 @@ export default function APIKeysPage() {
                 value={newName}
                 onChange={(e) => setNewName(e.target.value)}
                 placeholder="Key 名称"
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
               />
               <button
                 onClick={handleCreate}
                 disabled={creating}
-                className="px-4 py-2 bg-indigo-600 text-white text-sm rounded-md hover:bg-indigo-700 disabled:opacity-50"
+                className="px-4 py-2 bg-red-600 text-white text-sm rounded-md hover:bg-red-700 disabled:opacity-50"
               >
                 {creating ? '创建中...' : '确认'}
               </button>
@@ -121,7 +129,7 @@ export default function APIKeysPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
-                {['名称', 'Key（前缀）', '状态', '创建时间', '操作'].map((h) => (
+                {['名称', 'Key', '状态', '创建时间', '操作'].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-500">
                     {h}
                   </th>
@@ -133,7 +141,11 @@ export default function APIKeysPage() {
                 <tr key={k.id}>
                   <td className="px-4 py-3 font-medium">{k.name}</td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-500">
-                    {k.key.slice(0, 12)}...
+                    {revealedId === k.id ? (
+                      <span className="break-all">{k.key}</span>
+                    ) : (
+                      <span>{k.key.slice(0, 12)}...</span>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <span
@@ -152,8 +164,20 @@ export default function APIKeysPage() {
                   <td className="px-4 py-3">
                     <div className="flex gap-2">
                       <button
+                        onClick={() => setRevealedId(revealedId === k.id ? null : k.id)}
+                        className="text-xs text-gray-500 hover:underline"
+                      >
+                        {revealedId === k.id ? '隐藏' : '查看'}
+                      </button>
+                      <button
+                        onClick={() => handleCopy(k.id, k.key)}
+                        className="text-xs text-gray-500 hover:underline"
+                      >
+                        {copied === k.id ? '已复制' : '复制'}
+                      </button>
+                      <button
                         onClick={() => handleToggle(k)}
-                        className="text-xs text-indigo-600 hover:underline"
+                        className="text-xs text-red-600 hover:underline"
                       >
                         {k.status === 'active' ? '禁用' : '启用'}
                       </button>

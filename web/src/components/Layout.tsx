@@ -13,6 +13,7 @@ const adminNav = [
   { to: '/admin/users', label: '用户管理' },
   { to: '/admin/applications', label: '审批管理' },
   { to: '/admin/usage', label: '使用统计' },
+  { to: '/admin/backends', label: 'Backend 统计' },
 ]
 
 export default function Layout() {
@@ -30,7 +31,7 @@ export default function Layout() {
       {/* Sidebar */}
       <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
         <div className="px-6 py-5 border-b border-gray-200">
-          <h1 className="text-lg font-bold text-indigo-600">Claude Gateway</h1>
+          <h1 className="text-lg font-bold text-red-600">Claude Gateway</h1>
         </div>
         <nav className="flex-1 px-3 py-4 space-y-1">
           {userNav.map((item) => (
@@ -40,7 +41,7 @@ export default function Layout() {
               className={({ isActive }) =>
                 `block px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                   isActive
-                    ? 'bg-indigo-50 text-indigo-700'
+                    ? 'bg-red-50 text-red-700'
                     : 'text-gray-600 hover:bg-gray-100'
                 }`
               }
@@ -60,7 +61,7 @@ export default function Layout() {
                   className={({ isActive }) =>
                     `block px-3 py-2 rounded-md text-sm font-medium transition-colors ${
                       isActive
-                        ? 'bg-indigo-50 text-indigo-700'
+                        ? 'bg-red-50 text-red-700'
                         : 'text-gray-600 hover:bg-gray-100'
                     }`
                   }

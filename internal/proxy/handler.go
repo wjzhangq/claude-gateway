@@ -70,6 +70,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	defer resp.Body.Close()
 	backend.RecordSuccess()
 
+	// Expose backend name for the request logger
+	c.Set("proxy_backend", backend.Name)
+
 	// Copy response headers
 	for k, vv := range resp.Header {
 		for _, v := range vv {
