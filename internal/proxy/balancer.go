@@ -79,30 +79,41 @@ func NewLoadBalancer(cfgs []config.BackendAPI) *LoadBalancer {
 
 // Pick selects a healthy backend using weighted random selection.
 // Returns nil if no healthy backend is available.
+// Uses two-pass scan to avoid per-call slice allocation.
 func (lb *LoadBalancer) Pick() *Backend {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
-	var pool []*Backend
+	// First pass: compute total weight of healthy backends
 	totalWeight := 0
 	for _, b := range lb.backends {
 		if !b.disabled.Load() && !b.validationFailed.Load() {
-			pool = append(pool, b)
 			totalWeight += b.Weight
 		}
 	}
-	if len(pool) == 0 {
+	if totalWeight == 0 {
 		return nil
 	}
 
+	// Second pass: weighted selection
 	r := rand.Intn(totalWeight)
-	for _, b := range pool {
+	for _, b := range lb.backends {
+		if b.disabled.Load() || b.validationFailed.Load() {
+			continue
+		}
 		r -= b.Weight
 		if r < 0 {
 			return b
 		}
 	}
-	return pool[len(pool)-1]
+	// Fallback: return last healthy backend (handles rounding edge cases)
+	for i := len(lb.backends) - 1; i >= 0; i-- {
+		b := lb.backends[i]
+		if !b.disabled.Load() && !b.validationFailed.Load() {
+			return b
+		}
+	}
+	return nil
 }
 
 // recoveryLoop re-enables backends that have been quiet for 30 seconds.

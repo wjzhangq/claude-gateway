@@ -119,21 +119,36 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	}
 }
 
+const streamTailSize = 2048
+
 func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
 
 	flusher, canFlush := c.Writer.(http.Flusher)
-	var accumulated []byte
+	ctx := c.Request.Context()
+	// tail keeps only the last streamTailSize bytes for token parsing
+	tail := make([]byte, 0, streamTailSize)
 	buf := make([]byte, 4096)
 	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			accumulated = append(accumulated, buf[:n]...)
 			c.Writer.Write(buf[:n])
 			if canFlush {
 				flusher.Flush()
+			}
+			// sliding window: keep only last streamTailSize bytes
+			combined := append(tail, buf[:n]...)
+			if len(combined) > streamTailSize {
+				tail = combined[len(combined)-streamTailSize:]
+			} else {
+				tail = combined
 			}
 		}
 		if err != nil {
@@ -141,7 +156,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 	}
 
-	in, out := parseStreamTokens(accumulated)
+	in, out := parseStreamTokens(tail)
 	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start))
 }
 
@@ -178,11 +193,21 @@ func parseBodyTokens(body []byte) (input, output int) {
 	return
 }
 
-// parseStreamTokens scans SSE lines for usage data in the final chunk.
+// parseStreamTokens scans SSE lines for usage data, keeping the last seen token counts.
+// Uses line-by-line scan to avoid allocating a large slice of all lines.
 func parseStreamTokens(data []byte) (input, output int) {
-	// Look for usage in SSE data lines
-	lines := bytes.Split(data, []byte("\n"))
-	for _, line := range lines {
+	var in, out int
+	for len(data) > 0 {
+		// find next newline
+		idx := bytes.IndexByte(data, '\n')
+		var line []byte
+		if idx < 0 {
+			line = data
+			data = nil
+		} else {
+			line = data[:idx]
+			data = data[idx+1:]
+		}
 		line = bytes.TrimSpace(line)
 		if !bytes.HasPrefix(line, []byte("data:")) {
 			continue
@@ -191,13 +216,12 @@ func parseStreamTokens(data []byte) (input, output int) {
 		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
 			continue
 		}
-		in, out := parseBodyTokens(payload)
-		if in > 0 || out > 0 {
-			input = in
-			output = out
+		i, o := parseBodyTokens(payload)
+		if i > 0 || o > 0 {
+			in, out = i, o
 		}
 	}
-	return
+	return in, out
 }
 
 // costUSD estimates cost based on token counts and model.
