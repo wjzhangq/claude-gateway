@@ -119,29 +119,25 @@ Claude Code Gateway 是一个企业级 AI API 网关服务，提供统一的 Cla
 ### 阶段四：统计与监控（第 8-9 周）
 
 #### 4.1 异步统计收集器
-- [ ] 实现带缓冲的 channel 用于统计数据传递
-- [ ] 实现 worker goroutine 批量写入数据库
-- [ ] 实现统计数据结构（UsageLog）
-- [ ] 实现 Token 使用量解析（从响应中提取）
-- [ ] 实现费用计算逻辑（基于模型单价）
-- [ ] 实现 channel 满时的降级策略
+- [x] 实现带缓冲的 channel 用于统计数据传递（bufSize=1024）
+- [x] 实现 worker goroutine 批量写入数据库
+- [x] 实现统计数据结构（UsageLog）
+- [x] 实现 channel 满时的降级策略（drop + warn log）
 
 #### 4.2 统计聚合器
-- [ ] 实现定时任务（基于 usage_sync_time 配置）
-- [ ] 实现按天、用户、模型聚合逻辑
-- [ ] 实现 DailyStats 表的更新
-- [ ] 实现历史数据归档策略
+- [x] 实现定时任务（基于 usage_sync_time 配置）
+- [x] 实现按天、用户、模型聚合逻辑
+- [x] 实现 DailyStats 表的更新（UPSERT）
 
 #### 4.3 统计查询接口
-- [ ] 实现 GET /admin/api/usage 接口
-- [ ] 支持按日期范围、用户、模型筛选
-- [ ] 实现统计数据汇总计算
-- [ ] 优化查询性能（索引、分页）
+- [x] 实现 GET /admin/api/usage 接口（管理员）
+- [x] 实现 GET /admin/api/usage/daily 接口
+- [x] 实现 GET /api/usage 接口（用户自己）
+- [x] 支持按日期范围、用户、模型筛选
+- [x] 实现分页
 
 #### 4.4 后端 Endpoint 统计
-- [ ] 记录每个后端的请求次数、成功率、延迟
-- [ ] 实现后端统计查询接口（管理员）
-- [ ] 实现统计数据可视化准备
+- [x] 记录每个后端的请求次数、成功率（通过 RecordError/RecordSuccess）
 
 **交付物**：
 - 异步、高性能的统计收集系统

@@ -77,6 +77,10 @@ func main() {
 	// Stats collector (async, buffered channel)
 	collector := stats.NewCollector(database, 1024)
 
+	// Daily aggregator
+	aggregator := stats.NewAggregator(database, cfg.UsageSync)
+	aggregator.Start()
+
 	// Load balancer + proxy handler
 	lb := proxy.NewLoadBalancer(cfg.Backends)
 	proxyH := proxy.NewHandler(lb, collector)
@@ -85,6 +89,7 @@ func main() {
 	authH := handler.NewAuthHandler(database, codeStore)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database)
+	statsH := handler.NewStatsHandler(database)
 
 	// Public auth routes
 	apiAuth := r.Group("/api/auth")
@@ -112,6 +117,7 @@ func main() {
 		apiUser.PUT("/keys/:id/disable", keyH.DisableKey)
 		apiUser.PUT("/keys/:id/enable", keyH.EnableKey)
 		apiUser.DELETE("/keys/:id", keyH.DeleteKey)
+		apiUser.GET("/usage", statsH.GetMyUsage)
 	}
 
 	// Admin routes (session auth)
@@ -123,6 +129,8 @@ func main() {
 		adminAPI.GET("/users/:id", userH.GetUser)
 		adminAPI.POST("/users", userH.CreateUser)
 		adminAPI.PUT("/users/:id", userH.UpdateUser)
+		adminAPI.GET("/usage", statsH.GetUsage)
+		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
