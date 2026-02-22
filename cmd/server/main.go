@@ -76,7 +76,7 @@ func main() {
 	lb := proxy.NewLoadBalancer(cfg.Backends)
 	proxyH := proxy.NewHandler(lb, collector)
 
-	authH := handler.NewAuthHandler(database, codeStore)
+	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database)
 	statsH := handler.NewStatsHandler(database)

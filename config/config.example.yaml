@@ -15,7 +15,9 @@ auth:
   session_secret: "REPLACE_WITH_RANDOM_SECRET"
   session_max_age: 86400  # Session 有效期（秒），默认 24 小时
   code_expiry: 5m         # 验证码有效期
-  admin_itcode: "admin001"  # 首次启动自动创建管理员账号  # 首次启动自动创建管理员账号
+  admin_itcode: "admin001"  # 首次启动自动创建管理员账号
+  send_code_url: ""          # 邮件发送接口 URL，为空时仅打印日志
+  invite_code: ""            # 注册邀请码，为空时不校验
 
 usage_sync_time: 5m       # 使用量聚合间隔
 

@@ -18,11 +18,11 @@ api.interceptors.response.use(
 export default api
 
 // Auth
-export const sendCode = (itcode: string) =>
-  api.post("/api/auth/send-code", { itcode })
+export const sendCode = (itcode: string, inviteCode?: string) =>
+  api.post("/api/auth/send-code", { itcode, invite_code: inviteCode || undefined })
 
-export const login = (itcode: string, code: string) =>
-  api.post("/api/auth/login", { itcode, code })
+export const login = (itcode: string, code: string, inviteCode?: string) =>
+  api.post("/api/auth/login", { itcode, code, invite_code: inviteCode || undefined })
 
 export const logout = () => api.post('/api/auth/logout')
 

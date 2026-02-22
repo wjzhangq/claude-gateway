@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext'
 export default function LoginPage() {
   const [itcode, setItcode] = useState('')
   const [code, setCode] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
   const [countdown, setCountdown] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -28,9 +29,10 @@ export default function LoginPage() {
 
   const handleSendCode = async () => {
     if (!itcode) { setError('请输入 itcode'); return }
+    if (!inviteCode) { setError('请输入邀请码'); return }
     setError('')
     try {
-      await sendCode(itcode)
+      await sendCode(itcode, inviteCode)
       startCountdown()
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
@@ -41,10 +43,11 @@ export default function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!itcode || !code) { setError('请填写 itcode 和验证码'); return }
+    if (!inviteCode) { setError('请输入邀请码'); return }
     setError('')
     setLoading(true)
     try {
-      const res = await login(itcode, code)
+      const res = await login(itcode, code, inviteCode)
       setUser(res.data.user)
       navigate('/dashboard')
     } catch (e: unknown) {
@@ -75,6 +78,17 @@ export default function LoginPage() {
               value={itcode}
               onChange={(e) => setItcode(e.target.value)}
               placeholder="请输入 itcode"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">邀请码</label>
+            <input
+              type="text"
+              value={inviteCode}
+              onChange={(e) => setInviteCode(e.target.value)}
+              placeholder="请输入邀请码"
               className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             />
           </div>

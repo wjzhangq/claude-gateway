@@ -37,6 +37,8 @@ type AuthConfig struct {
 	SessionMaxAge  int           `yaml:"session_max_age"` // seconds
 	CodeExpiry     time.Duration `yaml:"code_expiry"`     // verification code TTL
 	AdminItcode    string        `yaml:"admin_itcode"`
+	SendCodeURL    string        `yaml:"send_code_url"`
+	InviteCode     string        `yaml:"invite_code"`
 }
 
 // BackendAPI represents a single upstream Claude API endpoint.
