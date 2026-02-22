@@ -16,6 +16,8 @@ import (
 	"github.com/claude-gateway/claude-gateway/internal/logger"
 	"github.com/claude-gateway/claude-gateway/internal/middleware"
 	"github.com/claude-gateway/claude-gateway/internal/model"
+	"github.com/claude-gateway/claude-gateway/internal/proxy"
+	"github.com/claude-gateway/claude-gateway/internal/stats"
 )
 
 func main() {
@@ -72,6 +74,13 @@ func main() {
 	// Session loader middleware (populate ctx from session)
 	r.Use(sessionLoader())
 
+	// Stats collector (async, buffered channel)
+	collector := stats.NewCollector(database, 1024)
+
+	// Load balancer + proxy handler
+	lb := proxy.NewLoadBalancer(cfg.Backends)
+	proxyH := proxy.NewHandler(lb, collector)
+
 	// Handlers
 	authH := handler.NewAuthHandler(database, codeStore)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
@@ -83,6 +92,15 @@ func main() {
 		apiAuth.POST("/send-code", authH.SendCode)
 		apiAuth.POST("/login", authH.Login)
 		apiAuth.POST("/logout", authH.Logout)
+	}
+
+	// Proxy routes (API key auth) - OpenAI + Anthropic style
+	v1 := r.Group("/v1")
+	v1.Use(middleware.AuthMiddleware(keyStore))
+	{
+		v1.POST("/chat/completions", proxyH.ChatCompletions)
+		v1.POST("/messages", proxyH.Messages)
+		v1.GET("/models", proxyH.Models)
 	}
 
 	// User API routes (API key auth)

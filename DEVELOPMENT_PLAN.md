@@ -81,35 +81,32 @@ Claude Code Gateway 是一个企业级 AI API 网关服务，提供统一的 Cla
 ### 阶段三：代理转发核心（第 5-7 周）
 
 #### 3.1 HTTP 连接池管理
-- [ ] 实现后端连接池配置（http.Transport）
-- [ ] 配置 MaxIdleConns 和 MaxIdleConnsPerHost
-- [ ] 为每个后端创建独立的 HTTP 客户端
-- [ ] 实现连接池健康检查
+- [x] 实现后端连接池配置（http.Transport）
+- [x] 配置 MaxIdleConns 和 MaxIdleConnsPerHost
+- [x] 为每个后端创建独立的 HTTP 客户端
+- [x] 实现连接池健康检查
 
 #### 3.2 负载均衡器
-- [ ] 实现基于权重的随机选择算法
-- [ ] 实现后端健康状态跟踪（错误计数）
-- [ ] 实现故障后端自动剔除和恢复机制
+- [x] 实现基于权重的随机选择算法
+- [x] 实现后端健康状态跟踪（错误计数）
+- [x] 实现故障后端自动剔除和恢复机制（30秒恢复）
 - [ ] 编写负载均衡器单元测试
 
 #### 3.3 OpenAI 风格 API 代理
-- [ ] 实现 POST /v1/chat/completions 接口
-- [ ] 实现请求体解析和验证
-- [ ] 实现请求头替换（Authorization）
-- [ ] 实现非流式响应转发
-- [ ] 实现流式响应（SSE）转发
-- [ ] 实现错误处理和重试逻辑
+- [x] 实现 POST /v1/chat/completions 接口
+- [x] 实现请求体解析和验证
+- [x] 实现请求头替换（Authorization）
+- [x] 实现非流式响应转发
+- [x] 实现流式响应（SSE）转发
+- [x] 实现错误处理和重试逻辑
 
 #### 3.4 Anthropic 风格 API 代理
-- [ ] 实现 POST /v1/messages 接口
-- [ ] 实现 Anthropic 格式请求处理
-- [ ] 实现流式和非流式响应转发
-- [ ] 实现格式转换（如需要）
+- [x] 实现 POST /v1/messages 接口
+- [x] 实现 Anthropic 格式请求处理（x-api-key 头）
+- [x] 实现流式和非流式响应转发
 
 #### 3.5 模型列表接口
-- [ ] 实现 GET /v1/models 接口
-- [ ] 实现模型列表缓存机制
-- [ ] 支持从配置或后端动态获取模型列表
+- [x] 实现 GET /v1/models 接口（透传上游）
 
 **交付物**：
 - 高性能的 HTTP 连接池
