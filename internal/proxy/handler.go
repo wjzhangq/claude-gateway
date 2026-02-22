@@ -254,3 +254,8 @@ func (h *Handler) Messages(c *gin.Context) {
 func (h *Handler) Models(c *gin.Context) {
 	h.forward(c, "/v1/models")
 }
+
+// Passthrough forwards any other /v1/* path to the upstream backend.
+func (h *Handler) Passthrough(c *gin.Context) {
+	h.forward(c, "/v1/"+c.Param("path"))
+}

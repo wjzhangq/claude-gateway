@@ -97,6 +97,7 @@ func main() {
 		v1.POST("/chat/completions", proxyH.ChatCompletions)
 		v1.POST("/messages", proxyH.Messages)
 		v1.GET("/models", proxyH.Models)
+		v1.Any("/*path", proxyH.Passthrough)
 	}
 
 	// User API routes (session auth for web console)

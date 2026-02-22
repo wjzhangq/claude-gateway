@@ -13,7 +13,10 @@
       "Bash(chmod:*)",
       "WebFetch(domain:www.lenovo.com.cn)",
       "WebFetch(domain:m.lenovo.com.cn)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(sqlite3:*)",
+      "Bash(/Users/wj/Downloads/work/claude-gateway/internal/proxy/handler.go:*)",
+      "Bash(/Users/wj/Downloads/work/claude-gateway/web/src/pages/UsagePage.tsx:*)"
     ]
   }
 }

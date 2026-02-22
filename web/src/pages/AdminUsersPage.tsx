@@ -26,6 +26,12 @@ interface DailyStat {
   cost_usd: number
 }
 
+interface EditState {
+  role: string
+  status: string
+  quota_tokens: string
+}
+
 function toDateStr(d: Date) {
   return d.toISOString().slice(0, 10)
 }
@@ -125,10 +131,13 @@ export default function AdminUsersPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [newItcode, setNewItcode] = useState('')
   const [newRole, setNewRole] = useState('user')
-  const [newQuota, setNewQuota] = useState('1000000')
+  const [newQuota, setNewQuota] = useState('0')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [chartUser, setChartUser] = useState<User | null>(null)
+  const [editId, setEditId] = useState<number | null>(null)
+  const [editState, setEditState] = useState<EditState>({ role: '', status: '', quota_tokens: '' })
+  const [saving, setSaving] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -139,10 +148,24 @@ export default function AdminUsersPage() {
 
   useEffect(() => { load() }, [])
 
-  const handleToggleStatus = async (u: User) => {
-    const newStatus = u.status === 'active' ? 'disabled' : 'active'
-    await adminUpdateUser(u.id, { status: newStatus })
-    load()
+  const openEdit = (u: User) => {
+    setEditId(u.id)
+    setEditState({ role: u.role, status: u.status, quota_tokens: String(u.quota_tokens ?? 0) })
+  }
+
+  const handleSave = async (id: number) => {
+    setSaving(true)
+    try {
+      await adminUpdateUser(id, {
+        role: editState.role,
+        status: editState.status,
+        quota_tokens: parseInt(editState.quota_tokens) || 0,
+      })
+      setEditId(null)
+      load()
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleCreate = async (e: React.FormEvent) => {
@@ -154,10 +177,11 @@ export default function AdminUsersPage() {
       await adminCreateUser({
         itcode: newItcode,
         role: newRole,
-        quota_tokens: parseInt(newQuota) || 1000000,
+        quota_tokens: parseInt(newQuota) || 0,
       })
       setShowCreate(false)
       setNewItcode('')
+      setNewQuota('0')
       load()
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
@@ -255,57 +279,109 @@ export default function AdminUsersPage() {
               Array.from({ length: 4 }).map((_, i) => <SkeletonRow key={i} />)
             ) : (
               users.map((u) => (
-                <tr key={u.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-4 py-3.5 font-medium text-gray-800">{u.itcode}</td>
-                  <td className="px-4 py-3.5">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${
-                        u.role === 'admin'
-                          ? 'bg-purple-50 text-purple-700 ring-purple-100'
-                          : 'bg-gray-100 text-gray-600 ring-gray-200'
-                      }`}
-                    >
-                      {u.role === 'admin' ? '管理员' : '普通用户'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <span
-                      className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${
-                        u.status === 'active'
-                          ? 'bg-green-50 text-green-700 ring-green-100'
-                          : 'bg-red-50 text-red-700 ring-red-100'
-                      }`}
-                    >
-                      {u.status === 'active' ? '正常' : '禁用'}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3.5 text-gray-600">{u.quota_tokens?.toLocaleString() || '—'}</td>
-                  <td className="px-4 py-3.5 font-medium text-gray-800">{u.total_tokens?.toLocaleString() || '0'}</td>
-                  <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {u.last_used_at ? new Date(u.last_used_at).toLocaleString() : '—'}
-                  </td>
-                  <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {new Date(u.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="px-4 py-3.5">
-                    <div className="flex items-center gap-3">
-                      <button
-                        onClick={() => setChartUser(u)}
-                        className="text-xs text-blue-500 hover:text-blue-700 transition-colors"
-                      >
-                        图表
-                      </button>
-                      <button
-                        onClick={() => handleToggleStatus(u)}
-                        className={`text-xs transition-colors ${
-                          u.status === 'active' ? 'text-amber-500 hover:text-amber-700' : 'text-green-600 hover:text-green-800'
+                <>
+                  <tr key={u.id} className="hover:bg-gray-50/50 transition-colors">
+                    <td className="px-4 py-3.5 font-medium text-gray-800">{u.itcode}</td>
+                    <td className="px-4 py-3.5">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${
+                          u.role === 'admin'
+                            ? 'bg-purple-50 text-purple-700 ring-purple-100'
+                            : 'bg-gray-100 text-gray-600 ring-gray-200'
                         }`}
                       >
-                        {u.status === 'active' ? '禁用' : '启用'}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
+                        {u.role === 'admin' ? '管理员' : '普通用户'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${
+                          u.status === 'active'
+                            ? 'bg-green-50 text-green-700 ring-green-100'
+                            : 'bg-red-50 text-red-700 ring-red-100'
+                        }`}
+                      >
+                        {u.status === 'active' ? '正常' : '禁用'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3.5 text-gray-600">{u.quota_tokens?.toLocaleString() || '0'}</td>
+                    <td className="px-4 py-3.5 font-medium text-gray-800">{u.total_tokens?.toLocaleString() || '0'}</td>
+                    <td className="px-4 py-3.5 text-gray-400 text-xs">
+                      {u.last_used_at ? new Date(u.last_used_at).toLocaleString() : '—'}
+                    </td>
+                    <td className="px-4 py-3.5 text-gray-400 text-xs">
+                      {new Date(u.created_at).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-3.5">
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={() => setChartUser(u)}
+                          className="text-xs text-blue-500 hover:text-blue-700 transition-colors"
+                        >
+                          图表
+                        </button>
+                        <button
+                          onClick={() => editId === u.id ? setEditId(null) : openEdit(u)}
+                          className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors"
+                        >
+                          编辑
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  {editId === u.id && (
+                    <tr key={`edit-${u.id}`}>
+                      <td colSpan={8} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <div className="flex items-center gap-1.5">
+                            <label className="text-xs text-gray-500 font-medium">角色</label>
+                            <select
+                              value={editState.role}
+                              onChange={(e) => setEditState((s) => ({ ...s, role: e.target.value }))}
+                              className="px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                            >
+                              <option value="user">普通用户</option>
+                              <option value="admin">管理员</option>
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <label className="text-xs text-gray-500 font-medium">状态</label>
+                            <select
+                              value={editState.status}
+                              onChange={(e) => setEditState((s) => ({ ...s, status: e.target.value }))}
+                              className="px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                            >
+                              <option value="active">正常</option>
+                              <option value="disabled">禁用</option>
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <label className="text-xs text-gray-500 font-medium">Token 配额</label>
+                            <input
+                              type="number"
+                              value={editState.quota_tokens}
+                              onChange={(e) => setEditState((s) => ({ ...s, quota_tokens: e.target.value }))}
+                              className="w-32 px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                            />
+                          </div>
+                          <button
+                            onClick={() => handleSave(u.id)}
+                            disabled={saving}
+                            className="px-4 py-1.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 transition-colors"
+                          >
+                            {saving ? '保存中...' : '保存'}
+                          </button>
+                          <button
+                            onClick={() => setEditId(null)}
+                            className="px-4 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-100 transition-colors"
+                          >
+                            取消
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </>
               ))
             )}
           </tbody>
