@@ -43,31 +43,31 @@ Claude Code Gateway 是一个企业级 AI API 网关服务，提供统一的 Cla
 ### 阶段二：认证与用户管理（第 3-4 周）
 
 #### 2.1 验证码登录系统
-- [ ] 实现验证码发送接口（调用外部服务）
-- [ ] 实现内存验证码存储（带过期时间，5分钟）
-- [ ] 实现登录接口（验证码校验）
-- [ ] 集成 Gin Session 中间件
-- [ ] 实现登出接口
+- [x] 实现验证码发送接口（调用外部服务）
+- [x] 实现内存验证码存储（带过期时间，5分钟）
+- [x] 实现登录接口（验证码校验）
+- [x] 集成 Gin Session 中间件（gin-contrib/sessions cookie store）
+- [x] 实现登出接口
 
 #### 2.2 API Key 管理
-- [ ] 实现 API Key 生成算法（sk- 前缀 + 32字节随机字符串）
-- [ ] 实现 API Key 数据库 CRUD 操作
-- [ ] **实现 API Key 内存加载机制**（启动时全量加载）
-- [ ] 实现内存 Key Map 的并发安全访问（sync.RWMutex 或 sync.Map）
-- [ ] 实现 Key 状态变更时的内存同步机制
-- [ ] 实现 API Key 过期检查逻辑
+- [x] 实现 API Key 生成算法（sk- 前缀 + 32字节随机字符串）
+- [x] 实现 API Key 数据库 CRUD 操作
+- [x] **实现 API Key 内存加载机制**（启动时全量加载）
+- [x] 实现内存 Key Map 的并发安全访问（sync.RWMutex）
+- [x] 实现 Key 状态变更时的内存同步机制
+- [x] 实现 API Key 过期检查逻辑
 
 #### 2.3 用户管理
-- [ ] 实现用户 CRUD 接口
-- [ ] 实现默认管理员自动创建逻辑
-- [ ] 实现用户状态管理（禁用/启用）
-- [ ] 实现用户配额设置和查询
-- [ ] **实现用户配额内存缓存**
+- [x] 实现用户 CRUD 接口
+- [x] 实现默认管理员自动创建逻辑
+- [x] 实现用户状态管理（禁用/启用）
+- [x] 实现用户配额设置和查询
+- [x] **实现用户配额内存缓存**（KeyStore 中携带 quota）
 
 #### 2.4 认证中间件
-- [ ] 实现 AuthMiddleware（API Key 验证，全内存查找）
-- [ ] 实现 SessionAuthMiddleware（管理后台 Session 验证）
-- [ ] 实现 QuotaMiddleware（配额检查，内存缓存）
+- [x] 实现 AuthMiddleware（API Key 验证，全内存查找）
+- [x] 实现 SessionAuthMiddleware（管理后台 Session 验证）
+- [x] 实现 AdminRequired 中间件（角色检查）
 - [ ] 编写认证中间件单元测试
 
 **交付物**：
