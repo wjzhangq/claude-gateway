@@ -2,7 +2,6 @@ package auth
 
 import (
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -79,11 +78,20 @@ func (ks *KeyStore) Remove(key string) {
 	ks.mu.Unlock()
 }
 
-// GenerateKey creates a new API key string with "sk-" prefix.
+// unambiguousChars excludes visually confusing characters: 0/O, 1/l/I.
+const unambiguousChars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+// GenerateKey creates a new API key string with "sk-" prefix using only
+// unambiguous alphanumeric characters (no 0, O, 1, l, I).
 func GenerateKey() (string, error) {
-	b := make([]byte, 32)
+	const keyLen = 32
+	b := make([]byte, keyLen)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("generate key: %w", err)
 	}
-	return "sk-" + hex.EncodeToString(b), nil
+	n := byte(len(unambiguousChars))
+	for i := range b {
+		b[i] = unambiguousChars[b[i]%n]
+	}
+	return "sk-" + string(b), nil
 }

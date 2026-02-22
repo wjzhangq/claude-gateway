@@ -91,3 +91,18 @@ func (h *StatsHandler) GetMyUsage(c *gin.Context) {
 		"logs":      logs,
 	})
 }
+
+// GetMyDailyStats godoc: GET /api/usage/daily
+func (h *StatsHandler) GetMyDailyStats(c *gin.Context) {
+	userID := c.GetInt64(middleware.CtxUserID)
+	start := c.Query("start_date")
+	end := c.Query("end_date")
+	model := c.Query("model")
+
+	stats, err := h.db.GetDailyStats(userID, start, end, model)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"stats": stats})
+}

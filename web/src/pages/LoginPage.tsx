@@ -59,70 +59,89 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="w-full max-w-sm bg-white rounded-xl shadow-sm border border-gray-200 p-8">
-        <h2 className="text-2xl font-bold text-gray-900 mb-2">Claude Gateway</h2>
-        <p className="text-sm text-gray-500 mb-6">使用 itcode 验证码登录</p>
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-50 via-red-50/20 to-gray-100">
+      <div className="w-full max-w-sm">
+        {/* Card */}
+        <div className="bg-white rounded-2xl shadow-lg border border-gray-100 overflow-hidden">
+          {/* Header strip */}
+          <div className="h-1.5 bg-gradient-to-r from-red-500 via-red-600 to-red-700" />
 
-        {error && (
-          <div className="mb-4 px-3 py-2 bg-red-50 border border-red-200 rounded-md text-sm text-red-600">
-            {error}
-          </div>
-        )}
-
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Itcode</label>
-            <input
-              type="text"
-              value={itcode}
-              onChange={(e) => setItcode(e.target.value)}
-              placeholder="请输入 itcode"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">邀请码</label>
-            <input
-              type="text"
-              value={inviteCode}
-              onChange={(e) => setInviteCode(e.target.value)}
-              placeholder="请输入邀请码"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">验证码</label>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                placeholder="6位验证码"
-                maxLength={6}
-                className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-red-500"
-              />
-              <button
-                type="button"
-                onClick={handleSendCode}
-                disabled={countdown > 0}
-                className="px-3 py-2 text-sm bg-red-50 text-red-600 border border-red-200 rounded-md hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
-              >
-                {countdown > 0 ? `${countdown}s` : '发送验证码'}
-              </button>
+          <div className="px-8 py-8">
+            {/* Logo */}
+            <div className="flex items-center gap-3 mb-7">
+              <div className="w-9 h-9 bg-red-600 rounded-xl flex items-center justify-center shadow-sm">
+                <span className="text-white text-sm font-bold">CG</span>
+              </div>
+              <div>
+                <h1 className="text-base font-bold text-gray-900 leading-tight">Claude Gateway</h1>
+                <p className="text-xs text-gray-400">使用 itcode 验证码登录</p>
+              </div>
             </div>
-          </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full py-2 px-4 bg-red-600 text-white text-sm font-medium rounded-md hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? '登录中...' : '登录'}
-          </button>
-        </form>
+            {error && (
+              <div className="mb-5 px-3.5 py-2.5 bg-red-50 border border-red-100 rounded-xl text-sm text-red-600 flex items-start gap-2">
+                <span className="mt-0.5 flex-shrink-0">⚠</span>
+                <span>{error}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">Itcode</label>
+                <input
+                  type="text"
+                  value={itcode}
+                  onChange={(e) => setItcode(e.target.value)}
+                  placeholder="请输入 itcode"
+                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">邀请码</label>
+                <input
+                  type="text"
+                  value={inviteCode}
+                  onChange={(e) => setInviteCode(e.target.value)}
+                  placeholder="请输入邀请码"
+                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">验证码</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={code}
+                    onChange={(e) => setCode(e.target.value)}
+                    placeholder="6位验证码"
+                    maxLength={6}
+                    className="flex-1 px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleSendCode}
+                    disabled={countdown > 0}
+                    className="px-3.5 py-2.5 text-sm bg-red-50 text-red-600 border border-red-100 rounded-xl hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap font-medium transition-colors"
+                  >
+                    {countdown > 0 ? `${countdown}s` : '发送验证码'}
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-2.5 px-4 bg-red-600 text-white text-sm font-semibold rounded-xl hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm hover:shadow-md transition-all mt-2"
+              >
+                {loading ? '登录中...' : '登录'}
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <p className="text-center text-xs text-gray-400 mt-5">Claude Gateway · 内部使用</p>
       </div>
     </div>
   )

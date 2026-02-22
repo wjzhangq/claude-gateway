@@ -37,6 +37,8 @@ export const deleteKey = (id: number) => api.delete(`/api/keys/${id}`)
 // Usage
 export const getMyUsage = (params?: Record<string, string | number>) =>
   api.get('/api/usage', { params })
+export const getMyDailyStats = (params?: Record<string, string | number>) =>
+  api.get('/api/usage/daily', { params })
 
 // Applications
 export const submitApplication = (model: string, reason: string) =>

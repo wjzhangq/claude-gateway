@@ -7,9 +7,13 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
-// AggregateDaily rolls up yesterday's usage_logs into daily_stats.
+// AggregateDaily rolls up today's and yesterday's usage_logs into daily_stats.
 func (d *DB) AggregateDaily() error {
+	today := time.Now().Format("2006-01-02")
 	yesterday := time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	if err := d.aggregateForDate(today); err != nil {
+		return err
+	}
 	return d.aggregateForDate(yesterday)
 }
 

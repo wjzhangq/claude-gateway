@@ -21,7 +21,7 @@ func NewUserHandler(database *db.DB) *UserHandler {
 
 // ListUsers godoc: GET /admin/api/users
 func (h *UserHandler) ListUsers(c *gin.Context) {
-	users, err := h.db.ListUsers()
+	users, err := h.db.ListUsersWithStats()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

@@ -109,6 +109,7 @@ func main() {
 		apiUser.PUT("/keys/:id/enable", keyH.EnableKey)
 		apiUser.DELETE("/keys/:id", keyH.DeleteKey)
 		apiUser.GET("/usage", statsH.GetMyUsage)
+		apiUser.GET("/usage/daily", statsH.GetMyDailyStats)
 		apiUser.POST("/applications", appH.Submit)
 		apiUser.GET("/applications", appH.ListMine)
 	}

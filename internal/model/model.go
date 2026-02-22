@@ -16,20 +16,22 @@ type User struct {
 
 // APIKey represents a user's API key.
 type APIKey struct {
-	ID        int64      `db:"id"         json:"id"`
-	UserID    int64      `db:"user_id"    json:"user_id"`
-	Key       string     `db:"key"        json:"key"`
-	Name      string     `db:"name"       json:"name"`
-	Status    string     `db:"status"     json:"status"`
-	ExpiresAt *time.Time `db:"expires_at" json:"expires_at"`
-	CreatedAt time.Time  `db:"created_at" json:"created_at"`
-	UpdatedAt time.Time  `db:"updated_at" json:"updated_at"`
+	ID         int64      `db:"id"          json:"id"`
+	UserID     int64      `db:"user_id"     json:"user_id"`
+	Key        string     `db:"key"         json:"key"`
+	Name       string     `db:"name"        json:"name"`
+	Status     string     `db:"status"      json:"status"`
+	ExpiresAt  *time.Time `db:"expires_at"  json:"expires_at"`
+	CreatedAt  time.Time  `db:"created_at"  json:"created_at"`
+	UpdatedAt  time.Time  `db:"updated_at"  json:"updated_at"`
+	LastUsedAt *time.Time `db:"last_used_at" json:"last_used_at"`
 }
 
 // UsageLog records a single API call.
 type UsageLog struct {
 	ID           int64     `db:"id"            json:"id"`
 	UserID       int64     `db:"user_id"       json:"user_id"`
+	Itcode       string    `db:"-"             json:"itcode"`
 	APIKeyID     int64     `db:"api_key_id"    json:"api_key_id"`
 	Model        string    `db:"model"         json:"model"`
 	Backend      string    `db:"backend"       json:"backend"`

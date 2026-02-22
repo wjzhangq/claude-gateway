@@ -27,58 +27,82 @@ export default function Layout() {
   }
 
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-[#f4f6f9]">
       {/* Sidebar */}
-      <aside className="w-56 bg-white border-r border-gray-200 flex flex-col">
-        <div className="px-6 py-5 border-b border-gray-200">
-          <h1 className="text-lg font-bold text-red-600">Claude Gateway</h1>
+      <aside className="w-60 bg-white border-r border-gray-100 flex flex-col shadow-sm">
+        {/* Logo */}
+        <div className="px-5 py-5 border-b border-gray-100">
+          <div className="flex items-center gap-2.5">
+            <div className="w-7 h-7 bg-red-600 rounded-lg flex items-center justify-center flex-shrink-0">
+              <span className="text-white text-xs font-bold">CG</span>
+            </div>
+            <span className="text-sm font-semibold text-gray-900">Claude Gateway</span>
+          </div>
         </div>
-        <nav className="flex-1 px-3 py-4 space-y-1">
-          {userNav.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `block px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-red-50 text-red-700'
-                    : 'text-gray-600 hover:bg-gray-100'
-                }`
-              }
-            >
-              {item.label}
-            </NavLink>
-          ))}
+
+        {/* Nav */}
+        <nav className="flex-1 px-3 py-4 overflow-y-auto">
+          <p className="px-3 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">工作台</p>
+          <div className="space-y-0.5">
+            {userNav.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) =>
+                  `flex items-center px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                    isActive
+                      ? 'bg-red-50 text-red-700 border-l-2 border-red-600 pl-[10px]'
+                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+                  }`
+                }
+              >
+                {item.label}
+              </NavLink>
+            ))}
+          </div>
+
           {isAdmin && (
             <>
-              <div className="pt-4 pb-1 px-3 text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                管理员
+              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">管理员</p>
+              <div className="space-y-0.5">
+                {adminNav.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) =>
+                      `flex items-center px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                        isActive
+                          ? 'bg-red-50 text-red-700 border-l-2 border-red-600 pl-[10px]'
+                          : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+                      }`
+                    }
+                  >
+                    {item.label}
+                  </NavLink>
+                ))}
               </div>
-              {adminNav.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className={({ isActive }) =>
-                    `block px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                      isActive
-                        ? 'bg-red-50 text-red-700'
-                        : 'text-gray-600 hover:bg-gray-100'
-                    }`
-                  }
-                >
-                  {item.label}
-                </NavLink>
-              ))}
             </>
           )}
         </nav>
-        <div className="px-4 py-4 border-t border-gray-200">
-          <p className="text-xs text-gray-500 mb-2">{user?.itcode}</p>
+
+        {/* User footer */}
+        <div className="px-4 py-4 border-t border-gray-100 bg-gray-50/60">
+          <div className="flex items-center gap-2.5 mb-2.5">
+            <div className="w-7 h-7 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+              <span className="text-xs font-semibold text-red-700">
+                {user?.itcode?.slice(0, 1).toUpperCase() || 'U'}
+              </span>
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs font-medium text-gray-800 truncate">{user?.itcode}</p>
+              <p className="text-[10px] text-gray-400">{isAdmin ? '管理员' : '普通用户'}</p>
+            </div>
+          </div>
           <button
             onClick={handleLogout}
-            className="w-full text-sm text-gray-600 hover:text-red-600 text-left"
+            className="w-full text-xs text-gray-400 hover:text-red-600 text-left transition-colors"
           >
-            退出登录
+            退出登录 →
           </button>
         </div>
       </aside>
