@@ -4,7 +4,11 @@
       "Bash(go mod tidy:*)",
       "Bash(go build:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(npm install:*)",
+      "Bash(python3:*)",
+      "Bash(npm run build:*)",
+      "Bash(/Users/wj/Downloads/work/claude-gateway/cmd/server/main.go:*)"
     ]
   }
 }

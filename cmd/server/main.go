@@ -33,7 +33,6 @@ func main() {
 
 	logger.Init(cfg.Log.Level, cfg.Log.Format)
 
-	// Ensure data directory exists
 	if err := os.MkdirAll("data", 0755); err != nil {
 		logger.Fatalf("create data dir: %v", err)
 	}
@@ -44,14 +43,12 @@ func main() {
 	}
 	defer database.Close()
 
-	// Ensure admin user exists
 	if cfg.Auth.AdminPhone != "" {
 		if err := database.EnsureAdmin(cfg.Auth.AdminPhone); err != nil {
 			logger.Warnf("ensure admin: %v", err)
 		}
 	}
 
-	// Load all active API keys into memory
 	keyStore := auth.NewKeyStore()
 	if err := loadKeyStore(database, keyStore); err != nil {
 		logger.Fatalf("load key store: %v", err)
@@ -59,7 +56,6 @@ func main() {
 
 	codeStore := auth.NewCodeStore(cfg.Auth.CodeExpiry)
 
-	// Gin setup
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -67,32 +63,24 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(middleware.RequestLogger())
 
-	// Session middleware
 	store := cookie.NewStore([]byte(cfg.Auth.SessionSecret))
 	r.Use(sessions.Sessions("gateway_session", store))
-
-	// Session loader middleware (populate ctx from session)
 	r.Use(sessionLoader())
 
-	// Stats collector (async, buffered channel)
 	collector := stats.NewCollector(database, 1024)
 
-	// Daily aggregator
 	aggregator := stats.NewAggregator(database, cfg.UsageSync)
 	aggregator.Start()
 
-	// Load balancer + proxy handler
 	lb := proxy.NewLoadBalancer(cfg.Backends)
 	proxyH := proxy.NewHandler(lb, collector)
 
-	// Handlers
 	authH := handler.NewAuthHandler(database, codeStore)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database)
 	statsH := handler.NewStatsHandler(database)
 	appH := handler.NewApplicationHandler(database)
 
-	// Public auth routes
 	apiAuth := r.Group("/api/auth")
 	{
 		apiAuth.POST("/send-code", authH.SendCode)
@@ -100,7 +88,6 @@ func main() {
 		apiAuth.POST("/logout", authH.Logout)
 	}
 
-	// Proxy routes (API key auth) - OpenAI + Anthropic style
 	v1 := r.Group("/v1")
 	v1.Use(middleware.AuthMiddleware(keyStore))
 	{
@@ -109,9 +96,9 @@ func main() {
 		v1.GET("/models", proxyH.Models)
 	}
 
-	// User API routes (API key auth)
+	// User API routes (session auth for web console)
 	apiUser := r.Group("/api")
-	apiUser.Use(middleware.AuthMiddleware(keyStore))
+	apiUser.Use(middleware.SessionAuthMiddleware())
 	{
 		apiUser.GET("/keys", keyH.ListKeys)
 		apiUser.POST("/keys", keyH.CreateKey)
@@ -123,7 +110,6 @@ func main() {
 		apiUser.GET("/applications", appH.ListMine)
 	}
 
-	// Admin routes (session auth)
 	adminAPI := r.Group("/admin/api")
 	adminAPI.Use(middleware.SessionAuthMiddleware())
 	adminAPI.Use(middleware.AdminRequired())
@@ -137,6 +123,13 @@ func main() {
 		adminAPI.GET("/applications", appH.ListAll)
 		adminAPI.PUT("/applications/:id/review", appH.Review)
 	}
+
+	// Serve frontend static files
+	r.Static("/assets", "web/dist/assets")
+	r.StaticFile("/favicon.ico", "web/dist/favicon.ico")
+	r.NoRoute(func(c *gin.Context) {
+		c.File("web/dist/index.html")
+	})
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Infof("Claude Gateway listening on %s", addr)
@@ -166,12 +159,12 @@ func loadKeyStore(database *db.DB, ks *auth.KeyStore) error {
 	return nil
 }
 
-// sessionLoader reads session values and sets them in gin context.
 func sessionLoader() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sess := sessions.Default(c)
 		if uid := sess.Get("user_id"); uid != nil {
 			c.Set("session_user_id", uid)
+			c.Set(middleware.CtxUserID, uid)
 		}
 		if role := sess.Get("user_role"); role != nil {
 			c.Set(middleware.CtxUserRole, role)

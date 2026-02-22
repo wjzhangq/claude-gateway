@@ -82,9 +82,11 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id": user.ID,
-		"role":    user.Role,
-		"name":    user.Name,
+		"user": gin.H{
+			"id":    user.ID,
+			"phone": user.Phone,
+			"role":  user.Role,
+		},
 	})
 }
 
