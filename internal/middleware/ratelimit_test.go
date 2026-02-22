@@ -8,7 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/claude-gateway/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/middleware"
 )
 
 func TestRateLimit(t *testing.T) {

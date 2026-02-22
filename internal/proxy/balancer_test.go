@@ -3,8 +3,8 @@ package proxy_test
 import (
 	"testing"
 
-	"github.com/claude-gateway/claude-gateway/config"
-	"github.com/claude-gateway/claude-gateway/internal/proxy"
+	"github.com/wjzhangq/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/internal/proxy"
 )
 
 func makeBackends(weights ...int) []config.BackendAPI {

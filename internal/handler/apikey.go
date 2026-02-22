@@ -6,10 +6,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/claude-gateway/claude-gateway/internal/auth"
-	"github.com/claude-gateway/claude-gateway/internal/db"
-	"github.com/claude-gateway/claude-gateway/internal/middleware"
-	"github.com/claude-gateway/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/db"
+	"github.com/wjzhangq/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 // APIKeyHandler manages API key CRUD.

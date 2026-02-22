@@ -3,8 +3,8 @@ package stats
 import (
 	"time"
 
-	"github.com/claude-gateway/claude-gateway/internal/db"
-	"github.com/claude-gateway/claude-gateway/internal/logger"
+	"github.com/wjzhangq/claude-gateway/internal/db"
+	"github.com/wjzhangq/claude-gateway/internal/logger"
 )
 
 // Aggregator runs a periodic job to roll up usage_logs into daily_stats.

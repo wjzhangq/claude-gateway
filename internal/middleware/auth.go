@@ -6,7 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/claude-gateway/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/auth"
 )
 
 const (

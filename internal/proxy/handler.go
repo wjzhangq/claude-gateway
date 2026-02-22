@@ -9,9 +9,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/claude-gateway/claude-gateway/internal/logger"
-	"github.com/claude-gateway/claude-gateway/internal/middleware"
-	"github.com/claude-gateway/claude-gateway/internal/stats"
+	"github.com/wjzhangq/claude-gateway/internal/logger"
+	"github.com/wjzhangq/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/stats"
 )
 
 // Handler forwards requests to upstream Claude backends.

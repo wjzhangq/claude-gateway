@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/claude-gateway/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/config"
 )
 
 // Backend represents a single upstream API endpoint with its HTTP client.

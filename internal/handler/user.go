@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/claude-gateway/claude-gateway/internal/db"
-	"github.com/claude-gateway/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/db"
+	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 // UserHandler manages user CRUD (admin only).

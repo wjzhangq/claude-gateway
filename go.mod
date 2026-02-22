@@ -1,4 +1,4 @@
-module github.com/claude-gateway/claude-gateway
+module github.com/wjzhangq/claude-gateway
 
 go 1.23.0
 

@@ -3,9 +3,9 @@ package stats
 import (
 	"time"
 
-	"github.com/claude-gateway/claude-gateway/internal/db"
-	"github.com/claude-gateway/claude-gateway/internal/logger"
-	"github.com/claude-gateway/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/db"
+	"github.com/wjzhangq/claude-gateway/internal/logger"
+	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 // Record holds the data for a single API call to be persisted.

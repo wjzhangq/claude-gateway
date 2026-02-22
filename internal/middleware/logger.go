@@ -6,7 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 
-	"github.com/claude-gateway/claude-gateway/internal/logger"
+	"github.com/wjzhangq/claude-gateway/internal/logger"
 )
 
 // RequestLogger logs each HTTP request with method, path, status, and latency.

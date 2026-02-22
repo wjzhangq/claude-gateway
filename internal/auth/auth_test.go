@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/claude-gateway/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/auth"
 )
 
 func TestCodeStore_SetAndVerify(t *testing.T) {

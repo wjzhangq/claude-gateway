@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/claude-gateway/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 func (d *DB) CreateApplication(a *model.Application) error {

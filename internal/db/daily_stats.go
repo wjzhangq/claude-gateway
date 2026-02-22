@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/claude-gateway/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 // AggregateDaily rolls up yesterday's usage_logs into daily_stats.

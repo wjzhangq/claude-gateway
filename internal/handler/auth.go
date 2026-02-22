@@ -8,9 +8,9 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 
-	"github.com/claude-gateway/claude-gateway/internal/auth"
-	"github.com/claude-gateway/claude-gateway/internal/db"
-	"github.com/claude-gateway/claude-gateway/internal/logger"
+	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/db"
+	"github.com/wjzhangq/claude-gateway/internal/logger"
 )
 
 // AuthHandler handles login/logout and verification code flows.

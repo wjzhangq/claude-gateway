@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/claude-gateway/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 // KeyInfo is the in-memory representation of an active API key.

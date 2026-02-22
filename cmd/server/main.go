@@ -10,15 +10,15 @@ import (
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 
-	"github.com/claude-gateway/claude-gateway/config"
-	"github.com/claude-gateway/claude-gateway/internal/auth"
-	"github.com/claude-gateway/claude-gateway/internal/db"
-	"github.com/claude-gateway/claude-gateway/internal/handler"
-	"github.com/claude-gateway/claude-gateway/internal/logger"
-	"github.com/claude-gateway/claude-gateway/internal/middleware"
-	"github.com/claude-gateway/claude-gateway/internal/model"
-	"github.com/claude-gateway/claude-gateway/internal/proxy"
-	"github.com/claude-gateway/claude-gateway/internal/stats"
+	"github.com/wjzhangq/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/db"
+	"github.com/wjzhangq/claude-gateway/internal/handler"
+	"github.com/wjzhangq/claude-gateway/internal/logger"
+	"github.com/wjzhangq/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/proxy"
+	"github.com/wjzhangq/claude-gateway/internal/stats"
 )
 
 func main() {

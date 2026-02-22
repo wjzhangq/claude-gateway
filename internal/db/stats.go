@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/claude-gateway/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 // InsertUsageLog writes a single usage record to the database.
