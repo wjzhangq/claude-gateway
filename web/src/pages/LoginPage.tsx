@@ -87,7 +87,7 @@ export default function LoginPage() {
 
             <form onSubmit={handleLogin} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">Itcode</label>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">Itcode(公司itcode，不是邮箱)</label>
                 <input
                   type="text"
                   value={itcode}
@@ -98,7 +98,7 @@ export default function LoginPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">邀请码</label>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">*邀请码(必填)</label>
                 <input
                   type="text"
                   value={inviteCode}
@@ -109,7 +109,7 @@ export default function LoginPage() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">验证码</label>
+                <label className="block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide">验证码(点击发送，通过teams接收)</label>
                 <div className="flex gap-2">
                   <input
                     type="text"

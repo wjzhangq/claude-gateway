@@ -78,6 +78,29 @@ func (ks *KeyStore) Remove(key string) {
 	ks.mu.Unlock()
 }
 
+// UpdateUserStatus updates the UserStatus for all keys belonging to a user.
+// If the new status is not "active", all keys for this user are removed from the store.
+func (ks *KeyStore) UpdateUserStatus(userID int64, status string) {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+
+	if status != "active" {
+		// Remove all keys for this user
+		for key, info := range ks.keys {
+			if info.UserID == userID {
+				delete(ks.keys, key)
+			}
+		}
+	} else {
+		// Update status for all keys
+		for _, info := range ks.keys {
+			if info.UserID == userID {
+				info.UserStatus = status
+			}
+		}
+	}
+}
+
 // unambiguousChars excludes visually confusing characters: 0/O, 1/l/I.
 const unambiguousChars = "abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789"
 

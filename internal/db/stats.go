@@ -16,7 +16,7 @@ func (d *DB) InsertUsageLog(log *model.UsageLog) error {
 		log.UserID, log.APIKeyID, log.Model, log.Backend,
 		log.InputTokens, log.OutputTokens, log.TotalTokens,
 		log.CostUSD, log.StatusCode, log.Latency,
-		time.Now(),
+		time.Now().Format("2006-01-02 15:04:05"),
 	)
 	if err != nil {
 		return fmt.Errorf("insert usage log: %w", err)

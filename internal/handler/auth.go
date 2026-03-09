@@ -15,6 +15,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
+	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 // AuthHandler handles login/logout and verification code flows.
@@ -130,12 +131,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 	if user == nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "user not found"})
-		return
-	}
-	if user.Status != "active" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "user is disabled"})
-		return
+		// Auto-create user with pending status
+		user = &model.User{
+			Itcode: req.Itcode,
+			Name:   req.Itcode,
+			Role:   "user",
+			Status: "pending",
+		}
+		if err := h.db.CreateUser(user); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
+			return
+		}
 	}
 
 	sess := sessions.Default(c)
@@ -151,6 +157,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			"id":     user.ID,
 			"itcode": user.Itcode,
 			"role":   user.Role,
+			"status": user.Status,
 		},
 	})
 }

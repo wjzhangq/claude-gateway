@@ -79,7 +79,7 @@ func main() {
 
 	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
-	userH := handler.NewUserHandler(database)
+	userH := handler.NewUserHandler(database, keyStore)
 	statsH := handler.NewStatsHandler(database)
 	appH := handler.NewApplicationHandler(database)
 

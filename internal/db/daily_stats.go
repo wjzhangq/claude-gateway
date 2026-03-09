@@ -30,7 +30,7 @@ func (d *DB) aggregateForDate(date string) error {
 			SUM(total_tokens) as total_tokens,
 			SUM(cost_usd) as cost_usd
 		FROM usage_logs
-		WHERE DATE(created_at) = ?
+		WHERE SUBSTR(created_at, 1, 10) = ?
 		GROUP BY user_id, model
 		ON CONFLICT(date, user_id, model) DO UPDATE SET
 			requests      = excluded.requests,

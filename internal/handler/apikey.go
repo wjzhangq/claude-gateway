@@ -41,6 +41,21 @@ func (h *APIKeyHandler) CreateKey(c *gin.Context) {
 	}
 	_ = c.ShouldBindJSON(&req)
 
+	// Check user status before creating key
+	user, err := h.db.GetUserByID(userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get user info"})
+		return
+	}
+	if user == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "user not found"})
+		return
+	}
+	if user.Status != "active" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "user is not approved yet, please contact admin"})
+		return
+	}
+
 	keyStr, err := auth.GenerateKey()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "key generation failed"})
@@ -59,7 +74,6 @@ func (h *APIKeyHandler) CreateKey(c *gin.Context) {
 	}
 
 	// Load user to get quota
-	user, _ := h.db.GetUserByID(userID)
 	var quota int64
 	if user != nil {
 		quota = user.QuotaTokens
@@ -67,7 +81,7 @@ func (h *APIKeyHandler) CreateKey(c *gin.Context) {
 	h.keyStore.Add(keyStr, &auth.KeyInfo{
 		KeyID:       k.ID,
 		UserID:      userID,
-		Itcode:      func() string { if user != nil { return user.Itcode }; return "" }(),
+		Itcode:      user.Itcode,
 		QuotaTokens: quota,
 		UserStatus:  "active",
 	})

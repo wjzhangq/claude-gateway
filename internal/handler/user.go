@@ -6,17 +6,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
 // UserHandler manages user CRUD (admin only).
 type UserHandler struct {
-	db *db.DB
+	db       *db.DB
+	keyStore *auth.KeyStore
 }
 
-func NewUserHandler(database *db.DB) *UserHandler {
-	return &UserHandler{db: database}
+func NewUserHandler(database *db.DB, ks *auth.KeyStore) *UserHandler {
+	return &UserHandler{db: database, keyStore: ks}
 }
 
 // ListUsers godoc: GET /admin/api/users
@@ -85,6 +87,9 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
+
+	oldStatus := user.Status
+
 	var req struct {
 		Name        *string `json:"name"`
 		Status      *string `json:"status"`
@@ -111,5 +116,11 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// Sync KeyStore if status changed
+	if req.Status != nil && *req.Status != oldStatus {
+		h.keyStore.UpdateUserStatus(user.ID, user.Status)
+	}
+
 	c.JSON(http.StatusOK, user)
 }

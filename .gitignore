@@ -56,3 +56,4 @@ web/.env.local
 tmp/
 temp/
 config/config.yaml
+.claude
