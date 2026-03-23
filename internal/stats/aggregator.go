@@ -32,6 +32,11 @@ func (a *Aggregator) loop() {
 	}
 }
 
+// RunNow triggers an immediate aggregation (used during reload).
+func (a *Aggregator) RunNow() {
+	a.run()
+}
+
 func (a *Aggregator) run() {
 	if err := a.db.AggregateDaily(); err != nil {
 		logger.Errorf("daily stats aggregation: %v", err)

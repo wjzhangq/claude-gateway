@@ -1,8 +1,10 @@
 import axios from 'axios'
+import { toast } from './components/Toast'
 
 const api = axios.create({
   baseURL: '/',
   withCredentials: true,
+  timeout: 15000,
 })
 
 api.interceptors.response.use(
@@ -10,6 +12,13 @@ api.interceptors.response.use(
   (err) => {
     if (err.response?.status === 401) {
       window.location.href = '/login'
+    } else if (err.response) {
+      const msg = err.response.data?.error || `请求失败 (HTTP ${err.response.status})`
+      toast(msg)
+    } else if (err.request) {
+      toast('网络连接失败，请检查后端服务是否运行')
+    } else {
+      toast('请求异常: ' + err.message)
     }
     return Promise.reject(err)
   }
@@ -72,3 +81,6 @@ export const adminReviewApplication = (
 // Admin - Backends
 export const adminGetBackendStats = (params?: Record<string, string>) =>
   api.get('/admin/api/backends/stats', { params })
+
+// Admin - Groups
+export const adminGetGroups = () => api.get('/admin/api/groups')

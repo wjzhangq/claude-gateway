@@ -148,6 +148,37 @@ func (lb *LoadBalancer) ValidateBackends() {
 	}
 }
 
+// UpdateBackends replaces the backend list with new config and validates them.
+func (lb *LoadBalancer) UpdateBackends(cfgs []config.BackendAPI) {
+	var newBackends []*Backend
+	for _, c := range cfgs {
+		if !c.Enabled {
+			continue
+		}
+		transport := &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 20,
+			IdleConnTimeout:     90 * time.Second,
+		}
+		newBackends = append(newBackends, &Backend{
+			Name:   c.Name,
+			URL:    c.URL,
+			APIKey: c.APIKey,
+			Weight: c.Weight,
+			client: &http.Client{
+				Transport: transport,
+				Timeout:   300 * time.Second,
+			},
+		})
+	}
+
+	lb.mu.Lock()
+	lb.backends = newBackends
+	lb.mu.Unlock()
+
+	lb.ValidateBackends()
+}
+
 // validateBackend returns true if the backend passes the /v1/models health check.
 func validateBackend(b *Backend) bool {
 	url := strings.TrimRight(b.URL, "/") + "/v1/models"

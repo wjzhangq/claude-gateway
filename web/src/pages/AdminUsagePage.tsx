@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { adminGetUsage, adminGetDailyStats } from '../api'
+import { formatTime } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -23,6 +24,7 @@ interface UsageLog {
   total_tokens: number
   cost_usd: number
   status_code: number
+  is_openclaw: boolean
   created_at: string
 }
 
@@ -56,7 +58,11 @@ export default function AdminUsagePage() {
     const start = toDateStr(new Date(new Date(date).getTime() - 13 * 86400000))
     adminGetDailyStats({ start_date: start, end_date: end })
       .then((res) => setDailyStats(res.data.stats || []))
+      .catch(() => {})
   }, [date])
+
+  const [dayCost, setDayCost] = useState(0)
+  const [dayOcCost, setDayOcCost] = useState(0)
 
   useEffect(() => {
     setLoading(true)
@@ -65,8 +71,24 @@ export default function AdminUsagePage() {
         setLogs(res.data.logs || [])
         setTotal(res.data.total || 0)
       })
+      .catch(() => {})
       .finally(() => setLoading(false))
   }, [date, page])
+
+  useEffect(() => {
+    adminGetUsage({ page: 1, page_size: 10000, start_date: date, end_date: date })
+      .then((res) => {
+        const all: UsageLog[] = res.data.logs || []
+        let cost = 0, ocCost = 0
+        all.forEach((l) => {
+          cost += l.cost_usd
+          if (l.is_openclaw) ocCost += l.cost_usd
+        })
+        setDayCost(cost)
+        setDayOcCost(ocCost)
+      })
+      .catch(() => {})
+  }, [date])
 
   const shiftDate = (days: number) => {
     setPage(1)
@@ -84,6 +106,7 @@ export default function AdminUsagePage() {
 
   const totalPages = Math.ceil(total / pageSize)
   const isToday = date === toDateStr(new Date())
+  const ocRatio = dayCost > 0 ? ((dayOcCost / dayCost) * 100).toFixed(1) : '0.0'
 
   return (
     <div className="p-8">
@@ -112,6 +135,25 @@ export default function AdminUsagePage() {
           >
             ›
           </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-4 mb-6">
+        <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">当日请求</p>
+          <p className="text-xl font-bold text-gray-900">{total}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">当日费用</p>
+          <p className="text-xl font-bold text-gray-900">${dayCost.toFixed(4)}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">OC 费用</p>
+          <p className="text-xl font-bold text-orange-600">${dayOcCost.toFixed(4)}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">OC 占比</p>
+          <p className="text-xl font-bold text-orange-600">{ocRatio}%</p>
         </div>
       </div>
 
@@ -158,7 +200,10 @@ export default function AdminUsagePage() {
                   <td className="px-4 py-3.5">
                     <span className="font-medium text-gray-800">{log.itcode || log.user_id}</span>
                   </td>
-                  <td className="px-4 py-3.5 font-mono text-xs text-gray-600">{log.model}</td>
+                  <td className="px-4 py-3.5 font-mono text-xs text-gray-600">
+                    {log.model}
+                    {log.is_openclaw && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
+                  </td>
                   <td className="px-4 py-3.5 text-xs text-gray-500">{log.backend}</td>
                   <td className="px-4 py-3.5 font-medium text-gray-800">{log.total_tokens.toLocaleString()}</td>
                   <td className="px-4 py-3.5 text-gray-700">${log.cost_usd.toFixed(4)}</td>
@@ -174,7 +219,7 @@ export default function AdminUsagePage() {
                     </span>
                   </td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {new Date(log.created_at).toLocaleString()}
+                    {formatTime(log.created_at)}
                   </td>
                 </tr>
               ))

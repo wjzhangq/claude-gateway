@@ -20,6 +20,7 @@ type Record struct {
 	CostUSD      float64
 	StatusCode   int
 	Latency      time.Duration
+	IsOpenClaw   bool
 }
 
 // Collector receives usage records asynchronously and batch-writes them to the DB.
@@ -47,6 +48,34 @@ func (c *Collector) Emit(r Record) {
 	}
 }
 
+// Flush drains all pending records in the channel and writes them to the DB.
+// Blocks until the channel is empty at the time of the call.
+func (c *Collector) Flush() {
+	for {
+		select {
+		case r := <-c.ch:
+			log := &model.UsageLog{
+				UserID:       r.UserID,
+				APIKeyID:     r.APIKeyID,
+				Model:        r.Model,
+				Backend:      r.Backend,
+				InputTokens:  r.InputTokens,
+				OutputTokens: r.OutputTokens,
+				TotalTokens:  r.TotalTokens,
+				CostUSD:      r.CostUSD,
+				StatusCode:   r.StatusCode,
+				Latency:      r.Latency.Milliseconds(),
+				IsOpenClaw:   r.IsOpenClaw,
+			}
+			if err := c.db.InsertUsageLog(log); err != nil {
+				logger.Errorf("flush usage log: %v", err)
+			}
+		default:
+			return
+		}
+	}
+}
+
 func (c *Collector) worker() {
 	for r := range c.ch {
 		log := &model.UsageLog{
@@ -60,6 +89,7 @@ func (c *Collector) worker() {
 			CostUSD:      r.CostUSD,
 			StatusCode:   r.StatusCode,
 			Latency:      r.Latency.Milliseconds(),
+			IsOpenClaw:   r.IsOpenClaw,
 		}
 		if err := c.db.InsertUsageLog(log); err != nil {
 			logger.Errorf("insert usage log: %v", err)

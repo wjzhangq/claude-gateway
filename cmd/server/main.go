@@ -3,8 +3,10 @@ package main
 import (
 	"fmt"
 	"log"
-	"time"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-contrib/sessions/cookie"
@@ -80,7 +82,7 @@ func main() {
 	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database, keyStore)
-	statsH := handler.NewStatsHandler(database)
+	statsH := handler.NewStatsHandler(database, cfg)
 	appH := handler.NewApplicationHandler(database)
 
 	apiAuth := r.Group("/api/auth")
@@ -123,6 +125,8 @@ func main() {
 		adminAPI.GET("/usage", statsH.GetUsage)
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
 		adminAPI.GET("/backends/stats", statsH.GetBackendStats)
+		adminAPI.GET("/groups", statsH.GetGroups)
+		adminAPI.GET("/groups/stats", statsH.GetGroupStats)
 		adminAPI.GET("/applications", appH.ListAll)
 		adminAPI.PUT("/applications/:id/review", appH.Review)
 	}
@@ -133,6 +137,11 @@ func main() {
 	r.NoRoute(func(c *gin.Context) {
 		c.File("web/dist/index.html")
 	})
+
+	// Register SIGHUP before starting server to avoid race
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGHUP)
+	go handleReload(sigCh, cfgPath, collector, aggregator, lb, proxyH, statsH, database, keyStore, cfg)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Infof("Claude Gateway listening on %s", addr)
@@ -173,5 +182,45 @@ func sessionLoader() gin.HandlerFunc {
 			c.Set(middleware.CtxUserRole, role)
 		}
 		c.Next()
+	}
+}
+
+func handleReload(sigCh <-chan os.Signal, cfgPath string, collector *stats.Collector, aggregator *stats.Aggregator,
+	lb *proxy.LoadBalancer, proxyH *proxy.Handler, statsH *handler.StatsHandler,
+	database *db.DB, keyStore *auth.KeyStore, currentCfg *config.Config) {
+
+	for range sigCh {
+		logger.Infof("received SIGHUP, starting reload...")
+
+		// Step 1: flush pending usage records to DB
+		logger.Infof("reload: flushing collector...")
+		collector.Flush()
+
+		// Step 2: aggregate daily stats
+		logger.Infof("reload: aggregating daily stats...")
+		aggregator.RunNow()
+
+		// Step 3: reload config file
+		logger.Infof("reload: loading config from %s", cfgPath)
+		newCfg, err := config.Load(cfgPath)
+		if err != nil {
+			logger.Errorf("reload: failed to load config: %v — keeping old config", err)
+			continue
+		}
+
+		// Step 4: apply new config to components
+		lb.UpdateBackends(newCfg.Backends)
+		proxyH.UpdateModelReplacements(newCfg.ModelReplacements)
+		statsH.UpdateConfig(newCfg)
+
+		// Step 5: reload key store
+		if err := loadKeyStore(database, keyStore); err != nil {
+			logger.Errorf("reload: failed to reload key store: %v", err)
+		}
+
+		// Update the shared config pointer
+		*currentCfg = *newCfg
+
+		logger.Infof("reload: completed successfully")
 	}
 }

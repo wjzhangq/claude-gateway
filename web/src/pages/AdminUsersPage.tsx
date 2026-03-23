@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { adminListUsers, adminUpdateUser, adminCreateUser, adminGetUsage, adminGetDailyStats } from '../api'
+import { adminListUsers, adminUpdateUser, adminCreateUser, adminGetUsage, adminGetDailyStats, adminGetGroups } from '../api'
+import { formatTime, formatDate } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -9,11 +10,18 @@ interface User {
   itcode: string
   role: string
   status: string
+  group_id: number
   quota_tokens: number
   created_at: string
   last_used_at: string | null
   requests: number
   cost_usd: number
+  oc_cost_usd: number
+}
+
+interface Group {
+  id: number
+  name: string
 }
 
 interface UsageLog {
@@ -30,6 +38,7 @@ interface DailyStat {
 interface EditState {
   role: string
   status: string
+  group_id: number
   quota_tokens: string
 }
 
@@ -40,7 +49,7 @@ function toDateStr(d: Date) {
 function SkeletonRow() {
   return (
     <tr>
-      {[90, 60, 60, 90, 70, 80, 110, 80, 80].map((w, i) => (
+      {[90, 60, 60, 70, 90, 70, 80, 80, 110, 80, 80].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -129,29 +138,36 @@ function UserChartsModal({ user, onClose }: { user: User; onClose: () => void })
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
+  const [groups, setGroups] = useState<Group[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [newItcode, setNewItcode] = useState('')
   const [newRole, setNewRole] = useState('user')
+  const [newGroup, setNewGroup] = useState(0)
   const [newQuota, setNewQuota] = useState('0')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [chartUser, setChartUser] = useState<User | null>(null)
   const [editId, setEditId] = useState<number | null>(null)
-  const [editState, setEditState] = useState<EditState>({ role: '', status: '', quota_tokens: '' })
+  const [editState, setEditState] = useState<EditState>({ role: '', status: '', group_id: 0, quota_tokens: '' })
   const [saving, setSaving] = useState(false)
 
   const load = () => {
     setLoading(true)
     adminListUsers()
       .then((res) => setUsers(res.data.users || []))
+      .catch(() => {})
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  const loadGroups = () => {
+    adminGetGroups().then((res) => setGroups(res.data.groups || [])).catch(() => {})
+  }
+
+  useEffect(() => { load(); loadGroups() }, [])
 
   const openEdit = (u: User) => {
     setEditId(u.id)
-    setEditState({ role: u.role, status: u.status, quota_tokens: String(u.quota_tokens ?? 0) })
+    setEditState({ role: u.role, status: u.status, group_id: u.group_id ?? 0, quota_tokens: String(u.quota_tokens ?? 0) })
   }
 
   const handleSave = async (id: number) => {
@@ -160,6 +176,7 @@ export default function AdminUsersPage() {
       await adminUpdateUser(id, {
         role: editState.role,
         status: editState.status,
+        group_id: editState.group_id,
         quota_tokens: parseInt(editState.quota_tokens) || 0,
       })
       setEditId(null)
@@ -178,10 +195,12 @@ export default function AdminUsersPage() {
       await adminCreateUser({
         itcode: newItcode,
         role: newRole,
+        group_id: newGroup,
         quota_tokens: parseInt(newQuota) || 0,
       })
       setShowCreate(false)
       setNewItcode('')
+      setNewGroup(0)
       setNewQuota('0')
       load()
     } catch (e: unknown) {
@@ -213,7 +232,7 @@ export default function AdminUsersPage() {
         <div className="mb-6 bg-white border border-gray-100 rounded-xl p-5 shadow-sm">
           <h3 className="text-sm font-semibold text-gray-700 mb-4">新建用户</h3>
           <form onSubmit={handleCreate} className="space-y-3">
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-4 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Itcode</label>
                 <input
@@ -231,6 +250,19 @@ export default function AdminUsersPage() {
                 >
                   <option value="user">普通用户</option>
                   <option value="admin">管理员</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">分组</label>
+                <select
+                  value={newGroup}
+                  onChange={(e) => setNewGroup(Number(e.target.value))}
+                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                >
+                  <option value={0}>未分组</option>
+                  {groups.map((g) => (
+                    <option key={g.id} value={g.id}>{g.name}</option>
+                  ))}
                 </select>
               </div>
               <div>
@@ -268,7 +300,7 @@ export default function AdminUsersPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['Itcode', '角色', '状态', 'Token 配额', '请求数', '费用', '最后使用', '注册时间', '操作'].map((h) => (
+              {['Itcode', '角色', '状态', '分组', 'Token 配额', '请求数', '费用', 'OC 费用', '最后使用', '注册时间', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -305,14 +337,25 @@ export default function AdminUsersPage() {
                         {u.status === 'active' ? '正常' : '禁用'}
                       </span>
                     </td>
+                    <td className="px-4 py-3.5 text-gray-600">
+                      {groups.find((g) => g.id === u.group_id)?.name || (u.group_id ? `分组${u.group_id}` : '未分组')}
+                    </td>
                     <td className="px-4 py-3.5 text-gray-600">{u.quota_tokens?.toLocaleString() || '0'}</td>
                     <td className="px-4 py-3.5 text-gray-600">{(u.requests || 0).toLocaleString()}</td>
                     <td className="px-4 py-3.5 font-medium text-gray-800">${(u.cost_usd || 0).toFixed(4)}</td>
-                    <td className="px-4 py-3.5 text-gray-400 text-xs">
-                      {u.last_used_at ? new Date(u.last_used_at).toLocaleString() : '—'}
+                    <td className="px-4 py-3.5 text-orange-600 font-medium">
+                      ${(u.oc_cost_usd || 0).toFixed(4)}
+                      {u.cost_usd > 0 && (
+                        <span className="ml-1 text-[10px] text-gray-400">
+                          ({((u.oc_cost_usd || 0) / u.cost_usd * 100).toFixed(0)}%)
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3.5 text-gray-400 text-xs">
-                      {new Date(u.created_at).toLocaleDateString()}
+                      {formatTime(u.last_used_at)}
+                    </td>
+                    <td className="px-4 py-3.5 text-gray-400 text-xs">
+                      {formatDate(u.created_at)}
                     </td>
                     <td className="px-4 py-3.5">
                       <div className="flex items-center gap-3">
@@ -333,7 +376,7 @@ export default function AdminUsersPage() {
                   </tr>
                   {editId === u.id && (
                     <tr key={`edit-${u.id}`}>
-                      <td colSpan={9} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
+                      <td colSpan={11} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
                         <div className="flex items-center gap-3 flex-wrap">
                           <div className="flex items-center gap-1.5">
                             <label className="text-xs text-gray-500 font-medium">角色</label>
@@ -355,6 +398,19 @@ export default function AdminUsersPage() {
                             >
                               <option value="active">正常</option>
                               <option value="disabled">禁用</option>
+                            </select>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <label className="text-xs text-gray-500 font-medium">分组</label>
+                            <select
+                              value={editState.group_id}
+                              onChange={(e) => setEditState((s) => ({ ...s, group_id: Number(e.target.value) }))}
+                              className="px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                            >
+                              <option value={0}>未分组</option>
+                              {groups.map((g) => (
+                                <option key={g.id} value={g.id}>{g.name}</option>
+                              ))}
                             </select>
                           </div>
                           <div className="flex items-center gap-1.5">

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,11 +21,36 @@ import (
 type Handler struct {
 	lb                *LoadBalancer
 	collector         *stats.Collector
+	mu                sync.RWMutex
 	modelReplacements map[string]string
 }
 
 func NewHandler(lb *LoadBalancer, collector *stats.Collector, modelReplacements map[string]string) *Handler {
 	return &Handler{lb: lb, collector: collector, modelReplacements: modelReplacements}
+}
+
+// detectOpenClaw checks if the request is from OpenClaw.
+// Criteria: User-Agent contains "OpenAI/JS" AND first 320 bytes of body
+// contain "role", "system", "openclaw" (case-insensitive) in order.
+func detectOpenClaw(userAgent string, body []byte) bool {
+	if !strings.Contains(userAgent, "OpenAI/JS") {
+		return false
+	}
+	snippet := body
+	if len(snippet) > 320 {
+		snippet = snippet[:320]
+	}
+	s := strings.ToLower(string(snippet))
+	i1 := strings.Index(s, "role")
+	if i1 < 0 {
+		return false
+	}
+	i2 := strings.Index(s[i1:], "system")
+	if i2 < 0 {
+		return false
+	}
+	i3 := strings.Index(s[i1+i2:], "openclaw")
+	return i3 >= 0
 }
 
 // forward is the shared proxy logic for both OpenAI and Anthropic style endpoints.
@@ -50,8 +76,17 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		reqModel = reqJSON.Model
 	}
 
+	// Detect OpenClaw request
+	isOpenClaw := detectOpenClaw(c.GetHeader("User-Agent"), body)
+	if isOpenClaw {
+		c.Set("is_openclaw", true)
+	}
+
 	// Apply model replacements: if request model contains a configured pattern, replace it
-	for pattern, replacement := range h.modelReplacements {
+	h.mu.RLock()
+	replacements := h.modelReplacements
+	h.mu.RUnlock()
+	for pattern, replacement := range replacements {
 		if strings.Contains(reqModel, pattern) {
 			oldToken := `"model":"` + reqModel + `"`
 			newToken := `"model":"` + replacement + `"`
@@ -113,15 +148,15 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// Stream or buffer
 	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	if isStream {
-		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start)
+		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start, isOpenClaw)
 	} else {
-		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start)
+		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start, isOpenClaw)
 	}
 }
 
 const streamTailSize = 2048
 
-func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time) {
+func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw bool) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -157,10 +192,10 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 
 	in, out := parseStreamTokens(tail)
-	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start))
+	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw)
 }
 
-func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time) {
+func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw bool) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("read response body: %v", err)
@@ -169,7 +204,7 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
-	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start))
+	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw)
 }
 
 // parseBodyTokens extracts token counts from a non-streaming JSON response.
@@ -256,7 +291,7 @@ func costUSD(model string, inputTokens, outputTokens int) float64 {
 	return (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice) / 1_000_000
 }
 
-func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration) {
+func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw bool) {
 	if h.collector == nil || keyInfo == nil {
 		return
 	}
@@ -277,6 +312,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, stat
 		CostUSD:      costUSD(model, inputTokens, outputTokens),
 		StatusCode:   statusCode,
 		Latency:      latency,
+		IsOpenClaw:   isOpenClaw,
 	})
 }
 
@@ -298,4 +334,11 @@ func (h *Handler) Models(c *gin.Context) {
 // Passthrough forwards any other /v1/* path to the upstream backend.
 func (h *Handler) Passthrough(c *gin.Context) {
 	h.forward(c, "/v1"+c.Param("path"))
+}
+
+// UpdateModelReplacements hot-swaps the model replacement map.
+func (h *Handler) UpdateModelReplacements(m map[string]string) {
+	h.mu.Lock()
+	h.modelReplacements = m
+	h.mu.Unlock()
 }

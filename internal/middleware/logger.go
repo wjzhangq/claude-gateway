@@ -40,6 +40,9 @@ func RequestLogger() gin.HandlerFunc {
 					fields["itcode"] = ki.Itcode
 				}
 			}
+			if _, ok := c.Get("is_openclaw"); ok {
+				fields["openclaw"] = true
+			}
 		} else {
 			fields["type"] = "api"
 		}

@@ -6,17 +6,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 )
 
 // StatsHandler serves usage statistics endpoints.
 type StatsHandler struct {
-	db *db.DB
+	db     *db.DB
+	config *config.Config
 }
 
-func NewStatsHandler(database *db.DB) *StatsHandler {
-	return &StatsHandler{db: database}
+func NewStatsHandler(database *db.DB, cfg *config.Config) *StatsHandler {
+	return &StatsHandler{db: database, config: cfg}
 }
 
 // GetUsage godoc: GET /admin/api/usage
@@ -105,4 +107,41 @@ func (h *StatsHandler) GetMyDailyStats(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"stats": stats})
+}
+
+// GetGroupStats godoc: GET /admin/api/groups/stats
+func (h *StatsHandler) GetGroupStats(c *gin.Context) {
+	start := c.Query("start_date")
+	end := c.Query("end_date")
+
+	stats, err := h.db.GetGroupStats(start, end)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Populate group names from config
+	groupMap := make(map[int]string)
+	for _, g := range h.config.Groups {
+		groupMap[g.ID] = g.Name
+	}
+	for _, s := range stats {
+		if name, ok := groupMap[s.GroupID]; ok {
+			s.GroupName = name
+		} else {
+			s.GroupName = "unknown"
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"stats": stats})
+}
+
+// GetGroups godoc: GET /admin/api/groups
+func (h *StatsHandler) GetGroups(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"groups": h.config.Groups})
+}
+
+// UpdateConfig replaces the config reference (used during reload).
+func (h *StatsHandler) UpdateConfig(cfg *config.Config) {
+	h.config = cfg
 }

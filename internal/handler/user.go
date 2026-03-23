@@ -52,6 +52,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		Itcode      string `json:"itcode" binding:"required"`
 		Name        string `json:"name"`
 		Role        string `json:"role"`
+		GroupID     int    `json:"group_id"`
 		QuotaTokens int64  `json:"quota_tokens"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -65,6 +66,7 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		Itcode:      req.Itcode,
 		Name:        req.Name,
 		Role:        req.Role,
+		GroupID:     req.GroupID,
 		Status:      "active",
 		QuotaTokens: req.QuotaTokens,
 	}
@@ -94,6 +96,7 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 		Name        *string `json:"name"`
 		Status      *string `json:"status"`
 		Role        *string `json:"role"`
+		GroupID     *int    `json:"group_id"`
 		QuotaTokens *int64  `json:"quota_tokens"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -108,6 +111,9 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	}
 	if req.Role != nil {
 		user.Role = *req.Role
+	}
+	if req.GroupID != nil {
+		user.GroupID = *req.GroupID
 	}
 	if req.QuotaTokens != nil {
 		user.QuotaTokens = *req.QuotaTokens

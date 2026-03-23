@@ -9,6 +9,7 @@ type User struct {
 	Name        string    `db:"name"          json:"name"`
 	Role        string    `db:"role"          json:"role"`
 	Status      string    `db:"status"        json:"status"`
+	GroupID     int       `db:"group_id"      json:"group_id"`
 	QuotaTokens int64     `db:"quota_tokens"  json:"quota_tokens"`
 	CreatedAt   time.Time `db:"created_at"    json:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"    json:"updated_at"`
@@ -43,6 +44,7 @@ type UsageLog struct {
 	CostUSD      float64   `db:"cost_usd"      json:"cost_usd"`
 	StatusCode   int       `db:"status_code"   json:"status_code"`
 	Latency      int64     `db:"latency_ms"    json:"latency_ms"`
+	IsOpenClaw   bool      `db:"is_openclaw"   json:"is_openclaw"`
 	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
 }
 
@@ -70,4 +72,15 @@ type Application struct {
 	ReviewNote  string    `db:"review_note" json:"review_note"`
 	CreatedAt   time.Time `db:"created_at"  json:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"  json:"updated_at"`
+}
+
+// GroupStats aggregates usage per group.
+type GroupStats struct {
+	GroupID      int     `json:"group_id"`
+	GroupName    string  `json:"group_name"`
+	Requests     int     `json:"requests"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	TotalTokens  int64   `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
 }

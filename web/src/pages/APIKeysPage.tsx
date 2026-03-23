@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { listKeys, createKey, disableKey, enableKey, deleteKey } from '../api'
+import { formatTime, formatDate } from '../utils/time'
 
 interface APIKey {
   id: number
@@ -46,6 +47,7 @@ export default function APIKeysPage() {
     setLoading(true)
     listKeys()
       .then((res) => setKeys(res.data.keys || []))
+      .catch(() => {})
       .finally(() => setLoading(false))
   }
 
@@ -189,10 +191,10 @@ export default function APIKeysPage() {
                   <td className="px-4 py-3.5 text-gray-600 text-xs">{(k.requests || 0).toLocaleString()}</td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs">${(k.cost_usd || 0).toFixed(4)}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {new Date(k.created_at).toLocaleDateString()}
+                    {formatDate(k.created_at)}
                   </td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '—'}
+                    {formatTime(k.last_used_at)}
                   </td>
                   <td className="px-4 py-3.5">
                     <div className="flex items-center gap-3">

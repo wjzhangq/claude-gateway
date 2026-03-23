@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -36,7 +37,24 @@ func Init(path string) (*DB, error) {
 
 func (d *DB) migrate() error {
 	_, err := d.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add group_id column if it doesn't exist (for existing databases)
+	_, err = d.Exec(`ALTER TABLE users ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		// Ignore error if column already exists
+		return err
+	}
+
+	// Add is_openclaw column if it doesn't exist (for existing databases)
+	_, err = d.Exec(`ALTER TABLE usage_logs ADD COLUMN is_openclaw INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
+	return nil
 }
 
 const schema = `
@@ -46,6 +64,7 @@ CREATE TABLE IF NOT EXISTS users (
     name         TEXT    NOT NULL DEFAULT '',
     role         TEXT    NOT NULL DEFAULT 'user',
     status       TEXT    NOT NULL DEFAULT 'active',
+    group_id     INTEGER NOT NULL DEFAULT 0,
     quota_tokens INTEGER NOT NULL DEFAULT 0,
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -75,6 +94,7 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     cost_usd      REAL    NOT NULL DEFAULT 0,
     status_code   INTEGER NOT NULL DEFAULT 200,
     latency_ms    INTEGER NOT NULL DEFAULT 0,
+    is_openclaw   INTEGER NOT NULL DEFAULT 0,
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id    ON usage_logs(user_id);

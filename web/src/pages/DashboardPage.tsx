@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getMyUsage, getMyDailyStats } from '../api'
+import { formatTime } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -12,6 +13,7 @@ interface UsageLog {
   total_tokens: number
   cost_usd: number
   status_code: number
+  is_openclaw: boolean
   created_at: string
 }
 
@@ -49,8 +51,11 @@ export default function DashboardPage() {
   const [logs, setLogs] = useState<UsageLog[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [hourlyData, setHourlyData] = useState<{ hour: string; cost: number }[]>([])
   const [dailyData, setDailyData] = useState<{ date: string; cost: number }[]>([])
+  const [todayCost, setTodayCost] = useState(0)
+  const [todayOcCost, setTodayOcCost] = useState(0)
 
   useEffect(() => {
     getMyUsage({ page: 1, page_size: 5 })
@@ -58,6 +63,7 @@ export default function DashboardPage() {
         setLogs(res.data.logs || [])
         setTotal(res.data.total || 0)
       })
+      .catch(() => setError('加载数据失败，请检查后端服务是否正常'))
       .finally(() => setLoading(false))
 
     const today = toDateStr(new Date())
@@ -68,10 +74,16 @@ export default function DashboardPage() {
         for (let h = 0; h < 24; h++) {
           buckets[String(h).padStart(2, '0')] = 0
         }
+        let costSum = 0
+        let ocCostSum = 0
         todayLogs.forEach((l) => {
           const h = new Date(l.created_at).getHours()
           buckets[String(h).padStart(2, '0')] += l.cost_usd
+          costSum += l.cost_usd
+          if (l.is_openclaw) ocCostSum += l.cost_usd
         })
+        setTodayCost(costSum)
+        setTodayOcCost(ocCostSum)
         setHourlyData(
           Object.entries(buckets).map(([hour, cost]) => ({ hour: hour + ':00', cost: parseFloat(cost.toFixed(6)) }))
         )
@@ -95,6 +107,7 @@ export default function DashboardPage() {
 
   const totalTokens = logs.reduce((s, l) => s + l.total_tokens, 0)
   const totalCost = logs.reduce((s, l) => s + l.cost_usd, 0)
+  const ocRatio = todayCost > 0 ? ((todayOcCost / todayCost) * 100).toFixed(1) : '0.0'
 
   return (
     <div className="p-8">
@@ -105,7 +118,14 @@ export default function DashboardPage() {
       </div>
 
       {/* Stat cards */}
-      <div className="grid grid-cols-3 gap-4 mb-7">
+      {error ? (
+        <div className="mb-7 px-4 py-6 bg-red-50 border border-red-100 rounded-xl text-center">
+          <p className="text-sm text-red-600 font-medium">{error}</p>
+          <button onClick={() => window.location.reload()} className="mt-2 text-xs text-red-500 hover:text-red-700 underline">重试</button>
+        </div>
+      ) : (
+      <>
+      <div className="grid grid-cols-3 gap-4 mb-4">
         {loading ? (
           <>
             <StatCardSkeleton />
@@ -120,6 +140,23 @@ export default function DashboardPage() {
           </>
         )}
       </div>
+      <div className="grid grid-cols-3 gap-4 mb-7">
+        {loading ? (
+          <>
+            <StatCardSkeleton />
+            <StatCardSkeleton />
+            <StatCardSkeleton />
+          </>
+        ) : (
+          <>
+            <StatCard label="今日费用" value={`$${todayCost.toFixed(4)}`} accent="red" />
+            <StatCard label="今日 OpenClaw 费用" value={`$${todayOcCost.toFixed(4)}`} accent="purple" />
+            <StatCard label="OpenClaw 占比" value={`${ocRatio}%`} accent="blue" />
+          </>
+        )}
+      </div>
+      </>
+      )}
 
       {/* Charts */}
       <div className="grid grid-cols-2 gap-4 mb-7">
@@ -181,7 +218,10 @@ export default function DashboardPage() {
             ) : (
               logs.map((log) => (
                 <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-4 py-3 font-mono text-xs text-gray-600">{log.model}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-gray-600">
+                    {log.model}
+                    {log.is_openclaw && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
+                  </td>
                   <td className="px-4 py-3 text-gray-600">{log.input_tokens.toLocaleString()}</td>
                   <td className="px-4 py-3 text-gray-600">{log.output_tokens.toLocaleString()}</td>
                   <td className="px-4 py-3 font-medium text-gray-800">${log.cost_usd.toFixed(4)}</td>
@@ -197,7 +237,7 @@ export default function DashboardPage() {
                     </span>
                   </td>
                   <td className="px-4 py-3 text-gray-400 text-xs">
-                    {new Date(log.created_at).toLocaleString()}
+                    {formatTime(log.created_at)}
                   </td>
                 </tr>
               ))

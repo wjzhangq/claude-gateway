@@ -11,12 +11,13 @@ import (
 func (d *DB) InsertUsageLog(log *model.UsageLog) error {
 	_, err := d.Exec(
 		`INSERT INTO usage_logs
-		 (user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.UserID, log.APIKeyID, log.Model, log.Backend,
 		log.InputTokens, log.OutputTokens, log.TotalTokens,
 		log.CostUSD, log.StatusCode, log.Latency,
-		time.Now().Format("2006-01-02 15:04:05"),
+		log.IsOpenClaw,
+		time.Now(),
 	)
 	if err != nil {
 		return fmt.Errorf("insert usage log: %w", err)
@@ -63,7 +64,7 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter string,
 	joinArgs := append(args, pageSize, offset)
 
 	rows, err := d.Query(
-		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.created_at
+		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+joinWhere+` ORDER BY l.created_at DESC LIMIT ? OFFSET ?`, joinArgs...)
 	if err != nil {
 		return nil, 0, err
@@ -75,7 +76,7 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter string,
 		l := &model.UsageLog{}
 		if err := rows.Scan(&l.ID, &l.UserID, &l.Itcode, &l.APIKeyID, &l.Model, &l.Backend,
 			&l.InputTokens, &l.OutputTokens, &l.TotalTokens, &l.CostUSD,
-			&l.StatusCode, &l.Latency, &l.CreatedAt); err != nil {
+			&l.StatusCode, &l.Latency, &l.IsOpenClaw, &l.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		logs = append(logs, l)
@@ -133,3 +134,44 @@ func (d *DB) GetBackendStats(startDate, endDate string) ([]*BackendStat, error) 
 	return result, rows.Err()
 }
 
+// GetGroupStats aggregates usage_logs by group for the given date range.
+func (d *DB) GetGroupStats(startDate, endDate string) ([]*model.GroupStats, error) {
+	where := "WHERE 1=1"
+	args := []interface{}{}
+
+	if startDate != "" {
+		where += " AND l.created_at >= ?"
+		args = append(args, startDate)
+	}
+	if endDate != "" {
+		where += " AND l.created_at <= ?"
+		args = append(args, endDate+" 23:59:59")
+	}
+
+	rows, err := d.Query(
+		`SELECT u.group_id,
+		        COUNT(*) as requests,
+		        SUM(l.input_tokens) as input_tokens,
+		        SUM(l.output_tokens) as output_tokens,
+		        SUM(l.total_tokens) as total_tokens,
+		        SUM(l.cost_usd) as cost_usd
+		 FROM usage_logs l
+		 JOIN users u ON u.id = l.user_id
+		 `+where+`
+		 GROUP BY u.group_id
+		 ORDER BY u.group_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*model.GroupStats
+	for rows.Next() {
+		s := &model.GroupStats{}
+		if err := rows.Scan(&s.GroupID, &s.Requests, &s.InputTokens, &s.OutputTokens, &s.TotalTokens, &s.CostUSD); err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}

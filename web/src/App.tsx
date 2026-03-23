@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { RequireAuth, RequireAdmin } from './components/RequireAuth'
+import ToastContainer from './components/Toast'
 import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
 import DashboardPage from './pages/DashboardPage'
@@ -15,6 +16,7 @@ import AdminBackendsPage from './pages/AdminBackendsPage'
 export default function App() {
   return (
     <AuthProvider>
+      <ToastContainer />
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />

@@ -44,6 +44,7 @@ export default function AdminBackendsPage() {
     setLoading(true)
     adminGetBackendStats({ start_date: d, end_date: d })
       .then((res) => setStats(res.data.stats || []))
+      .catch(() => {})
       .finally(() => setLoading(false))
   }
 

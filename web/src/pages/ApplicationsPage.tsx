@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { listMyApplications, submitApplication } from '../api'
+import { formatDate } from '../utils/time'
 
 interface Application {
   id: number
@@ -47,6 +48,7 @@ export default function ApplicationsPage() {
     setLoading(true)
     listMyApplications()
       .then((res) => setApps(res.data.applications || []))
+      .catch(() => {})
       .finally(() => setLoading(false))
   }
 
@@ -160,7 +162,7 @@ export default function ApplicationsPage() {
                   </td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">{app.review_note || '—'}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {new Date(app.created_at).toLocaleDateString()}
+                    {formatDate(app.created_at)}
                   </td>
                 </tr>
               ))

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getMyUsage } from '../api'
+import { formatTime } from '../utils/time'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -12,6 +13,7 @@ interface UsageLog {
   total_tokens: number
   cost_usd: number
   status_code: number
+  is_openclaw: boolean
   created_at: string
 }
 
@@ -41,6 +43,7 @@ export default function UsagePage() {
         setLogs(res.data.logs || [])
         setTotal(res.data.total || 0)
       })
+      .catch(() => {})
       .finally(() => setLoading(false))
   }
 
@@ -100,7 +103,10 @@ export default function UsagePage() {
             ) : (
               logs.map((log) => (
                 <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-4 py-3.5 font-mono text-xs text-gray-600">{log.model}</td>
+                  <td className="px-4 py-3.5 font-mono text-xs text-gray-600">
+                    {log.model}
+                    {log.is_openclaw && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
+                  </td>
                   <td className="px-4 py-3.5 text-gray-600">{log.input_tokens.toLocaleString()}</td>
                   <td className="px-4 py-3.5 text-gray-600">{log.output_tokens.toLocaleString()}</td>
                   <td className="px-4 py-3.5 font-medium text-gray-800">{log.total_tokens.toLocaleString()}</td>
@@ -117,7 +123,7 @@ export default function UsagePage() {
                     </span>
                   </td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {new Date(log.created_at).toLocaleString()}
+                    {formatTime(log.created_at)}
                   </td>
                 </tr>
               ))

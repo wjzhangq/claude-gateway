@@ -14,9 +14,16 @@ type Config struct {
 	Database          DatabaseConfig    `yaml:"database"`
 	Log               LogConfig         `yaml:"log"`
 	Auth              AuthConfig        `yaml:"auth"`
+	Groups            []Group           `yaml:"groups"`
 	Backends          []BackendAPI      `yaml:"backends"`
 	UsageSync         time.Duration     `yaml:"usage_sync_time"`
 	ModelReplacements map[string]string `yaml:"model_replacements"`
+}
+
+// Group represents a user group for organizing users and tracking usage.
+type Group struct {
+	ID   int    `yaml:"id"`
+	Name string `yaml:"name"`
 }
 
 type ServerConfig struct {
