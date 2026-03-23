@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { adminListUsers, adminUpdateUser, adminCreateUser, adminGetUsage, adminGetDailyStats, adminGetGroups } from '../api'
-import { formatTime, formatDate } from '../utils/time'
+import { formatTime, formatDate, toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -40,10 +40,6 @@ interface EditState {
   status: string
   group_id: number
   quota_tokens: string
-}
-
-function toDateStr(d: Date) {
-  return d.toISOString().slice(0, 10)
 }
 
 function SkeletonRow() {

@@ -193,7 +193,7 @@ func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 		 LEFT JOIN usage_logs l ON l.api_key_id = k.id
 		 WHERE k.user_id = ?
 		 GROUP BY k.id
-		 ORDER BY k.id`, userID)
+		 ORDER BY k.id DESC`, userID)
 	if err != nil {
 		return nil, err
 	}

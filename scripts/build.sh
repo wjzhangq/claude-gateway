@@ -7,6 +7,7 @@ cd "$ROOT"
 
 # 解析参数
 TARGET_OS="${1:-}"
+TARGET_OS=linux
 if [[ "$TARGET_OS" == "linux" ]]; then
     export GOOS=linux
     export GOARCH=amd64

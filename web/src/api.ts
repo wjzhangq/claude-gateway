@@ -69,6 +69,9 @@ export const adminGetUsage = (params?: Record<string, string | number>) =>
 export const adminGetDailyStats = (params?: Record<string, string | number>) =>
   api.get('/admin/api/usage/daily', { params })
 
+export const adminGetUserDailyCost = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/usage/user-daily', { params })
+
 // Admin - Applications
 export const adminListApplications = (status?: string) =>
   api.get('/admin/api/applications', { params: status ? { status } : {} })

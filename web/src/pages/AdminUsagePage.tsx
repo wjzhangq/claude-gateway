@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { adminGetUsage, adminGetDailyStats } from '../api'
-import { formatTime } from '../utils/time'
+import { formatTime, toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -26,10 +26,6 @@ interface UsageLog {
   status_code: number
   is_openclaw: boolean
   created_at: string
-}
-
-function toDateStr(d: Date) {
-  return d.toISOString().slice(0, 10)
 }
 
 function SkeletonRow() {
@@ -96,13 +92,14 @@ export default function AdminUsagePage() {
   }
 
   const chartData = dailyStats
-    .reduce((acc: { date: string; tokens: number }[], s) => {
+    .reduce((acc: { date: string; cost: number }[], s) => {
       const existing = acc.find((d) => d.date === s.date)
-      if (existing) existing.tokens += s.total_tokens
-      else acc.push({ date: s.date, tokens: s.total_tokens })
+      if (existing) existing.cost += s.cost_usd
+      else acc.push({ date: s.date, cost: s.cost_usd })
       return acc
     }, [])
     .sort((a, b) => a.date.localeCompare(b.date))
+    .map((d) => ({ ...d, cost: +d.cost.toFixed(4) }))
 
   const totalPages = Math.ceil(total / pageSize)
   const isToday = date === toDateStr(new Date())
@@ -159,14 +156,14 @@ export default function AdminUsagePage() {
 
       {chartData.length > 0 && (
         <div className="bg-white rounded-xl border border-gray-100 p-5 mb-6 shadow-sm">
-          <h3 className="text-sm font-semibold text-gray-700 mb-4">近14天 Token 消耗</h3>
+          <h3 className="text-sm font-semibold text-gray-700 mb-4">近14天费用趋势 (USD)</h3>
           <ResponsiveContainer width="100%" height={200}>
             <BarChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="date" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} />
-              <Bar dataKey="tokens" fill="#DC2626" radius={[3, 3, 0, 0]} />
+              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
+              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} formatter={(value?: number) => [`$${(value ?? 0).toFixed(4)}`, '费用']} />
+              <Bar dataKey="cost" name="费用" fill="#DC2626" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>

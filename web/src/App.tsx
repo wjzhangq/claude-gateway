@@ -12,6 +12,7 @@ import AdminUsersPage from './pages/AdminUsersPage'
 import AdminApplicationsPage from './pages/AdminApplicationsPage'
 import AdminUsagePage from './pages/AdminUsagePage'
 import AdminBackendsPage from './pages/AdminBackendsPage'
+import AdminUserDailyPage from './pages/AdminUserDailyPage'
 
 export default function App() {
   return (
@@ -31,6 +32,7 @@ export default function App() {
                 <Route path="/admin/applications" element={<AdminApplicationsPage />} />
                 <Route path="/admin/usage" element={<AdminUsagePage />} />
                 <Route path="/admin/backends" element={<AdminBackendsPage />} />
+                <Route path="/admin/user-daily" element={<AdminUserDailyPage />} />
               </Route>
             </Route>
           </Route>

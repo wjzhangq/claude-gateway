@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getMyUsage, getMyDailyStats } from '../api'
-import { formatTime } from '../utils/time'
+import { formatTime, toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -20,10 +20,6 @@ interface UsageLog {
 interface DailyStat {
   date: string
   cost_usd: number
-}
-
-function toDateStr(d: Date) {
-  return d.toISOString().slice(0, 10)
 }
 
 function SkeletonRow() {

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { adminGetBackendStats } from '../api'
+import { toDateStr } from '../utils/time'
 
 interface BackendStat {
   backend: string
@@ -8,10 +9,6 @@ interface BackendStat {
   cost_usd: number
   avg_latency_ms: number
   error_count: number
-}
-
-function toDateStr(d: Date) {
-  return d.toISOString().slice(0, 10)
 }
 
 function SkeletonCard() {

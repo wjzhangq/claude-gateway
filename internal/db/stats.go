@@ -84,6 +84,77 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter string,
 	return logs, total, rows.Err()
 }
 
+// UserDailyCost holds per-user cost for a single day.
+type UserDailyCost struct {
+	UserID      int64   `json:"user_id"`
+	Itcode      string  `json:"itcode"`
+	Requests    int     `json:"requests"`
+	TotalTokens int64   `json:"total_tokens"`
+	CostUSD     float64 `json:"cost_usd"`
+	OCCostUSD   float64 `json:"oc_cost_usd"`
+}
+
+// UserDailyCostResult wraps the ranking list with totals.
+type UserDailyCostResult struct {
+	Users      []*UserDailyCost `json:"users"`
+	TotalCost  float64          `json:"total_cost"`
+	OCCost     float64          `json:"oc_cost"`
+	TotalReqs  int              `json:"total_requests"`
+}
+
+// GetUserDailyCostRanking returns top N users by cost for a given date, plus totals.
+func (d *DB) GetUserDailyCostRanking(date string, limit int) (*UserDailyCostResult, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	// Top N users
+	rows, err := d.Query(
+		`SELECT l.user_id, COALESCE(u.itcode, ''), COUNT(*) as requests,
+		        SUM(l.total_tokens) as total_tokens,
+		        SUM(l.cost_usd) as cost_usd,
+		        SUM(CASE WHEN l.is_openclaw THEN l.cost_usd ELSE 0 END) as oc_cost_usd
+		 FROM usage_logs l
+		 LEFT JOIN users u ON u.id = l.user_id
+		 WHERE SUBSTR(l.created_at, 1, 10) = ?
+		 GROUP BY l.user_id
+		 ORDER BY cost_usd DESC
+		 LIMIT ?`, date, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get user daily cost ranking: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*UserDailyCost
+	for rows.Next() {
+		u := &UserDailyCost{}
+		if err := rows.Scan(&u.UserID, &u.Itcode, &u.Requests, &u.TotalTokens, &u.CostUSD, &u.OCCostUSD); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Totals
+	var totalCost, ocCost float64
+	var totalReqs int
+	err = d.QueryRow(
+		`SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0), COUNT(*)
+		 FROM usage_logs WHERE SUBSTR(created_at, 1, 10) = ?`, date).Scan(&totalCost, &ocCost, &totalReqs)
+	if err != nil {
+		return nil, fmt.Errorf("get daily totals: %w", err)
+	}
+
+	return &UserDailyCostResult{
+		Users:     users,
+		TotalCost: totalCost,
+		OCCost:    ocCost,
+		TotalReqs: totalReqs,
+	}, nil
+}
+
 // BackendStat holds aggregated usage for a single backend.
 type BackendStat struct {
 	Backend      string  `json:"backend"`

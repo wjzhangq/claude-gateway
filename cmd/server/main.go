@@ -124,6 +124,7 @@ func main() {
 		adminAPI.PUT("/users/:id", userH.UpdateUser)
 		adminAPI.GET("/usage", statsH.GetUsage)
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
+		adminAPI.GET("/usage/user-daily", statsH.GetUserDailyCostRanking)
 		adminAPI.GET("/backends/stats", statsH.GetBackendStats)
 		adminAPI.GET("/groups", statsH.GetGroups)
 		adminAPI.GET("/groups/stats", statsH.GetGroupStats)
