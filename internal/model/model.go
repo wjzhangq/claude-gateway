@@ -9,8 +9,8 @@ type User struct {
 	Name        string    `db:"name"          json:"name"`
 	Role        string    `db:"role"          json:"role"`
 	Status      string    `db:"status"        json:"status"`
-	GroupID     int       `db:"group_id"      json:"group_id"`
-	QuotaTokens int64     `db:"quota_tokens"  json:"quota_tokens"`
+	GroupID        int       `db:"group_id"         json:"group_id"`
+	DailyQuotaTokens int64  `db:"daily_quota_tokens" json:"daily_quota_tokens"`
 	CreatedAt   time.Time `db:"created_at"    json:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"    json:"updated_at"`
 }

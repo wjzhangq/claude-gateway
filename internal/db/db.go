@@ -54,6 +54,12 @@ func (d *DB) migrate() error {
 		return err
 	}
 
+	// Add daily_quota_tokens column if it doesn't exist (rename from quota_tokens)
+	_, err = d.Exec(`ALTER TABLE users ADD COLUMN daily_quota_tokens INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
 	return nil
 }
 
@@ -63,9 +69,9 @@ CREATE TABLE IF NOT EXISTS users (
     itcode       TEXT    NOT NULL UNIQUE,
     name         TEXT    NOT NULL DEFAULT '',
     role         TEXT    NOT NULL DEFAULT 'user',
-    status       TEXT    NOT NULL DEFAULT 'active',
+    status       TEXT    NOT NULL DEFAULT 'pending',
     group_id     INTEGER NOT NULL DEFAULT 0,
-    quota_tokens INTEGER NOT NULL DEFAULT 0,
+    daily_quota_tokens INTEGER NOT NULL DEFAULT 0,
     created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

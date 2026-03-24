@@ -50,7 +50,7 @@ func TestKeyStore_AddAndGet(t *testing.T) {
 	info := &auth.KeyInfo{
 		KeyID:       1,
 		UserID:      42,
-		QuotaTokens: 1000000,
+		DailyQuotaTokens: 1000000,
 		UserStatus:  "active",
 	}
 	ks.Add(key, info)

@@ -8,10 +8,11 @@ import {
 interface User {
   id: number
   itcode: string
+  name: string
   role: string
   status: string
   group_id: number
-  quota_tokens: number
+  daily_quota_tokens: number
   created_at: string
   last_used_at: string | null
   requests: number
@@ -39,7 +40,7 @@ interface EditState {
   role: string
   status: string
   group_id: number
-  quota_tokens: string
+  daily_quota_tokens: string
 }
 
 function SkeletonRow() {
@@ -139,13 +140,16 @@ export default function AdminUsersPage() {
   const [newItcode, setNewItcode] = useState('')
   const [newRole, setNewRole] = useState('user')
   const [newGroup, setNewGroup] = useState(0)
+  const [newStatus, setNewStatus] = useState('pending')
   const [newQuota, setNewQuota] = useState('0')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
   const [chartUser, setChartUser] = useState<User | null>(null)
   const [editId, setEditId] = useState<number | null>(null)
-  const [editState, setEditState] = useState<EditState>({ role: '', status: '', group_id: 0, quota_tokens: '' })
+  const [editState, setEditState] = useState<EditState>({ role: '', status: '', group_id: 0, daily_quota_tokens: '' })
   const [saving, setSaving] = useState(false)
+  const [sortKey, setSortKey] = useState<string>('id')
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
 
   const load = () => {
     setLoading(true)
@@ -161,9 +165,42 @@ export default function AdminUsersPage() {
 
   useEffect(() => { load(); loadGroups() }, [])
 
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(key)
+      setSortOrder('desc')
+    }
+  }
+
+  const sortedUsers = [...users].sort((a, b) => {
+    let aVal: string | number = a.id
+    let bVal: string | number = b.id
+    if (sortKey === 'itcode') { aVal = a.itcode; bVal = b.itcode }
+    else if (sortKey === 'role') { aVal = a.role; bVal = b.role }
+    else if (sortKey === 'status') { aVal = a.status; bVal = b.status }
+    else if (sortKey === 'group_id') { aVal = a.group_id; bVal = b.group_id }
+    else if (sortKey === 'daily_quota_tokens') { aVal = a.daily_quota_tokens; bVal = b.daily_quota_tokens }
+    else if (sortKey === 'requests') { aVal = a.requests || 0; bVal = b.requests || 0 }
+    else if (sortKey === 'cost_usd') { aVal = a.cost_usd || 0; bVal = b.cost_usd || 0 }
+    else if (sortKey === 'created_at') { aVal = a.created_at; bVal = b.created_at }
+    else if (sortKey === 'last_used_at') { aVal = a.last_used_at || ''; bVal = b.last_used_at || '' }
+
+    if (typeof aVal === 'string' && typeof bVal === 'string') {
+      return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal)
+    }
+    return sortOrder === 'asc' ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number)
+  })
+
+  const sortIcon = (key: string) => {
+    if (sortKey !== key) return <span className="ml-1 opacity-30">↕</span>
+    return <span className="ml-1">{sortOrder === 'asc' ? '↑' : '↓'}</span>
+  }
+
   const openEdit = (u: User) => {
     setEditId(u.id)
-    setEditState({ role: u.role, status: u.status, group_id: u.group_id ?? 0, quota_tokens: String(u.quota_tokens ?? 0) })
+    setEditState({ role: u.role, status: u.status, group_id: u.group_id ?? 0, daily_quota_tokens: String(u.daily_quota_tokens ?? 0) })
   }
 
   const handleSave = async (id: number) => {
@@ -173,7 +210,7 @@ export default function AdminUsersPage() {
         role: editState.role,
         status: editState.status,
         group_id: editState.group_id,
-        quota_tokens: parseInt(editState.quota_tokens) || 0,
+        daily_quota_tokens: parseInt(editState.daily_quota_tokens) || 0,
       })
       setEditId(null)
       load()
@@ -191,8 +228,9 @@ export default function AdminUsersPage() {
       await adminCreateUser({
         itcode: newItcode,
         role: newRole,
+        status: newStatus,
         group_id: newGroup,
-        quota_tokens: parseInt(newQuota) || 0,
+        daily_quota_tokens: parseInt(newQuota) || 0,
       })
       setShowCreate(false)
       setNewItcode('')
@@ -228,7 +266,7 @@ export default function AdminUsersPage() {
         <div className="mb-6 bg-white border border-gray-100 rounded-xl p-5 shadow-sm">
           <h3 className="text-sm font-semibold text-gray-700 mb-4">新建用户</h3>
           <form onSubmit={handleCreate} className="space-y-3">
-            <div className="grid grid-cols-4 gap-3">
+            <div className="grid grid-cols-5 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Itcode</label>
                 <input
@@ -249,6 +287,18 @@ export default function AdminUsersPage() {
                 </select>
               </div>
               <div>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">状态</label>
+                <select
+                  value={newStatus}
+                  onChange={(e) => setNewStatus(e.target.value)}
+                  className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                >
+                  <option value="pending">待审核</option>
+                  <option value="active">正常</option>
+                  <option value="disabled">禁用</option>
+                </select>
+              </div>
+              <div>
                 <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">分组</label>
                 <select
                   value={newGroup}
@@ -262,7 +312,7 @@ export default function AdminUsersPage() {
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Token 配额</label>
+                <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wide">Token 每日最大费用</label>
                 <input
                   type="number"
                   value={newQuota}
@@ -296,9 +346,25 @@ export default function AdminUsersPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['Itcode', '角色', '状态', '分组', 'Token 配额', '请求数', '费用', 'OC 费用', '最后使用', '注册时间', '操作'].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
-                  {h}
+              {[
+                { key: 'itcode', label: 'Itcode' },
+                { key: 'role', label: '角色' },
+                { key: 'status', label: '状态' },
+                { key: 'group_id', label: '分组' },
+                { key: 'daily_quota_tokens', label: 'Token 每日最大费用' },
+                { key: 'requests', label: '请求数' },
+                { key: 'cost_usd', label: '费用' },
+                { key: 'oc_cost_usd', label: 'OC 费用' },
+                { key: 'last_used_at', label: '最后使用' },
+                { key: 'created_at', label: '注册时间' },
+                { key: '', label: '操作' },
+              ].map((col) => (
+                <th
+                  key={col.key}
+                  className={`px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide ${col.key ? 'cursor-pointer hover:text-gray-600 transition-colors' : ''}`}
+                  onClick={() => col.key && handleSort(col.key)}
+                >
+                  {col.label}{col.key && sortIcon(col.key)}
                 </th>
               ))}
             </tr>
@@ -307,7 +373,7 @@ export default function AdminUsersPage() {
             {loading ? (
               Array.from({ length: 4 }).map((_, i) => <SkeletonRow key={i} />)
             ) : (
-              users.map((u) => (
+              sortedUsers.map((u) => (
                 <>
                   <tr key={u.id} className="hover:bg-gray-50/50 transition-colors">
                     <td className="px-4 py-3.5 font-medium text-gray-800">{u.itcode}</td>
@@ -327,16 +393,18 @@ export default function AdminUsersPage() {
                         className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${
                           u.status === 'active'
                             ? 'bg-green-50 text-green-700 ring-green-100'
+                            : u.status === 'pending'
+                            ? 'bg-yellow-50 text-yellow-700 ring-yellow-100'
                             : 'bg-red-50 text-red-700 ring-red-100'
                         }`}
                       >
-                        {u.status === 'active' ? '正常' : '禁用'}
+                        {u.status === 'active' ? '正常' : u.status === 'pending' ? '待审核' : '禁用'}
                       </span>
                     </td>
                     <td className="px-4 py-3.5 text-gray-600">
                       {groups.find((g) => g.id === u.group_id)?.name || (u.group_id ? `分组${u.group_id}` : '未分组')}
                     </td>
-                    <td className="px-4 py-3.5 text-gray-600">{u.quota_tokens?.toLocaleString() || '0'}</td>
+                    <td className="px-4 py-3.5 text-gray-600">{u.daily_quota_tokens?.toLocaleString() || '0'}</td>
                     <td className="px-4 py-3.5 text-gray-600">{(u.requests || 0).toLocaleString()}</td>
                     <td className="px-4 py-3.5 font-medium text-gray-800">${(u.cost_usd || 0).toFixed(4)}</td>
                     <td className="px-4 py-3.5 text-orange-600 font-medium">
@@ -392,6 +460,7 @@ export default function AdminUsersPage() {
                               onChange={(e) => setEditState((s) => ({ ...s, status: e.target.value }))}
                               className="px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
                             >
+                              <option value="pending">待审核</option>
                               <option value="active">正常</option>
                               <option value="disabled">禁用</option>
                             </select>
@@ -410,11 +479,11 @@ export default function AdminUsersPage() {
                             </select>
                           </div>
                           <div className="flex items-center gap-1.5">
-                            <label className="text-xs text-gray-500 font-medium">Token 配额</label>
+                            <label className="text-xs text-gray-500 font-medium">Token 每日最大费用</label>
                             <input
                               type="number"
-                              value={editState.quota_tokens}
-                              onChange={(e) => setEditState((s) => ({ ...s, quota_tokens: e.target.value }))}
+                              value={editState.daily_quota_tokens}
+                              onChange={(e) => setEditState((s) => ({ ...s, daily_quota_tokens: e.target.value }))}
                               className="w-32 px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
                             />
                           </div>

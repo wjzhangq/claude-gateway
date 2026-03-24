@@ -76,14 +76,14 @@ func (h *APIKeyHandler) CreateKey(c *gin.Context) {
 	// Load user to get quota
 	var quota int64
 	if user != nil {
-		quota = user.QuotaTokens
+		quota = user.DailyQuotaTokens
 	}
 	h.keyStore.Add(keyStr, &auth.KeyInfo{
 		KeyID:       k.ID,
 		UserID:      userID,
 		Itcode:      user.Itcode,
-		QuotaTokens: quota,
-		UserStatus:  "active",
+		DailyQuotaTokens: quota,
+		UserStatus:  user.Status,
 	})
 
 	c.JSON(http.StatusCreated, gin.H{"key": k})

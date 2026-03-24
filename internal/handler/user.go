@@ -49,11 +49,12 @@ func (h *UserHandler) GetUser(c *gin.Context) {
 // CreateUser godoc: POST /admin/api/users
 func (h *UserHandler) CreateUser(c *gin.Context) {
 	var req struct {
-		Itcode      string `json:"itcode" binding:"required"`
-		Name        string `json:"name"`
-		Role        string `json:"role"`
-		GroupID     int    `json:"group_id"`
-		QuotaTokens int64  `json:"quota_tokens"`
+		Itcode           string `json:"itcode" binding:"required"`
+		Name             string `json:"name"`
+		Role             string `json:"role"`
+		Status           string `json:"status"`
+		GroupID          int    `json:"group_id"`
+		DailyQuotaTokens int64  `json:"daily_quota_tokens"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -62,13 +63,16 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 	if req.Role == "" {
 		req.Role = "user"
 	}
+	if req.Status == "" {
+		req.Status = "pending"
+	}
 	user := &model.User{
-		Itcode:      req.Itcode,
-		Name:        req.Name,
-		Role:        req.Role,
-		GroupID:     req.GroupID,
-		Status:      "active",
-		QuotaTokens: req.QuotaTokens,
+		Itcode:           req.Itcode,
+		Name:             req.Name,
+		Role:             req.Role,
+		GroupID:          req.GroupID,
+		Status:           req.Status,
+		DailyQuotaTokens: req.DailyQuotaTokens,
 	}
 	if err := h.db.CreateUser(user); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -93,11 +97,11 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	oldStatus := user.Status
 
 	var req struct {
-		Name        *string `json:"name"`
-		Status      *string `json:"status"`
-		Role        *string `json:"role"`
-		GroupID     *int    `json:"group_id"`
-		QuotaTokens *int64  `json:"quota_tokens"`
+		Name             *string `json:"name"`
+		Status           *string `json:"status"`
+		Role             *string `json:"role"`
+		GroupID          *int    `json:"group_id"`
+		DailyQuotaTokens *int64  `json:"daily_quota_tokens"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -115,8 +119,8 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	if req.GroupID != nil {
 		user.GroupID = *req.GroupID
 	}
-	if req.QuotaTokens != nil {
-		user.QuotaTokens = *req.QuotaTokens
+	if req.DailyQuotaTokens != nil {
+		user.DailyQuotaTokens = *req.DailyQuotaTokens
 	}
 	if err := h.db.UpdateUser(user); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

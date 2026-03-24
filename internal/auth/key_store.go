@@ -14,7 +14,7 @@ type KeyInfo struct {
 	KeyID       int64
 	UserID      int64
 	Itcode      string
-	QuotaTokens int64  // 0 = unlimited
+	DailyQuotaTokens int64  // 0 = unlimited
 	UserStatus  string // active | disabled
 }
 
@@ -47,7 +47,7 @@ func (ks *KeyStore) Load(keys []model.APIKey, users map[int64]*model.User) {
 			KeyID:       k.ID,
 			UserID:      k.UserID,
 			Itcode:      u.Itcode,
-			QuotaTokens: u.QuotaTokens,
+			DailyQuotaTokens: u.DailyQuotaTokens,
 			UserStatus:  u.Status,
 		}
 	}

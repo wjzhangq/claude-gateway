@@ -33,9 +33,9 @@ func parseNullableTime(s *string) *time.Time {
 func (d *DB) CreateUser(u *model.User) error {
 	now := time.Now()
 	res, err := d.Exec(
-		`INSERT INTO users (itcode, name, role, status, group_id, quota_tokens, created_at, updated_at)
+		`INSERT INTO users (itcode, name, role, status, group_id, daily_quota_tokens, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.Itcode, u.Name, u.Role, u.Status, u.GroupID, u.QuotaTokens, now, now,
+		u.Itcode, u.Name, u.Role, u.Status, u.GroupID, u.DailyQuotaTokens, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create user: %w", err)
@@ -49,9 +49,9 @@ func (d *DB) CreateUser(u *model.User) error {
 func (d *DB) GetUserByItcode(itcode string) (*model.User, error) {
 	u := &model.User{}
 	err := d.QueryRow(
-		`SELECT id, itcode, name, role, status, group_id, quota_tokens, created_at, updated_at
+		`SELECT id, itcode, name, role, status, group_id, daily_quota_tokens, created_at, updated_at
 		 FROM users WHERE itcode = ?`, itcode,
-	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaTokens, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -61,9 +61,9 @@ func (d *DB) GetUserByItcode(itcode string) (*model.User, error) {
 func (d *DB) GetUserByID(id int64) (*model.User, error) {
 	u := &model.User{}
 	err := d.QueryRow(
-		`SELECT id, itcode, name, role, status, group_id, quota_tokens, created_at, updated_at
+		`SELECT id, itcode, name, role, status, group_id, daily_quota_tokens, created_at, updated_at
 		 FROM users WHERE id = ?`, id,
-	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaTokens, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -72,7 +72,7 @@ func (d *DB) GetUserByID(id int64) (*model.User, error) {
 
 func (d *DB) ListUsers() ([]*model.User, error) {
 	rows, err := d.Query(
-		`SELECT id, itcode, name, role, status, group_id, quota_tokens, created_at, updated_at FROM users ORDER BY id`)
+		`SELECT id, itcode, name, role, status, group_id, daily_quota_tokens, created_at, updated_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -80,7 +80,7 @@ func (d *DB) ListUsers() ([]*model.User, error) {
 	var users []*model.User
 	for rows.Next() {
 		u := &model.User{}
-		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.QuotaTokens, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaTokens, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -99,7 +99,7 @@ type UserWithStats struct {
 
 func (d *DB) ListUsersWithStats() ([]*UserWithStats, error) {
 	rows, err := d.Query(
-		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.quota_tokens, u.created_at, u.updated_at,
+		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_tokens, u.created_at, u.updated_at,
 		        MAX(l.created_at) as last_used_at,
 		        COALESCE(COUNT(l.id), 0) as requests,
 		        COALESCE(SUM(l.cost_usd), 0) as cost_usd,
@@ -116,7 +116,7 @@ func (d *DB) ListUsersWithStats() ([]*UserWithStats, error) {
 	for rows.Next() {
 		u := &UserWithStats{}
 		var lastUsed *string
-		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.QuotaTokens,
+		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaTokens,
 			&u.CreatedAt, &u.UpdatedAt, &lastUsed, &u.Requests, &u.CostUSD, &u.OCCostUSD); err != nil {
 			return nil, err
 		}
@@ -129,8 +129,8 @@ func (d *DB) ListUsersWithStats() ([]*UserWithStats, error) {
 func (d *DB) UpdateUser(u *model.User) error {
 	u.UpdatedAt = time.Now()
 	_, err := d.Exec(
-		`UPDATE users SET name=?, role=?, status=?, group_id=?, quota_tokens=?, updated_at=? WHERE id=?`,
-		u.Name, u.Role, u.Status, u.GroupID, u.QuotaTokens, u.UpdatedAt, u.ID,
+		`UPDATE users SET name=?, role=?, status=?, group_id=?, daily_quota_tokens=?, updated_at=? WHERE id=?`,
+		u.Name, u.Role, u.Status, u.GroupID, u.DailyQuotaTokens, u.UpdatedAt, u.ID,
 	)
 	return err
 }
