@@ -351,7 +351,7 @@ export default function AdminUsersPage() {
                 { key: 'role', label: '角色' },
                 { key: 'status', label: '状态' },
                 { key: 'group_id', label: '分组' },
-                { key: 'daily_quota_tokens', label: 'Token 每日最大费用' },
+                { key: 'daily_quota_tokens', label: 'Token限额$' },
                 { key: 'requests', label: '请求数' },
                 { key: 'cost_usd', label: '费用' },
                 { key: 'oc_cost_usd', label: 'OC 费用' },
@@ -479,7 +479,7 @@ export default function AdminUsersPage() {
                             </select>
                           </div>
                           <div className="flex items-center gap-1.5">
-                            <label className="text-xs text-gray-500 font-medium">Token 每日最大费用</label>
+                            <label className="text-xs text-gray-500 font-medium">Token 每日最大费用$</label>
                             <input
                               type="number"
                               value={editState.daily_quota_tokens}

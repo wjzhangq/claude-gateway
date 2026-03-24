@@ -53,6 +53,28 @@ func detectOpenClaw(userAgent string, body []byte) bool {
 	return i3 >= 0
 }
 
+// parseUA extracts the UA product name from User-Agent header.
+// - Takes the part before "/" (if exists)
+// - Truncates to max 12 characters
+// - If isOpenClaw is true, returns "openclaw" directly
+// - Returns lowercase
+func parseUA(userAgent string, isOpenClaw bool) string {
+	if isOpenClaw {
+		return "openclaw"
+	}
+	if userAgent == "" {
+		return ""
+	}
+	ua := userAgent
+	if idx := strings.Index(ua, "/"); idx > 0 {
+		ua = ua[:idx]
+	}
+	if len(ua) > 12 {
+		ua = ua[:12]
+	}
+	return strings.ToLower(ua)
+}
+
 // forward is the shared proxy logic for both OpenAI and Anthropic style endpoints.
 func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	backend := h.lb.Pick()
@@ -193,7 +215,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 
 	in, out := parseStreamTokens(tail)
-	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw)
+	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, c.Request.Header.Get("User-Agent"))
 }
 
 func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw bool) {
@@ -205,7 +227,7 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
-	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw)
+	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, c.Request.Header.Get("User-Agent"))
 }
 
 // parseBodyTokens extracts token counts from a non-streaming JSON response.
@@ -297,7 +319,7 @@ func costUSD(model string, inputTokens, outputTokens int) float64 {
 	return (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice) / 1_000_000
 }
 
-func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw bool) {
+func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw bool, userAgent string) {
 	if h.collector == nil || keyInfo == nil {
 		return
 	}
@@ -307,6 +329,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, stat
 	}
 
 	total := inputTokens + outputTokens
+	ua := parseUA(userAgent, isOpenClaw)
 	h.collector.Emit(stats.Record{
 		UserID:       info.UserID,
 		APIKeyID:     info.KeyID,
@@ -319,6 +342,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, stat
 		StatusCode:   statusCode,
 		Latency:      latency,
 		IsOpenClaw:   isOpenClaw,
+		UA:           ua,
 	})
 }
 

@@ -45,6 +45,7 @@ type UsageLog struct {
 	StatusCode   int       `db:"status_code"   json:"status_code"`
 	Latency      int64     `db:"latency_ms"    json:"latency_ms"`
 	IsOpenClaw   bool      `db:"is_openclaw"   json:"is_openclaw"`
+	UA           string    `db:"ua"            json:"ua"`
 	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
 }
 
@@ -65,6 +66,9 @@ type DailyStats struct {
 type Application struct {
 	ID          int64     `db:"id"          json:"id"`
 	UserID      int64     `db:"user_id"     json:"user_id"`
+	UserItcode  string    `db:"-"           json:"user_itcode"`
+	UserName    string    `db:"-"           json:"user_name"`
+	GroupID     int       `db:"-"           json:"group_id"`
 	Model       string    `db:"model"       json:"model"`
 	Reason      string    `db:"reason"      json:"reason"`
 	Status      string    `db:"status"      json:"status"`

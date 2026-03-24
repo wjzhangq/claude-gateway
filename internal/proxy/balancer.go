@@ -13,7 +13,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/config"
 )
 
-const maxStatusCodes = 10
+const maxStatusCodes = 50
 
 // Backend represents a single upstream API endpoint with its HTTP client.
 type Backend struct {
@@ -26,7 +26,8 @@ type Backend struct {
 	lastErr         atomic.Int64 // unix timestamp of last error
 	disabled        atomic.Bool
 	validationFailed atomic.Bool  // set on startup validation failure; never auto-recovered
-	statusCodes     []int         // last 10 status codes
+	statusCodes     []int         // last 50 status codes
+	statusCodeDist  map[int]int   // distribution of status codes
 	statusMu        sync.Mutex
 }
 
@@ -54,8 +55,21 @@ func (b *Backend) RecordStatusCode(code int) {
 	defer b.statusMu.Unlock()
 	b.statusCodes = append(b.statusCodes, code)
 	if len(b.statusCodes) > maxStatusCodes {
-		b.statusCodes = b.statusCodes[len(b.statusCodes)-maxStatusCodes:]
+		// Remove old code from distribution
+		oldCode := b.statusCodes[0]
+		if b.statusCodeDist[oldCode] > 0 {
+			b.statusCodeDist[oldCode]--
+			if b.statusCodeDist[oldCode] == 0 {
+				delete(b.statusCodeDist, oldCode)
+			}
+		}
+		b.statusCodes = b.statusCodes[1:]
 	}
+	// Add to distribution
+	if b.statusCodeDist == nil {
+		b.statusCodeDist = make(map[int]int)
+	}
+	b.statusCodeDist[code]++
 }
 
 // GetStatusCodes returns the last N status codes.
@@ -64,6 +78,17 @@ func (b *Backend) GetStatusCodes() []int {
 	defer b.statusMu.Unlock()
 	result := make([]int, len(b.statusCodes))
 	copy(result, b.statusCodes)
+	return result
+}
+
+// GetStatusCodeDist returns the distribution of status codes.
+func (b *Backend) GetStatusCodeDist() map[int]int {
+	b.statusMu.Lock()
+	defer b.statusMu.Unlock()
+	result := make(map[int]int)
+	for k, v := range b.statusCodeDist {
+		result[k] = v
+	}
 	return result
 }
 
@@ -85,13 +110,13 @@ func (b *Backend) GetErrorRate() float64 {
 
 // BackendInfo represents backend status info for API responses.
 type BackendInfo struct {
-	Name         string   `json:"name"`
-	URL          string   `json:"url"`
-	Weight       int      `json:"weight"`
-	Disabled     bool     `json:"disabled"`
-	ErrCount     int64    `json:"err_count"`
-	StatusCodes  []int    `json:"status_codes"`
-	ErrorRate    float64  `json:"error_rate"`
+	Name            string   `json:"name"`
+	URL             string   `json:"url"`
+	Weight          int      `json:"weight"`
+	Disabled        bool     `json:"disabled"`
+	ErrCount        int64    `json:"err_count"`
+	StatusCodeDist  map[int]int `json:"status_code_dist"`
+	ErrorRate       float64  `json:"error_rate"`
 }
 
 // GetBackends returns all backends with their status info.
@@ -102,13 +127,13 @@ func (lb *LoadBalancer) GetBackends() []BackendInfo {
 	result := make([]BackendInfo, 0, len(lb.backends))
 	for _, b := range lb.backends {
 		result = append(result, BackendInfo{
-			Name:        b.Name,
-			URL:         b.URL,
-			Weight:      b.Weight,
-			Disabled:    b.disabled.Load(),
-			ErrCount:    b.errCount.Load(),
-			StatusCodes: b.GetStatusCodes(),
-			ErrorRate:   b.GetErrorRate(),
+			Name:           b.Name,
+			URL:            b.URL,
+			Weight:         b.Weight,
+			Disabled:       b.disabled.Load(),
+			ErrCount:       b.errCount.Load(),
+			StatusCodeDist: b.GetStatusCodeDist(),
+			ErrorRate:      b.GetErrorRate(),
 		})
 	}
 	return result

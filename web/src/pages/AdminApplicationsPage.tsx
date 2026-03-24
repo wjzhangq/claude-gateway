@@ -1,15 +1,23 @@
 import { useEffect, useState } from 'react'
-import { adminListApplications, adminReviewApplication } from '../api'
+import { adminListApplications, adminReviewApplication, adminGetGroups } from '../api'
 import { formatDate } from '../utils/time'
 
 interface Application {
   id: number
   user_id: number
+  user_itcode: string
+  user_name: string
+  group_id: number
   model: string
   reason: string
   status: string
   review_note: string | null
   created_at: string
+}
+
+interface Group {
+  id: number
+  name: string
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -38,10 +46,12 @@ function SkeletonRow() {
 
 export default function AdminApplicationsPage() {
   const [apps, setApps] = useState<Application[]>([])
+  const [groups, setGroups] = useState<Group[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('pending')
   const [reviewId, setReviewId] = useState<number | null>(null)
   const [note, setNote] = useState('')
+  const [selectedGroup, setSelectedGroup] = useState<number | null>(null)
   const [submitting, setSubmitting] = useState(false)
 
   const load = (status: string) => {
@@ -52,14 +62,18 @@ export default function AdminApplicationsPage() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load(filter) }, [filter])
+  useEffect(() => {
+    load(filter)
+    adminGetGroups().then((res) => setGroups(res.data.groups || [])).catch(() => {})
+  }, [filter])
 
   const handleReview = async (id: number, status: 'approved' | 'rejected') => {
     setSubmitting(true)
     try {
-      await adminReviewApplication(id, status, note)
+      await adminReviewApplication(id, status, note, status === 'approved' && selectedGroup ? selectedGroup : undefined)
       setReviewId(null)
       setNote('')
+      setSelectedGroup(null)
       load(filter)
     } finally {
       setSubmitting(false)
@@ -93,7 +107,7 @@ export default function AdminApplicationsPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['用户ID', '模型', '申请理由', '状态', '审批备注', '申请时间', '操作'].map((h) => (
+              {['用户itcode', '用户姓名', '分组', '模型', '申请理由', '状态', '审批备注', '申请时间', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -105,13 +119,15 @@ export default function AdminApplicationsPage() {
               Array.from({ length: 4 }).map((_, i) => <SkeletonRow key={i} />)
             ) : apps.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td>
+                <td colSpan={9} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td>
               </tr>
             ) : (
               apps.map((app) => (
                 <>
                   <tr key={app.id} className="hover:bg-gray-50/50 transition-colors">
-                    <td className="px-4 py-3.5 text-gray-500 text-xs">{app.user_id}</td>
+                    <td className="px-4 py-3.5 text-gray-500 text-xs">{app.user_itcode}</td>
+                    <td className="px-4 py-3.5 text-gray-500 text-xs">{app.user_name || '—'}</td>
+                    <td className="px-4 py-3.5 text-gray-500 text-xs">{app.group_id || '未分组'}</td>
                     <td className="px-4 py-3.5 font-mono text-xs text-gray-700">{app.model}</td>
                     <td className="px-4 py-3.5 text-gray-500 max-w-xs truncate">{app.reason}</td>
                     <td className="px-4 py-3.5">
@@ -126,7 +142,10 @@ export default function AdminApplicationsPage() {
                     <td className="px-4 py-3.5">
                       {app.status === 'pending' && (
                         <button
-                          onClick={() => setReviewId(reviewId === app.id ? null : app.id)}
+                          onClick={() => {
+                            setReviewId(reviewId === app.id ? null : app.id)
+                            setSelectedGroup(app.group_id || null)
+                          }}
                           className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors"
                         >
                           审批
@@ -136,8 +155,18 @@ export default function AdminApplicationsPage() {
                   </tr>
                   {reviewId === app.id && (
                     <tr key={`review-${app.id}`}>
-                      <td colSpan={7} className="px-4 py-3 bg-blue-50/50 border-l-2 border-blue-300">
+                      <td colSpan={9} className="px-4 py-3 bg-blue-50/50 border-l-2 border-blue-300">
                         <div className="flex items-center gap-3">
+                          <select
+                            value={selectedGroup || ''}
+                            onChange={(e) => setSelectedGroup(e.target.value ? Number(e.target.value) : null)}
+                            className="px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                          >
+                            <option value="">选择分组（可选）</option>
+                            {groups.map((g) => (
+                              <option key={g.id} value={g.id}>{g.name}</option>
+                            ))}
+                          </select>
                           <input
                             value={note}
                             onChange={(e) => setNote(e.target.value)}

@@ -39,19 +39,19 @@ func (d *DB) GetApplicationByID(id int64) (*model.Application, error) {
 }
 
 func (d *DB) ListApplications(userID int64, status string) ([]*model.Application, error) {
-	where := "WHERE 1=1"
+	where := "WHERE a.user_id = u.id"
 	args := []interface{}{}
 	if userID > 0 {
-		where += " AND user_id = ?"
+		where += " AND a.user_id = ?"
 		args = append(args, userID)
 	}
 	if status != "" {
-		where += " AND status = ?"
+		where += " AND a.status = ?"
 		args = append(args, status)
 	}
 	rows, err := d.Query(
-		`SELECT id, user_id, model, reason, status, reviewer_id, review_note, created_at, updated_at
-		 FROM applications `+where+` ORDER BY created_at DESC`, args...)
+		`SELECT a.id, a.user_id, u.itcode, u.name, u.group_id, a.model, a.reason, a.status, a.reviewer_id, a.review_note, a.created_at, a.updated_at
+		 FROM applications a JOIN users u ON a.user_id = u.id `+where+` ORDER BY a.created_at DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (d *DB) ListApplications(userID int64, status string) ([]*model.Application
 	var apps []*model.Application
 	for rows.Next() {
 		a := &model.Application{}
-		if err := rows.Scan(&a.ID, &a.UserID, &a.Model, &a.Reason, &a.Status,
+		if err := rows.Scan(&a.ID, &a.UserID, &a.UserItcode, &a.UserName, &a.GroupID, &a.Model, &a.Reason, &a.Status,
 			&a.ReviewerID, &a.ReviewNote, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -74,4 +74,21 @@ func (d *DB) ReviewApplication(id, reviewerID int64, status, note string) error 
 		status, reviewerID, note, time.Now(), id,
 	)
 	return err
+}
+
+func (d *DB) GetApprovedModelsByUserID(userID int64) ([]string, error) {
+	rows, err := d.Query(`SELECT model FROM applications WHERE user_id = ? AND status = 'approved'`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var models []string
+	for rows.Next() {
+		var m string
+		if err := rows.Scan(&m); err != nil {
+			return nil, err
+		}
+		models = append(models, m)
+	}
+	return models, rows.Err()
 }

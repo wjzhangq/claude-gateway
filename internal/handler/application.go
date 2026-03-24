@@ -72,8 +72,9 @@ func (h *ApplicationHandler) Review(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Status string `json:"status" binding:"required"` // approved | rejected
-		Note   string `json:"note"`
+		Status   string `json:"status" binding:"required"` // approved | rejected
+		Note     string `json:"note"`
+		GroupID  *int   `json:"group_id"` // optional: set user's group when approving
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -84,10 +85,27 @@ func (h *ApplicationHandler) Review(c *gin.Context) {
 		return
 	}
 
+	// Get application to find user
+	app, err := h.db.GetApplicationByID(id)
+	if err != nil || app == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "application not found"})
+		return
+	}
+
 	reviewerID := c.GetInt64("session_user_id")
 	if err := h.db.ReviewApplication(id, reviewerID, req.Status, req.Note); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+
+	// If approving and group_id provided, update user's group
+	if req.Status == "approved" && req.GroupID != nil {
+		user, err := h.db.GetUserByID(app.UserID)
+		if err == nil && user != nil {
+			user.GroupID = *req.GroupID
+			h.db.UpdateUser(user)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"status": req.Status})
 }

@@ -14,13 +14,14 @@ interface UsageLog {
   cost_usd: number
   status_code: number
   is_openclaw: boolean
+  ua: string
   created_at: string
 }
 
 function SkeletonRow() {
   return (
     <tr>
-      {[130, 70, 70, 80, 70, 60, 100].map((w, i) => (
+      {[130, 70, 70, 80, 70, 60, 60, 100].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -86,7 +87,7 @@ export default function UsagePage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['模型', '输入 Token', '输出 Token', '总 Token', '费用', '状态', '时间'].map((h) => (
+              {['模型', '输入 Token', '输出 Token', '总 Token', '费用', '状态', 'UA', '时间'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -98,7 +99,7 @@ export default function UsagePage() {
               Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
             ) : logs.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td>
+                <td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td>
               </tr>
             ) : (
               logs.map((log) => (
@@ -122,6 +123,7 @@ export default function UsagePage() {
                       {log.status_code}
                     </span>
                   </td>
+                  <td className="px-4 py-3.5 text-gray-600 text-xs font-mono">{log.ua}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
                     {formatTime(log.created_at)}
                   </td>

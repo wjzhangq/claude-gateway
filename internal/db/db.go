@@ -60,6 +60,12 @@ func (d *DB) migrate() error {
 		return err
 	}
 
+	// Add ua column if it doesn't exist (for existing databases)
+	_, err = d.Exec(`ALTER TABLE usage_logs ADD COLUMN ua TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
 	return nil
 }
 
@@ -101,6 +107,7 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     status_code   INTEGER NOT NULL DEFAULT 200,
     latency_ms    INTEGER NOT NULL DEFAULT 0,
     is_openclaw   INTEGER NOT NULL DEFAULT 0,
+    ua            TEXT    NOT NULL DEFAULT '',
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id    ON usage_logs(user_id);

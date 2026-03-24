@@ -16,6 +16,7 @@ type KeyInfo struct {
 	Itcode      string
 	DailyQuotaTokens int64  // 0 = unlimited
 	UserStatus  string // active | disabled
+	CreatedAt   time.Time // key creation time
 }
 
 // KeyStore holds all active API keys in memory for O(1) lookup.
@@ -36,9 +37,6 @@ func (ks *KeyStore) Load(keys []model.APIKey, users map[int64]*model.User) {
 		if k.Status != "active" {
 			continue
 		}
-		if k.ExpiresAt != nil && time.Now().After(*k.ExpiresAt) {
-			continue
-		}
 		u, ok := users[k.UserID]
 		if !ok || u.Status != "active" {
 			continue
@@ -49,6 +47,7 @@ func (ks *KeyStore) Load(keys []model.APIKey, users map[int64]*model.User) {
 			Itcode:      u.Itcode,
 			DailyQuotaTokens: u.DailyQuotaTokens,
 			UserStatus:  u.Status,
+			CreatedAt:  k.CreatedAt,
 		}
 	}
 	ks.mu.Lock()
@@ -62,6 +61,13 @@ func (ks *KeyStore) Get(key string) *KeyInfo {
 	info := ks.keys[key]
 	ks.mu.RUnlock()
 	return info
+}
+
+// Count returns the number of keys in the store.
+func (ks *KeyStore) Count() int {
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	return len(ks.keys)
 }
 
 // Add inserts or updates a key in memory.

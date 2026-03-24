@@ -99,6 +99,9 @@ func main() {
 		v1.Any("/*path", proxyH.Passthrough)
 	}
 
+	// Public API (no auth required)
+	r.POST("/api/check_key", keyH.CheckKey)
+
 	// User API routes (session auth for web console)
 	apiUser := r.Group("/api")
 	apiUser.Use(middleware.SessionAuthMiddleware())
@@ -171,6 +174,7 @@ func loadKeyStore(database *db.DB, ks *auth.KeyStore) error {
 	for i, k := range keys {
 		apiKeys[i] = *k
 	}
+	logger.Infof("loadKeyStore: loading %d active keys, %d users", len(keys), len(users))
 	ks.Load(apiKeys, userMap)
 	return nil
 }

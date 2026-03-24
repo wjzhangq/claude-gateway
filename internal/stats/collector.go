@@ -21,6 +21,7 @@ type Record struct {
 	StatusCode   int
 	Latency      time.Duration
 	IsOpenClaw   bool
+	UA           string
 }
 
 // Collector receives usage records asynchronously and batch-writes them to the DB.
@@ -66,6 +67,7 @@ func (c *Collector) Flush() {
 				StatusCode:   r.StatusCode,
 				Latency:      r.Latency.Milliseconds(),
 				IsOpenClaw:   r.IsOpenClaw,
+				UA:           r.UA,
 			}
 			if err := c.db.InsertUsageLog(log); err != nil {
 				logger.Errorf("flush usage log: %v", err)
@@ -90,6 +92,7 @@ func (c *Collector) worker() {
 			StatusCode:   r.StatusCode,
 			Latency:      r.Latency.Milliseconds(),
 			IsOpenClaw:   r.IsOpenClaw,
+			UA:           r.UA,
 		}
 		if err := c.db.InsertUsageLog(log); err != nil {
 			logger.Errorf("insert usage log: %v", err)

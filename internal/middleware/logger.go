@@ -35,9 +35,27 @@ func RequestLogger() gin.HandlerFunc {
 			if backend, ok := c.Get("proxy_backend"); ok {
 				fields["backend"] = backend
 			}
+			// Extract User-Agent product name (before /), max 12 chars
+			if ua := c.GetHeader("User-Agent"); ua != "" {
+				product := ua
+				if idx := strings.Index(product, "/"); idx > 0 {
+					product = product[:idx]
+				}
+				if len(product) > 12 {
+					product = product[:12]
+				}
+				fields["ua"] = product
+			}
+			// First try to get itcode from authenticated KeyInfo
 			if info, ok := c.Get(CtxKeyInfo); ok {
 				if ki, ok := info.(*auth.KeyInfo); ok && ki.Itcode != "" {
 					fields["itcode"] = ki.Itcode
+				}
+			}
+			// If auth failed, at least show the key prefix for debugging
+			if _, ok := c.Get(CtxKeyInfo); !ok {
+				if keyPrefix, ok := c.Get("raw_api_key"); ok {
+					fields["key"] = keyPrefix
 				}
 			}
 			if _, ok := c.Get("is_openclaw"); ok {

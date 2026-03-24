@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { adminGetBackendStats, adminGetBackendStatus } from '../api'
 import { toDateStr } from '../utils/time'
 
@@ -17,7 +17,7 @@ interface BackendStatus {
   weight: number
   disabled: boolean
   err_count: number
-  status_codes: number[]
+  status_code_dist: Record<number, number>
   error_rate: number
 }
 
@@ -81,6 +81,34 @@ export default function AdminBackendsPage() {
   const totalTokens = stats.reduce((s, b) => s + b.total_tokens, 0)
   const totalCost = stats.reduce((s, b) => s + b.cost_usd, 0)
 
+  // Aggregate status code distribution from all backends
+  const combinedStatusDist = backendStatus.reduce((acc, b) => {
+    for (const [code, count] of Object.entries(b.status_code_dist || {})) {
+      const c = parseInt(code, 10)
+      acc[c] = (acc[c] || 0) + count
+    }
+    return acc
+  }, {} as Record<number, number>)
+
+  const totalStatusCodes = Object.values(combinedStatusDist).reduce((s, c) => s + c, 0)
+
+  // Status code colors and labels
+  const getStatusInfo = (code: number) => {
+    if (code === 200) return { label: '200 正常', color: 'bg-green-500', bg: 'bg-green-50', text: 'text-green-700' }
+    if (code === 419) return { label: '419 额度超', color: 'bg-orange-500', bg: 'bg-orange-50', text: 'text-orange-700' }
+    if (code === 503) return { label: '503 服务异常', color: 'bg-red-500', bg: 'bg-red-50', text: 'text-red-700' }
+    return { label: `${code}`, color: 'bg-gray-400', bg: 'bg-gray-50', text: 'text-gray-600' }
+  }
+
+  const pieData = Object.entries(combinedStatusDist)
+    .map(([code, count]) => ({
+      code: parseInt(code, 10),
+      count,
+      pct: totalStatusCodes > 0 ? (count / totalStatusCodes) * 100 : 0,
+      ...getStatusInfo(parseInt(code, 10))
+    }))
+    .sort((a, b) => b.count - a.count)
+
   return (
     <div className="p-8">
       <div className="flex items-center gap-4 mb-7">
@@ -137,62 +165,55 @@ export default function AdminBackendsPage() {
         ) : null}
       </div>
 
-      {/* Real-time backend status */}
+      {/* HTTP Status Code Distribution - Last 50 requests */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden mb-6">
         <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-700">实时状态 (最近10次)</h3>
+          <h3 className="text-sm font-semibold text-gray-700">HTTP 状态码分布 (最近50请求)</h3>
           <span className="text-xs text-gray-400">每5秒刷新</span>
         </div>
-        <div className="divide-y divide-gray-50">
+        <div className="p-6">
           {statusLoading ? (
-            <div className="px-4 py-6 text-center text-sm text-gray-400">加载中...</div>
-          ) : backendStatus.length === 0 ? (
-            <div className="px-4 py-6 text-center text-sm text-gray-400">暂无后端</div>
+            <div className="text-center text-sm text-gray-400">加载中...</div>
+          ) : totalStatusCodes === 0 ? (
+            <div className="text-center text-sm text-gray-400">暂无请求数据</div>
           ) : (
-            backendStatus.map((b) => (
-              <div key={b.name} className="px-4 py-3 flex items-center gap-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-sm font-semibold text-gray-700">{b.name}</span>
-                    {b.disabled ? (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">已禁用</span>
-                    ) : (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-50 text-green-700">正常</span>
-                    )}
-                  </div>
-                  <div className="text-xs text-gray-400 truncate">{b.url}</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-500">权重: {b.weight}</span>
-                </div>
-                <div className="flex items-center gap-1">
-                  {b.status_codes.length > 0 ? (
-                    b.status_codes.map((code, i) => (
-                      <span
-                        key={i}
-                        className={`inline-flex items-center justify-center w-8 h-6 text-xs font-mono rounded ${
-                          code >= 200 && code < 300
-                            ? 'bg-green-50 text-green-700'
-                            : code >= 400
-                            ? 'bg-red-50 text-red-700'
-                            : 'bg-yellow-50 text-yellow-700'
-                        }`}
-                      >
-                        {code}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="text-xs text-gray-400">暂无</span>
-                  )}
-                </div>
-                <div className="w-24 text-right">
-                  <span className={`text-sm font-medium ${b.error_rate > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                    {b.error_rate.toFixed(0)}%
-                  </span>
-                  <span className="text-xs text-gray-400 ml-1">非2xx</span>
-                </div>
+            <div className="flex items-center gap-8">
+              {/* Pie chart visualization */}
+              <div className="relative w-32 h-32 flex-shrink-0">
+                <svg viewBox="0 0 36 36" className="w-32 h-32 transform -rotate-90">
+                  {pieData.reduce((acc, d) => {
+                    const prev = acc.prev
+                    const dash = (d.pct / 100) * 100
+                    acc.elements.push(
+                      <circle
+                        key={d.code}
+                        cx="18"
+                        cy="18"
+                        r="15.9155"
+                        fill="transparent"
+                        stroke={d.code === 200 ? '#22c55e' : d.code === 419 ? '#f97316' : d.code === 503 ? '#ef4444' : '#9ca3af'}
+                        strokeWidth="4"
+                        strokeDasharray={`${dash} ${100 - dash}`}
+                        strokeDashoffset={-prev}
+                      />
+                    )
+                    acc.prev += dash
+                    return acc
+                  }, { elements: [] as React.ReactNode[], prev: 0 }).elements}
+                </svg>
               </div>
-            ))
+              {/* Legend */}
+              <div className="flex-1 grid grid-cols-2 gap-3">
+                {pieData.map((d) => (
+                  <div key={d.code} className="flex items-center gap-2">
+                    <span className={`w-3 h-3 rounded-full ${d.color}`} />
+                    <span className={`text-sm font-medium ${d.text}`}>{d.code}</span>
+                    <span className="text-sm text-gray-500">{d.label?.replace(`${d.code} `, '') || ''}</span>
+                    <span className="text-sm text-gray-400 ml-auto">{d.count} ({d.pct.toFixed(1)}%)</span>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       </div>

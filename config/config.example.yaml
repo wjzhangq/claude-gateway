@@ -21,6 +21,15 @@ auth:
 
 usage_sync_time: 5m       # 使用量聚合间隔
 
+# 用户分组（用于费用统计和用户管理）
+groups:
+  - id: 1
+    name: "研发组"
+  - id: 2
+    name: "产品组"
+  - id: 3
+    name: "运营组"
+
 backends:
   # 主要后端（权重越高，分配流量越多）
   - name: claude-primary

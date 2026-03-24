@@ -149,3 +149,26 @@ func (h *APIKeyHandler) reloadKeys() {
 	}
 	h.keyStore.Load(apiKeys, userMap)
 }
+
+// CheckKey godoc: POST /api/check_key (no auth required)
+func (h *APIKeyHandler) CheckKey(c *gin.Context) {
+	var req struct {
+		Key string `json:"key" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "key is required"})
+		return
+	}
+
+	// Look up key in memory key store
+	info := h.keyStore.Get(req.Key)
+	if info == nil {
+		c.JSON(http.StatusOK, gin.H{"itcode": "", "created_at": ""})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"itcode":      info.Itcode,
+		"created_at":  info.CreatedAt.Format("2006-01-02T15:04:05Z"),
+	})
+}

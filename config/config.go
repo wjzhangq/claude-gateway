@@ -22,8 +22,8 @@ type Config struct {
 
 // Group represents a user group for organizing users and tracking usage.
 type Group struct {
-	ID   int    `yaml:"id"`
-	Name string `yaml:"name"`
+	ID   int    `yaml:"id" json:"id"`
+	Name string `yaml:"name" json:"name"`
 }
 
 type ServerConfig struct {

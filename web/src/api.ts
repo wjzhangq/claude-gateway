@@ -78,8 +78,9 @@ export const adminListApplications = (status?: string) =>
 export const adminReviewApplication = (
   id: number,
   status: 'approved' | 'rejected',
-  note?: string
-) => api.put(`/admin/api/applications/${id}/review`, { status, note })
+  note?: string,
+  groupId?: number
+) => api.put(`/admin/api/applications/${id}/review`, { status, note, group_id: groupId })
 
 // Admin - Backends
 export const adminGetBackendStats = (params?: Record<string, string>) =>

@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/logger"
 )
 
 const (
@@ -32,8 +33,16 @@ func AuthMiddleware(ks *auth.KeyStore) gin.HandlerFunc {
 			raw = strings.TrimPrefix(raw, "bearer ")
 		}
 
+		// Store raw key for logging even if auth fails
+		keyPrefix := raw
+		if len(keyPrefix) > 8 {
+			keyPrefix = keyPrefix[:8] + "..."
+		}
+		c.Set("raw_api_key", keyPrefix)
+
 		info := ks.Get(raw)
 		if info == nil {
+			logger.Debugf("auth: key not found in store (total keys: %d, key prefix: %s)", ks.Count(), keyPrefix)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired api key"})
 			return
 		}
