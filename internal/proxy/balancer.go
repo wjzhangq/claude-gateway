@@ -13,6 +13,8 @@ import (
 	"github.com/wjzhangq/claude-gateway/config"
 )
 
+const maxStatusCodes = 10
+
 // Backend represents a single upstream API endpoint with its HTTP client.
 type Backend struct {
 	Name            string
@@ -24,6 +26,8 @@ type Backend struct {
 	lastErr         atomic.Int64 // unix timestamp of last error
 	disabled        atomic.Bool
 	validationFailed atomic.Bool  // set on startup validation failure; never auto-recovered
+	statusCodes     []int         // last 10 status codes
+	statusMu        sync.Mutex
 }
 
 // Client returns the backend's dedicated HTTP client.
@@ -42,6 +46,72 @@ func (b *Backend) RecordError() {
 func (b *Backend) RecordSuccess() {
 	b.errCount.Store(0)
 	b.disabled.Store(false)
+}
+
+// RecordStatusCode records a status code for the last N requests tracking.
+func (b *Backend) RecordStatusCode(code int) {
+	b.statusMu.Lock()
+	defer b.statusMu.Unlock()
+	b.statusCodes = append(b.statusCodes, code)
+	if len(b.statusCodes) > maxStatusCodes {
+		b.statusCodes = b.statusCodes[len(b.statusCodes)-maxStatusCodes:]
+	}
+}
+
+// GetStatusCodes returns the last N status codes.
+func (b *Backend) GetStatusCodes() []int {
+	b.statusMu.Lock()
+	defer b.statusMu.Unlock()
+	result := make([]int, len(b.statusCodes))
+	copy(result, b.statusCodes)
+	return result
+}
+
+// GetErrorRate returns the non-2xx error rate from the last N status codes.
+func (b *Backend) GetErrorRate() float64 {
+	b.statusMu.Lock()
+	defer b.statusMu.Unlock()
+	if len(b.statusCodes) == 0 {
+		return 0
+	}
+	non2xx := 0
+	for _, code := range b.statusCodes {
+		if code < 200 || code >= 300 {
+			non2xx++
+		}
+	}
+	return float64(non2xx) / float64(len(b.statusCodes)) * 100
+}
+
+// BackendInfo represents backend status info for API responses.
+type BackendInfo struct {
+	Name         string   `json:"name"`
+	URL          string   `json:"url"`
+	Weight       int      `json:"weight"`
+	Disabled     bool     `json:"disabled"`
+	ErrCount     int64    `json:"err_count"`
+	StatusCodes  []int    `json:"status_codes"`
+	ErrorRate    float64  `json:"error_rate"`
+}
+
+// GetBackends returns all backends with their status info.
+func (lb *LoadBalancer) GetBackends() []BackendInfo {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	result := make([]BackendInfo, 0, len(lb.backends))
+	for _, b := range lb.backends {
+		result = append(result, BackendInfo{
+			Name:        b.Name,
+			URL:         b.URL,
+			Weight:      b.Weight,
+			Disabled:    b.disabled.Load(),
+			ErrCount:    b.errCount.Load(),
+			StatusCodes: b.GetStatusCodes(),
+			ErrorRate:   b.GetErrorRate(),
+		})
+	}
+	return result
 }
 
 // LoadBalancer selects backends using weighted random selection with health tracking.

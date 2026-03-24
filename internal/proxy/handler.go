@@ -131,6 +131,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	}
 	defer resp.Body.Close()
 	backend.RecordSuccess()
+	backend.RecordStatusCode(resp.StatusCode)
 
 	// Expose backend name for the request logger
 	c.Set("proxy_backend", backend.Name)
@@ -260,30 +261,35 @@ func parseStreamTokens(data []byte) (input, output int) {
 }
 
 // costUSD estimates cost based on token counts and model.
-// Uses approximate pricing; adjust as needed.
+// Pricing reference: https://www.anthropic.com/pricing & https://openai.com/api-pricing/
 func costUSD(model string, inputTokens, outputTokens int) float64 {
-	// Default to claude-3-5-sonnet pricing as fallback
+	// Default fallback
 	inputPrice := 3.0   // per 1M tokens
 	outputPrice := 15.0 // per 1M tokens
 
 	m := strings.ToLower(model)
 	switch {
-	case strings.Contains(m, "claude-opus-4") || strings.Contains(m, "opus-4"):
-		inputPrice, outputPrice = 15.0, 75.0
-	case strings.Contains(m, "claude-sonnet-4") || strings.Contains(m, "sonnet-4"):
-		inputPrice, outputPrice = 3.0, 15.0
-	case strings.Contains(m, "claude-haiku-3-5") || strings.Contains(m, "haiku-3-5"):
-		inputPrice, outputPrice = 0.8, 4.0
+	// Claude Haiku
 	case strings.Contains(m, "claude-haiku"):
-		inputPrice, outputPrice = 0.25, 1.25
+		inputPrice, outputPrice = 1.0, 5.0
+	// Claude Opus (4.5/4.6)
 	case strings.Contains(m, "claude-opus"):
-		inputPrice, outputPrice = 15.0, 75.0
+		inputPrice, outputPrice = 5.0, 25.0
+	// Claude Sonnet (4.5/4.6)
 	case strings.Contains(m, "claude-sonnet"):
 		inputPrice, outputPrice = 3.0, 15.0
+	// GPT-5
+	case strings.Contains(m, "gpt-5.3-codex"):
+		inputPrice, outputPrice = 1.75, 14.0
+	case strings.Contains(m, "gpt-5.4"):
+		inputPrice, outputPrice = 2.5, 15.0
+	// GPT-4o
 	case strings.Contains(m, "gpt-4o"):
 		inputPrice, outputPrice = 2.5, 10.0
+	// GPT-4
 	case strings.Contains(m, "gpt-4"):
 		inputPrice, outputPrice = 30.0, 60.0
+	// GPT-3.5
 	case strings.Contains(m, "gpt-3.5"):
 		inputPrice, outputPrice = 0.5, 1.5
 	}

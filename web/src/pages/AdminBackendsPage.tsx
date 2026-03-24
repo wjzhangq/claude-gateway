@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { adminGetBackendStats } from '../api'
+import { adminGetBackendStats, adminGetBackendStatus } from '../api'
 import { toDateStr } from '../utils/time'
 
 interface BackendStat {
@@ -9,6 +9,16 @@ interface BackendStat {
   cost_usd: number
   avg_latency_ms: number
   error_count: number
+}
+
+interface BackendStatus {
+  name: string
+  url: string
+  weight: number
+  disabled: boolean
+  err_count: number
+  status_codes: number[]
+  error_rate: number
 }
 
 function SkeletonCard() {
@@ -36,6 +46,8 @@ export default function AdminBackendsPage() {
   const [date, setDate] = useState(() => toDateStr(new Date()))
   const [stats, setStats] = useState<BackendStat[]>([])
   const [loading, setLoading] = useState(true)
+  const [backendStatus, setBackendStatus] = useState<BackendStatus[]>([])
+  const [statusLoading, setStatusLoading] = useState(true)
 
   const load = (d: string) => {
     setLoading(true)
@@ -45,7 +57,20 @@ export default function AdminBackendsPage() {
       .finally(() => setLoading(false))
   }
 
+  const loadStatus = () => {
+    setStatusLoading(true)
+    adminGetBackendStatus()
+      .then((res) => setBackendStatus(res.data || []))
+      .catch(() => {})
+      .finally(() => setStatusLoading(false))
+  }
+
   useEffect(() => { load(date) }, [date])
+  useEffect(() => { loadStatus() }, [])
+  useEffect(() => {
+    const interval = setInterval(loadStatus, 5000)
+    return () => clearInterval(interval)
+  }, [])
 
   const shiftDate = (days: number) => {
     setDate((d) => toDateStr(new Date(new Date(d).getTime() + days * 86400000)))
@@ -110,6 +135,66 @@ export default function AdminBackendsPage() {
             </div>
           </>
         ) : null}
+      </div>
+
+      {/* Real-time backend status */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden mb-6">
+        <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700">实时状态 (最近10次)</h3>
+          <span className="text-xs text-gray-400">每5秒刷新</span>
+        </div>
+        <div className="divide-y divide-gray-50">
+          {statusLoading ? (
+            <div className="px-4 py-6 text-center text-sm text-gray-400">加载中...</div>
+          ) : backendStatus.length === 0 ? (
+            <div className="px-4 py-6 text-center text-sm text-gray-400">暂无后端</div>
+          ) : (
+            backendStatus.map((b) => (
+              <div key={b.name} className="px-4 py-3 flex items-center gap-4">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm font-semibold text-gray-700">{b.name}</span>
+                    {b.disabled ? (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-500">已禁用</span>
+                    ) : (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-50 text-green-700">正常</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-gray-400 truncate">{b.url}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-gray-500">权重: {b.weight}</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  {b.status_codes.length > 0 ? (
+                    b.status_codes.map((code, i) => (
+                      <span
+                        key={i}
+                        className={`inline-flex items-center justify-center w-8 h-6 text-xs font-mono rounded ${
+                          code >= 200 && code < 300
+                            ? 'bg-green-50 text-green-700'
+                            : code >= 400
+                            ? 'bg-red-50 text-red-700'
+                            : 'bg-yellow-50 text-yellow-700'
+                        }`}
+                      >
+                        {code}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-xs text-gray-400">暂无</span>
+                  )}
+                </div>
+                <div className="w-24 text-right">
+                  <span className={`text-sm font-medium ${b.error_rate > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                    {b.error_rate.toFixed(0)}%
+                  </span>
+                  <span className="text-xs text-gray-400 ml-1">非2xx</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">

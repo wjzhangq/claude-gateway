@@ -126,6 +126,9 @@ func main() {
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
 		adminAPI.GET("/usage/user-daily", statsH.GetUserDailyCostRanking)
 		adminAPI.GET("/backends/stats", statsH.GetBackendStats)
+		adminAPI.GET("/backends/status", func(c *gin.Context) {
+			c.JSON(200, lb.GetBackends())
+		})
 		adminAPI.GET("/groups", statsH.GetGroups)
 		adminAPI.GET("/groups/stats", statsH.GetGroupStats)
 		adminAPI.GET("/applications", appH.ListAll)

@@ -84,6 +84,7 @@ export const adminReviewApplication = (
 // Admin - Backends
 export const adminGetBackendStats = (params?: Record<string, string>) =>
   api.get('/admin/api/backends/stats', { params })
+export const adminGetBackendStatus = () => api.get('/admin/api/backends/status')
 
 // Admin - Groups
 export const adminGetGroups = () => api.get('/admin/api/groups')
