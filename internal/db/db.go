@@ -78,6 +78,12 @@ func (d *DB) migrate() error {
 		return err
 	}
 
+	// Add last_used_at column to api_keys if it doesn't exist
+	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN last_used_at DATETIME`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
 	return nil
 }
 
@@ -95,13 +101,14 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id    INTEGER NOT NULL REFERENCES users(id),
-    key        TEXT    NOT NULL UNIQUE,
-    name       TEXT    NOT NULL DEFAULT '',
-    status     TEXT    NOT NULL DEFAULT 'active',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id),
+    key          TEXT    NOT NULL UNIQUE,
+    name         TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL DEFAULT 'active',
+    last_used_at DATETIME,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
 

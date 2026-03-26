@@ -224,9 +224,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// Stream or buffer
 	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	if isStream {
-		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start, isOpenClaw, isDowngraded)
+		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isDowngraded)
 	} else {
-		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start, isOpenClaw, isDowngraded)
+		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isDowngraded)
 	}
 }
 
@@ -292,7 +292,7 @@ func (h *Handler) replaceModelInBody(body []byte, oldModel, newModel string) []b
 
 const streamTailSize = 2048
 
-func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw, isDowngraded bool) {
+func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isDowngraded bool) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -328,10 +328,10 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 
 	in, out := parseStreamTokens(tail)
-	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isDowngraded, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
-func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw, isDowngraded bool) {
+func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isDowngraded bool) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("read response body: %v", err)
@@ -340,7 +340,7 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
-	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isDowngraded, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
 // parseBodyTokens extracts token counts from a non-streaming JSON response.
@@ -432,7 +432,7 @@ func costUSD(model string, inputTokens, outputTokens int) float64 {
 	return (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice) / 1_000_000
 }
 
-func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isDowngraded bool, userAgent string) {
+func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isDowngraded bool, userAgent string) {
 	if h.collector == nil || keyInfo == nil {
 		return
 	}
@@ -446,6 +446,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, stat
 	h.collector.Emit(stats.Record{
 		UserID:       info.UserID,
 		APIKeyID:     info.KeyID,
+		KeyStr:       keyStr,
 		Model:        model,
 		Backend:      backendName,
 		InputTokens:  inputTokens,

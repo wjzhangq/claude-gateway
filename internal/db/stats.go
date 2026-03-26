@@ -25,6 +25,68 @@ func (d *DB) InsertUsageLog(log *model.UsageLog) error {
 	return nil
 }
 
+// BatchInsertUsageLogs writes multiple usage records in a single transaction.
+func (d *DB) BatchInsertUsageLogs(logs []*model.UsageLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	stmt, err := tx.Prepare(
+		`INSERT INTO usage_logs
+		 (user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("prepare stmt: %w", err)
+	}
+	defer stmt.Close()
+	now := time.Now()
+	for _, log := range logs {
+		ts := now
+		if !log.CreatedAt.IsZero() {
+			ts = log.CreatedAt
+		}
+		if _, err := stmt.Exec(
+			log.UserID, log.APIKeyID, log.Model, log.Backend,
+			log.InputTokens, log.OutputTokens, log.TotalTokens,
+			log.CostUSD, log.StatusCode, log.Latency,
+			log.IsOpenClaw, log.IsDowngraded, log.UA, ts,
+		); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("exec insert: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// BatchUpdateKeyLastUsedAt updates last_used_at for multiple keys in one transaction.
+// keyTimes maps api_key_id -> last used time.
+func (d *DB) BatchUpdateKeyLastUsedAt(keyTimes map[int64]time.Time) error {
+	if len(keyTimes) == 0 {
+		return nil
+	}
+	tx, err := d.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	stmt, err := tx.Prepare(`UPDATE api_keys SET last_used_at=? WHERE id=?`)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("prepare stmt: %w", err)
+	}
+	defer stmt.Close()
+	for keyID, t := range keyTimes {
+		if _, err := stmt.Exec(t, keyID); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("exec update: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 // ListUsageLogs queries usage logs with optional filters.
 func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter string, page, pageSize int) ([]*model.UsageLog, int, error) {
 	countWhere := "WHERE 1=1"

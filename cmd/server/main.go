@@ -70,7 +70,21 @@ func main() {
 	r.Use(sessions.Sessions("gateway_session", store))
 	r.Use(sessionLoader())
 
-	collector := stats.NewCollector(database, 1024)
+	collector := stats.NewCollector(database, keyStore, 1024)
+
+	// Flush last_used_at from memory to DB every minute
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			keyTimes := keyStore.FlushLastUsed()
+			if len(keyTimes) > 0 {
+				if err := database.BatchUpdateKeyLastUsedAt(keyTimes); err != nil {
+					logger.Errorf("flush last_used_at: %v", err)
+				}
+			}
+		}
+	}()
 
 	aggregator := stats.NewAggregator(database, cfg.UsageSync)
 	aggregator.Start()

@@ -185,14 +185,15 @@ func (d *DB) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 
 func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 	rows, err := d.Query(
-		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.auto_downgrade, k.created_at, k.updated_at,
-		        MAX(l.created_at) as last_used_at,
-		        COALESCE(COUNT(l.id), 0) as requests,
-		        COALESCE(SUM(l.cost_usd), 0) as cost_usd
+		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
+		        COALESCE(s.requests, 0) as requests,
+		        COALESCE(s.cost_usd, 0) as cost_usd
 		 FROM api_keys k
-		 LEFT JOIN usage_logs l ON l.api_key_id = k.id
+		 LEFT JOIN (
+		     SELECT api_key_id, COUNT(*) as requests, SUM(cost_usd) as cost_usd
+		     FROM usage_logs GROUP BY api_key_id
+		 ) s ON s.api_key_id = k.id
 		 WHERE k.user_id = ?
-		 GROUP BY k.id
 		 ORDER BY k.id DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -202,7 +203,7 @@ func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 	for rows.Next() {
 		k := &model.APIKey{}
 		var lastUsed *string
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.AutoDowngrade, &k.CreatedAt, &k.UpdatedAt, &lastUsed, &k.Requests, &k.CostUSD); err != nil {
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt, &k.Requests, &k.CostUSD); err != nil {
 			return nil, err
 		}
 		k.LastUsedAt = parseNullableTime(lastUsed)
@@ -213,7 +214,7 @@ func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 
 func (d *DB) ListAllActiveAPIKeys() ([]*model.APIKey, error) {
 	rows, err := d.Query(
-		`SELECT id, user_id, key, name, status, auto_downgrade, created_at, updated_at
+		`SELECT id, user_id, key, name, status, auto_downgrade, last_used_at, created_at, updated_at
 		 FROM api_keys WHERE status = 'active'`)
 	if err != nil {
 		return nil, err
@@ -222,9 +223,11 @@ func (d *DB) ListAllActiveAPIKeys() ([]*model.APIKey, error) {
 	var keys []*model.APIKey
 	for rows.Next() {
 		k := &model.APIKey{}
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.AutoDowngrade, &k.CreatedAt, &k.UpdatedAt); err != nil {
+		var lastUsed *string
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt); err != nil {
 			return nil, err
 		}
+		k.LastUsedAt = parseNullableTime(lastUsed)
 		keys = append(keys, k)
 	}
 	return keys, rows.Err()
