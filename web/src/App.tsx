@@ -9,6 +9,7 @@ import DashboardPage from './pages/DashboardPage'
 import APIKeysPage from './pages/APIKeysPage'
 import UsagePage from './pages/UsagePage'
 import AdminUsersPage from './pages/AdminUsersPage'
+import AdminKeysPage from './pages/AdminKeysPage'
 import AdminApplicationsPage from './pages/AdminApplicationsPage'
 import AdminUsagePage from './pages/AdminUsagePage'
 import AdminBackendsPage from './pages/AdminBackendsPage'
@@ -29,6 +30,7 @@ export default function App() {
               <Route path="/usage" element={<UsagePage />} />
               <Route element={<RequireAdmin />}>
                 <Route path="/admin/users" element={<AdminUsersPage />} />
+                <Route path="/admin/keys" element={<AdminKeysPage />} />
                 <Route path="/admin/applications" element={<AdminApplicationsPage />} />
                 <Route path="/admin/usage" element={<AdminUsagePage />} />
                 <Route path="/admin/backends" element={<AdminBackendsPage />} />

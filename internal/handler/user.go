@@ -23,12 +23,14 @@ func NewUserHandler(database *db.DB, ks *auth.KeyStore) *UserHandler {
 
 // ListUsers godoc: GET /admin/api/users
 func (h *UserHandler) ListUsers(c *gin.Context) {
-	users, err := h.db.ListUsersWithStats()
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	users, total, err := h.db.ListUsersWithStats(page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"users": users})
+	c.JSON(http.StatusOK, gin.H{"users": users, "total": total, "page": page, "page_size": pageSize})
 }
 
 // GetUser godoc: GET /admin/api/users/:id
@@ -133,4 +135,25 @@ func (h *UserHandler) UpdateUser(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, user)
+}
+
+// UpdateItcode godoc: PUT /admin/api/users/:id/itcode
+func (h *UserHandler) UpdateItcode(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Itcode string `json:"itcode" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.UpdateUserItcode(id, req.Itcode); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"itcode": req.Itcode})
 }

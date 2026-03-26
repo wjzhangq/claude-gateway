@@ -29,6 +29,7 @@ export default function LoginPage() {
 
   const handleSendCode = async () => {
     if (!itcode) { setError('请输入 itcode'); return }
+    if (itcode.includes('@')) { setError('请输入 itcode，不要输入邮箱地址（例如填 test，而不是 test@lenovo.com）'); return }
     if (!inviteCode) { setError('请输入邀请码'); return }
     setError('')
     try {
@@ -43,6 +44,7 @@ export default function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!itcode || !code) { setError('请填写 itcode 和验证码'); return }
+    if (itcode.includes('@')) { setError('请输入 itcode，不要输入邮箱地址（例如填 test，而不是 test@lenovo.com）'); return }
     if (!inviteCode) { setError('请输入邀请码'); return }
     setError('')
     setLoading(true)
@@ -91,7 +93,15 @@ export default function LoginPage() {
                 <input
                   type="text"
                   value={itcode}
-                  onChange={(e) => setItcode(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value
+                    setItcode(val)
+                    if (val.includes('@')) {
+                      setError('请输入 itcode，不要输入邮箱地址（例如填 test，而不是 test@lenovo.com）')
+                    } else if (error.includes('邮箱')) {
+                      setError('')
+                    }
+                  }}
                   placeholder="请输入 itcode"
                   className="w-full px-3.5 py-2.5 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
                 />

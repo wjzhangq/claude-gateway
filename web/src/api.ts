@@ -43,6 +43,8 @@ export const disableKey = (id: number) => api.put(`/api/keys/${id}/disable`)
 export const enableKey = (id: number) => api.put(`/api/keys/${id}/enable`)
 export const setAutoDowngrade = (id: number, autoDowngrade: boolean) =>
   api.put(`/api/keys/${id}/auto-downgrade`, { auto_downgrade: autoDowngrade })
+export const renameKey = (id: number, name: string) =>
+  api.put(`/api/keys/${id}/rename`, { name })
 export const deleteKey = (id: number) => api.delete(`/api/keys/${id}`)
 
 // Usage
@@ -58,12 +60,23 @@ export const listMyApplications = (status?: string) =>
   api.get('/api/applications', { params: status ? { status } : {} })
 
 // Admin - Users
-export const adminListUsers = () => api.get('/admin/api/users')
+export const adminListUsers = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/users', { params })
 export const adminGetUser = (id: number) => api.get(`/admin/api/users/${id}`)
 export const adminCreateUser = (data: Record<string, unknown>) =>
   api.post('/admin/api/users', data)
 export const adminUpdateUser = (id: number, data: Record<string, unknown>) =>
   api.put(`/admin/api/users/${id}`, data)
+export const adminUpdateItcode = (id: number, itcode: string) =>
+  api.put(`/admin/api/users/${id}/itcode`, { itcode })
+
+// Admin - Keys
+export const adminListKeys = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/keys', { params })
+export const adminRenameKey = (id: number, name: string) =>
+  api.put(`/admin/api/keys/${id}/rename`, { name })
+export const adminTransferKey = (id: number, itcode: string) =>
+  api.put(`/admin/api/keys/${id}/transfer`, { itcode })
 
 // Admin - Usage
 export const adminGetUsage = (params?: Record<string, string | number>) =>

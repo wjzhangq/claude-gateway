@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listKeys, createKey, disableKey, enableKey, deleteKey, setAutoDowngrade } from '../api'
+import { listKeys, createKey, disableKey, enableKey, deleteKey, setAutoDowngrade, renameKey } from '../api'
 import { formatTime, formatDate } from '../utils/time'
 
 interface APIKey {
@@ -36,6 +36,8 @@ export default function APIKeysPage() {
   const [error, setError] = useState('')
   const [revealedId, setRevealedId] = useState<number | null>(null)
   const [copied, setCopied] = useState<number | null>(null)
+  const [renamingId, setRenamingId] = useState<number | null>(null)
+  const [renameValue, setRenameValue] = useState('')
 
   const handleCopy = (id: number, key: string) => {
     navigator.clipboard.writeText(key)
@@ -84,6 +86,18 @@ export default function APIKeysPage() {
   const handleDelete = async (id: number) => {
     if (!confirm('确认删除此 API Key？')) return
     await deleteKey(id)
+    load()
+  }
+
+  const startRename = (k: APIKey) => {
+    setRenamingId(k.id)
+    setRenameValue(k.name)
+  }
+
+  const handleRename = async (id: number) => {
+    if (!renameValue.trim()) return
+    await renameKey(id, renameValue.trim())
+    setRenamingId(null)
     load()
   }
 
@@ -174,7 +188,23 @@ export default function APIKeysPage() {
             ) : (
               keys.map((k) => (
                 <tr key={k.id} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-4 py-3.5 font-medium text-gray-800">{k.name}</td>
+                  <td className="px-4 py-3.5 font-medium text-gray-800">
+                    {renamingId === k.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleRename(k.id); if (e.key === 'Escape') setRenamingId(null) }}
+                          className="w-28 px-2 py-1 border border-red-300 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-red-400"
+                          autoFocus
+                        />
+                        <button onClick={() => handleRename(k.id)} className="text-xs text-green-600 hover:text-green-800">✓</button>
+                        <button onClick={() => setRenamingId(null)} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+                      </div>
+                    ) : (
+                      k.name
+                    )}
+                  </td>
                   <td className="px-4 py-3.5 font-mono text-xs text-gray-500">
                     {revealedId === k.id ? (
                       <span className="break-all">{k.key}</span>
@@ -228,6 +258,12 @@ export default function APIKeysPage() {
                         className="text-xs text-gray-400 hover:text-gray-700 transition-colors"
                       >
                         {copied === k.id ? '✓ 已复制' : '复制'}
+                      </button>
+                      <button
+                        onClick={() => startRename(k)}
+                        className="text-xs text-blue-400 hover:text-blue-600 transition-colors"
+                      >
+                        改名
                       </button>
                       <button
                         onClick={() => handleToggle(k)}

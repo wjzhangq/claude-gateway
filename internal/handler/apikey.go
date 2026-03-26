@@ -190,7 +190,66 @@ func (h *APIKeyHandler) CheckKey(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"itcode":      info.Itcode,
-		"created_at":  info.CreatedAt.Format("2006-01-02T15:04:05Z"),
+		"itcode":     info.Itcode,
+		"created_at": info.CreatedAt.Format("2006-01-02T15:04:05Z"),
 	})
+}
+
+// RenameKey godoc: PUT /api/keys/:id/rename  (user renames own key)
+// Also used by admin: PUT /admin/api/keys/:id/rename
+func (h *APIKeyHandler) RenameKey(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Name string `json:"name" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.RenameAPIKey(id, req.Name); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"name": req.Name})
+}
+
+// AdminListKeys godoc: GET /admin/api/keys
+func (h *APIKeyHandler) AdminListKeys(c *gin.Context) {
+	userID, _ := strconv.ParseInt(c.Query("user_id"), 10, 64)
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+
+	keys, total, err := h.db.ListAllAPIKeys(userID, page, pageSize)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"keys": keys, "total": total, "page": page, "page_size": pageSize})
+}
+
+// TransferKey godoc: PUT /admin/api/keys/:id/transfer
+func (h *APIKeyHandler) TransferKey(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Itcode string `json:"itcode" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	user, err := h.db.TransferAPIKey(id, req.Itcode)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.reloadKeys()
+	c.JSON(http.StatusOK, gin.H{"user_id": user.ID, "itcode": user.Itcode})
 }

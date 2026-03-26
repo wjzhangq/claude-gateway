@@ -28,6 +28,7 @@ echo "==> 构建后端..."
 mkdir -p bin
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "bin/gateway${SUFFIX}" ./cmd/server
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "bin/sync${SUFFIX}" ./cmd/sync
+CGO_ENABLED=0 go build -ldflags="-s -w" -o "bin/fix${SUFFIX}" ./cmd/fix
 
 echo "==> 构建完成：bin/gateway${SUFFIX}  bin/sync${SUFFIX}"
 echo "    运行方式：./bin/gateway${SUFFIX} -config config/config.yaml"

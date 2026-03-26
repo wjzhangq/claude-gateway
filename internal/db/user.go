@@ -97,7 +97,20 @@ type UserWithStats struct {
 	OCCostUSD   float64    `json:"oc_cost_usd"`
 }
 
-func (d *DB) ListUsersWithStats() ([]*UserWithStats, error) {
+func (d *DB) ListUsersWithStats(page, pageSize int) ([]*UserWithStats, int, error) {
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if page <= 0 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+
+	var total int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	rows, err := d.Query(
 		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_tokens, u.created_at, u.updated_at,
 		        MAX(l.created_at) as last_used_at,
@@ -107,9 +120,10 @@ func (d *DB) ListUsersWithStats() ([]*UserWithStats, error) {
 		 FROM users u
 		 LEFT JOIN usage_logs l ON l.user_id = u.id
 		 GROUP BY u.id
-		 ORDER BY u.id`)
+		 ORDER BY u.id DESC
+		 LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	var users []*UserWithStats
@@ -118,12 +132,116 @@ func (d *DB) ListUsersWithStats() ([]*UserWithStats, error) {
 		var lastUsed *string
 		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaTokens,
 			&u.CreatedAt, &u.UpdatedAt, &lastUsed, &u.Requests, &u.CostUSD, &u.OCCostUSD); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		u.LastUsedAt = parseNullableTime(lastUsed)
 		users = append(users, u)
 	}
-	return users, rows.Err()
+	return users, total, rows.Err()
+}
+
+// UpdateUserItcode changes the itcode of a user.
+func (d *DB) UpdateUserItcode(id int64, itcode string) error {
+	_, err := d.Exec(`UPDATE users SET itcode=?, updated_at=? WHERE id=?`, itcode, time.Now(), id)
+	return err
+}
+
+// APIKeyWithUser extends APIKey with user info for admin listing.
+type APIKeyWithUser struct {
+	model.APIKey
+	UserItcode string `json:"user_itcode"`
+	UserName   string `json:"user_name"`
+}
+
+// ListAllAPIKeys returns all API keys with pagination, sorted by last_used_at desc, created_at desc.
+func (d *DB) ListAllAPIKeys(userID int64, page, pageSize int) ([]*APIKeyWithUser, int, error) {
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if page <= 0 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+
+	where := "WHERE 1=1"
+	args := []interface{}{}
+	if userID > 0 {
+		where += " AND k.user_id = ?"
+		args = append(args, userID)
+	}
+
+	var total int
+	countArgs := append([]interface{}{}, args...)
+	if err := d.QueryRow(`SELECT COUNT(*) FROM api_keys k `+where, countArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	queryArgs := append(args, pageSize, offset)
+	rows, err := d.Query(
+		`SELECT k.id, k.user_id, u.itcode, u.name, k.key, k.name, k.status, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
+		        COALESCE(s.requests, 0), COALESCE(s.cost_usd, 0)
+		 FROM api_keys k
+		 LEFT JOIN users u ON u.id = k.user_id
+		 LEFT JOIN (SELECT api_key_id, COUNT(*) as requests, SUM(cost_usd) as cost_usd FROM usage_logs GROUP BY api_key_id) s
+		   ON s.api_key_id = k.id
+		 `+where+`
+		 ORDER BY COALESCE(k.last_used_at, '1970-01-01') DESC, k.created_at DESC
+		 LIMIT ? OFFSET ?`, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var keys []*APIKeyWithUser
+	for rows.Next() {
+		k := &APIKeyWithUser{}
+		var lastUsed *string
+		if err := rows.Scan(&k.ID, &k.UserID, &k.UserItcode, &k.UserName,
+			&k.Key, &k.APIKey.Name, &k.Status, &k.AutoDowngrade, &lastUsed,
+			&k.CreatedAt, &k.UpdatedAt, &k.Requests, &k.CostUSD); err != nil {
+			return nil, 0, err
+		}
+		k.LastUsedAt = parseNullableTime(lastUsed)
+		keys = append(keys, k)
+	}
+	return keys, total, rows.Err()
+}
+
+// RenameAPIKey updates the name of an API key.
+func (d *DB) RenameAPIKey(id int64, name string) error {
+	_, err := d.Exec(`UPDATE api_keys SET name=?, updated_at=? WHERE id=?`, name, time.Now(), id)
+	return err
+}
+
+// TransferAPIKey moves an API key to another user identified by itcode.
+// If the user doesn't exist, it is created with active status.
+// Returns the target user.
+func (d *DB) TransferAPIKey(keyID int64, toItcode string) (*model.User, error) {
+	user, err := d.GetUserByItcode(toItcode)
+	if err != nil {
+		return nil, fmt.Errorf("lookup user: %w", err)
+	}
+	if user == nil {
+		user = &model.User{
+			Itcode: toItcode,
+			Name:   toItcode,
+			Role:   "user",
+			Status: "active",
+		}
+		if err := d.CreateUser(user); err != nil {
+			return nil, fmt.Errorf("create user: %w", err)
+		}
+	} else if user.Status != "active" {
+		user.Status = "active"
+		if err := d.UpdateUser(user); err != nil {
+			return nil, fmt.Errorf("activate user: %w", err)
+		}
+	}
+	_, err = d.Exec(`UPDATE api_keys SET user_id=?, updated_at=? WHERE id=?`, user.ID, time.Now(), keyID)
+	if err != nil {
+		return nil, fmt.Errorf("transfer key: %w", err)
+	}
+	return user, nil
 }
 
 func (d *DB) UpdateUser(u *model.User) error {
