@@ -4,10 +4,10 @@ import { RequireAuth, RequireAdmin } from './components/RequireAuth'
 import ToastContainer from './components/Toast'
 import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
+import PendingPage from './pages/PendingPage'
 import DashboardPage from './pages/DashboardPage'
 import APIKeysPage from './pages/APIKeysPage'
 import UsagePage from './pages/UsagePage'
-import ApplicationsPage from './pages/ApplicationsPage'
 import AdminUsersPage from './pages/AdminUsersPage'
 import AdminApplicationsPage from './pages/AdminApplicationsPage'
 import AdminUsagePage from './pages/AdminUsagePage'
@@ -21,12 +21,12 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/pending" element={<PendingPage />} />
           <Route element={<RequireAuth />}>
             <Route element={<Layout />}>
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/keys" element={<APIKeysPage />} />
               <Route path="/usage" element={<UsagePage />} />
-              <Route path="/applications" element={<ApplicationsPage />} />
               <Route element={<RequireAdmin />}>
                 <Route path="/admin/users" element={<AdminUsersPage />} />
                 <Route path="/admin/applications" element={<AdminApplicationsPage />} />

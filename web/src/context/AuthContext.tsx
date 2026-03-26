@@ -5,18 +5,21 @@ interface AuthUser {
   id: number
   itcode: string
   role: string
+  status: string
 }
 
 interface AuthContextType {
   user: AuthUser | null
   setUser: (u: AuthUser | null) => void
   isAdmin: boolean
+  isActive: boolean
 }
 
 const AuthContext = createContext<AuthContextType>({
   user: null,
   setUser: () => {},
   isAdmin: false,
+  isActive: false,
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -37,7 +40,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, setUser: handleSetUser, isAdmin: user?.role === 'admin' }}
+      value={{
+        user,
+        setUser: handleSetUser,
+        isAdmin: user?.role === 'admin',
+        isActive: user?.status === 'active',
+      }}
     >
       {children}
     </AuthContext.Provider>

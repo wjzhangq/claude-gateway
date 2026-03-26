@@ -7,8 +7,8 @@ interface Application {
   user_id: number
   user_itcode: string
   user_name: string
+  user_status: string
   group_id: number
-  model: string
   reason: string
   status: string
   review_note: string | null
@@ -20,22 +20,34 @@ interface Group {
   name: string
 }
 
-const STATUS_LABEL: Record<string, string> = {
+const APP_STATUS_LABEL: Record<string, string> = {
   pending: '待审批',
   approved: '已通过',
   rejected: '已拒绝',
 }
 
-const STATUS_CLASS: Record<string, string> = {
+const APP_STATUS_CLASS: Record<string, string> = {
   pending: 'bg-yellow-50 text-yellow-700 ring-yellow-100',
   approved: 'bg-green-50 text-green-700 ring-green-100',
   rejected: 'bg-red-50 text-red-700 ring-red-100',
 }
 
+const USER_STATUS_LABEL: Record<string, string> = {
+  pending: '待激活',
+  active: '已激活',
+  disabled: '已停用',
+}
+
+const USER_STATUS_CLASS: Record<string, string> = {
+  pending: 'bg-yellow-50 text-yellow-600 ring-yellow-100',
+  active: 'bg-green-50 text-green-600 ring-green-100',
+  disabled: 'bg-red-50 text-red-600 ring-red-100',
+}
+
 function SkeletonRow() {
   return (
     <tr>
-      {[60, 130, 180, 70, 100, 90, 60].map((w, i) => (
+      {[60, 130, 80, 180, 70, 100, 90, 60].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -83,8 +95,8 @@ export default function AdminApplicationsPage() {
   return (
     <div className="p-8">
       <div className="mb-7">
-        <h2 className="text-xl font-bold text-gray-900">审批管理</h2>
-        <p className="text-sm text-gray-400 mt-0.5">审核用户的模型访问申请</p>
+        <h2 className="text-xl font-bold text-gray-900">账号审批</h2>
+        <p className="text-sm text-gray-400 mt-0.5">审核用户的账号开通申请，通过后账号自动激活</p>
       </div>
 
       <div className="flex gap-2 mb-6">
@@ -98,7 +110,7 @@ export default function AdminApplicationsPage() {
                 : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-700'
             }`}
           >
-            {STATUS_LABEL[s]}
+            {APP_STATUS_LABEL[s]}
           </button>
         ))}
       </div>
@@ -107,7 +119,7 @@ export default function AdminApplicationsPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['用户itcode', '用户姓名', '分组', '模型', '申请理由', '状态', '审批备注', '申请时间', '操作'].map((h) => (
+              {['用户itcode', '用户姓名', '账号状态', '分组', '申请理由', '申请状态', '审批备注', '申请时间', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -127,12 +139,16 @@ export default function AdminApplicationsPage() {
                   <tr key={app.id} className="hover:bg-gray-50/50 transition-colors">
                     <td className="px-4 py-3.5 text-gray-500 text-xs">{app.user_itcode}</td>
                     <td className="px-4 py-3.5 text-gray-500 text-xs">{app.user_name || '—'}</td>
+                    <td className="px-4 py-3.5">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${USER_STATUS_CLASS[app.user_status] || ''}`}>
+                        {USER_STATUS_LABEL[app.user_status] || app.user_status}
+                      </span>
+                    </td>
                     <td className="px-4 py-3.5 text-gray-500 text-xs">{app.group_id || '未分组'}</td>
-                    <td className="px-4 py-3.5 font-mono text-xs text-gray-700">{app.model}</td>
                     <td className="px-4 py-3.5 text-gray-500 max-w-xs truncate">{app.reason}</td>
                     <td className="px-4 py-3.5">
-                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${STATUS_CLASS[app.status] || ''}`}>
-                        {STATUS_LABEL[app.status] || app.status}
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${APP_STATUS_CLASS[app.status] || ''}`}>
+                        {APP_STATUS_LABEL[app.status] || app.status}
                       </span>
                     </td>
                     <td className="px-4 py-3.5 text-gray-400 text-xs">{app.review_note || '—'}</td>
@@ -178,14 +194,14 @@ export default function AdminApplicationsPage() {
                             disabled={submitting}
                             className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-xl hover:bg-green-700 disabled:opacity-50 transition-colors"
                           >
-                            通过
+                            通过（激活账号）
                           </button>
                           <button
                             onClick={() => handleReview(app.id, 'rejected')}
                             disabled={submitting}
                             className="px-4 py-2 bg-red-500 text-white text-sm font-medium rounded-xl hover:bg-red-600 disabled:opacity-50 transition-colors"
                           >
-                            拒绝
+                            拒绝（停用账号）
                           </button>
                           <button
                             onClick={() => setReviewId(null)}

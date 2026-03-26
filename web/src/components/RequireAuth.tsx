@@ -4,6 +4,10 @@ import { useAuth } from '../context/AuthContext'
 export function RequireAuth() {
   const { user } = useAuth()
   if (!user) return <Navigate to="/login" replace />
+  // pending/disabled users go to the activation request page
+  if (user.status !== 'active' && user.role !== 'admin') {
+    return <Navigate to="/pending" replace />
+  }
   return <Outlet />
 }
 

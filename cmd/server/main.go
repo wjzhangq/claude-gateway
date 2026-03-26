@@ -76,14 +76,14 @@ func main() {
 	aggregator.Start()
 
 	lb := proxy.NewLoadBalancer(cfg.Backends)
-	proxyH := proxy.NewHandler(lb, collector, cfg.ModelReplacements)
+	proxyH := proxy.NewHandler(lb, collector, keyStore, cfg, cfg.ModelReplacements)
 	lb.ValidateBackends()
 
 	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database, keyStore)
 	statsH := handler.NewStatsHandler(database, cfg)
-	appH := handler.NewApplicationHandler(database)
+	appH := handler.NewApplicationHandler(database, keyStore)
 
 	apiAuth := r.Group("/api/auth")
 	apiAuth.Use(middleware.RateLimit(10, time.Minute))
@@ -110,6 +110,7 @@ func main() {
 		apiUser.POST("/keys", keyH.CreateKey)
 		apiUser.PUT("/keys/:id/disable", keyH.DisableKey)
 		apiUser.PUT("/keys/:id/enable", keyH.EnableKey)
+		apiUser.PUT("/keys/:id/auto-downgrade", keyH.SetAutoDowngrade)
 		apiUser.DELETE("/keys/:id", keyH.DeleteKey)
 		apiUser.GET("/usage", statsH.GetMyUsage)
 		apiUser.GET("/usage/daily", statsH.GetMyDailyStats)
@@ -219,6 +220,7 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string, collector *stats.Colle
 		// Step 4: apply new config to components
 		lb.UpdateBackends(newCfg.Backends)
 		proxyH.UpdateModelReplacements(newCfg.ModelReplacements)
+		proxyH.UpdateConfig(newCfg)
 		statsH.UpdateConfig(newCfg)
 
 		// Step 5: reload key store

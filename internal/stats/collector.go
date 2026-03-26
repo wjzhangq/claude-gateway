@@ -21,6 +21,7 @@ type Record struct {
 	StatusCode   int
 	Latency      time.Duration
 	IsOpenClaw   bool
+	IsDowngraded bool
 	UA           string
 }
 
@@ -67,6 +68,7 @@ func (c *Collector) Flush() {
 				StatusCode:   r.StatusCode,
 				Latency:      r.Latency.Milliseconds(),
 				IsOpenClaw:   r.IsOpenClaw,
+				IsDowngraded: r.IsDowngraded,
 				UA:           r.UA,
 			}
 			if err := c.db.InsertUsageLog(log); err != nil {
@@ -92,6 +94,7 @@ func (c *Collector) worker() {
 			StatusCode:   r.StatusCode,
 			Latency:      r.Latency.Milliseconds(),
 			IsOpenClaw:   r.IsOpenClaw,
+			IsDowngraded: r.IsDowngraded,
 			UA:           r.UA,
 		}
 		if err := c.db.InsertUsageLog(log); err != nil {

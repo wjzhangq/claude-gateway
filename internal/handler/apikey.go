@@ -130,6 +130,28 @@ func (h *APIKeyHandler) DeleteKey(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
+// SetAutoDowngrade godoc: PUT /api/keys/:id/auto-downgrade
+func (h *APIKeyHandler) SetAutoDowngrade(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		AutoDowngrade bool `json:"auto_downgrade"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.UpdateAPIKeyAutoDowngrade(id, req.AutoDowngrade); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.reloadKeys()
+	c.JSON(http.StatusOK, gin.H{"auto_downgrade": req.AutoDowngrade})
+}
+
 func (h *APIKeyHandler) reloadKeys() {
 	keys, err := h.db.ListAllActiveAPIKeys()
 	if err != nil {

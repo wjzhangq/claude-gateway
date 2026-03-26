@@ -6,7 +6,6 @@ const userNav = [
   { to: '/dashboard', label: '仪表盘' },
   { to: '/keys', label: 'API Keys' },
   { to: '/usage', label: '使用统计' },
-  { to: '/applications', label: '申请记录' },
 ]
 
 const adminNav = [

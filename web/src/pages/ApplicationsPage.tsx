@@ -60,7 +60,7 @@ export default function ApplicationsPage() {
     setSubmitting(true)
     setError('')
     try {
-      await submitApplication(model, reason)
+      await submitApplication(reason)
       setShowForm(false)
       setModel('')
       setReason('')

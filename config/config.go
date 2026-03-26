@@ -18,6 +18,7 @@ type Config struct {
 	Backends          []BackendAPI      `yaml:"backends"`
 	UsageSync         time.Duration     `yaml:"usage_sync_time"`
 	ModelReplacements map[string]string `yaml:"model_replacements"`
+	DowngradedTTL     time.Duration     `yaml:"downgraded_ttl"` // how long to skip original model after downgrade
 }
 
 // Group represents a user group for organizing users and tracking usage.
@@ -94,7 +95,8 @@ func defaultConfig() *Config {
 			SessionMaxAge: 86400,
 			CodeExpiry:    5 * time.Minute,
 		},
-		UsageSync: 5 * time.Minute,
+		UsageSync:     5 * time.Minute,
+		DowngradedTTL: 60 * time.Second,
 	}
 }
 

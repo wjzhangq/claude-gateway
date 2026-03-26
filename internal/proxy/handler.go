@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
@@ -21,12 +23,20 @@ import (
 type Handler struct {
 	lb                *LoadBalancer
 	collector         *stats.Collector
+	keyStore          *auth.KeyStore
+	config           *config.Config
 	mu                sync.RWMutex
 	modelReplacements map[string]string
 }
 
-func NewHandler(lb *LoadBalancer, collector *stats.Collector, modelReplacements map[string]string) *Handler {
-	return &Handler{lb: lb, collector: collector, modelReplacements: modelReplacements}
+func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.KeyStore, cfg *config.Config, modelReplacements map[string]string) *Handler {
+	return &Handler{
+		lb:                lb,
+		collector:         collector,
+		keyStore:          keyStore,
+		config:           cfg,
+		modelReplacements: modelReplacements,
+	}
 }
 
 // detectOpenClaw checks if the request is from OpenClaw.
@@ -104,6 +114,21 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		c.Set("is_openclaw", true)
 	}
 
+	// Get key info for auto-downgrade check
+	keyInfo, _ := c.Get(middleware.CtxKeyInfo)
+	var autoDowngrade bool
+	var keyStr string
+	if info, ok := keyInfo.(*auth.KeyInfo); ok {
+		autoDowngrade = info.AutoDowngrade
+		keyStr = c.GetHeader("Authorization")
+		if strings.HasPrefix(keyStr, "Bearer ") {
+			keyStr = strings.TrimPrefix(keyStr, "Bearer ")
+		}
+	}
+
+	// Check if we're in the downgraded period (skip original model and go directly to GPT)
+	inDowngradedPeriod := autoDowngrade && keyStr != "" && h.keyStore.IsDowngraded(keyStr)
+
 	// Apply model replacements: if request model contains a configured pattern, replace it
 	h.mu.RLock()
 	replacements := h.modelReplacements
@@ -123,10 +148,93 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	}
 
 	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
+
+	// Track if we attempted downgrade
+	isDowngraded := false
+
+	start := time.Now()
+	var resp *http.Response
+
+	// If in downgraded period, skip original model and go directly to GPT
+	if inDowngradedPeriod {
+		logger.Infof("key is in downgraded period, using GPT directly")
+		resp, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw)
+		if err == nil && resp != nil {
+			isDowngraded = true
+		}
+	} else {
+		resp, err = h.doRequest(c, backend, upstreamPath, targetURL, body)
+		if err != nil {
+			backend.RecordError()
+			logger.Errorf("backend %s error: %v", backend.Name, err)
+
+			// Try downgrade if enabled and this is the first attempt
+			if autoDowngrade {
+				logger.Infof("attempting auto-downgrade for model %s, isOpenClaw=%v", reqModel, isOpenClaw)
+				resp, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw)
+				if err == nil && resp != nil {
+					isDowngraded = true
+				}
+			}
+
+			if err != nil || resp == nil {
+				c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
+				return
+			}
+		}
+	}
+
+	defer resp.Body.Close()
+	backend.RecordSuccess()
+	backend.RecordStatusCode(resp.StatusCode)
+
+	// Check if we need to retry with downgrade (response indicates failure)
+	if autoDowngrade && !isDowngraded && resp.StatusCode >= 400 {
+		resp.Body.Close()
+		backend.RecordStatusCode(resp.StatusCode) // record the failure first
+
+		logger.Infof("received error status %d, attempting auto-downgrade for model %s, isOpenClaw=%v", resp.StatusCode, reqModel, isOpenClaw)
+		respNew, err := h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw)
+		if err == nil && respNew != nil {
+			resp = respNew
+			isDowngraded = true
+		} else if err != nil {
+			// Downgrade also failed, return original error
+			c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
+			return
+		}
+	}
+
+	// If downgrade succeeded, set the downgraded period
+	if isDowngraded && keyStr != "" && h.config != nil && h.config.DowngradedTTL > 0 {
+		h.keyStore.SetDowngradedUntil(keyStr, time.Now().Add(h.config.DowngradedTTL))
+	}
+
+	// Expose backend name for the request logger
+	c.Set("proxy_backend", backend.Name)
+
+	// Copy response headers
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			c.Header(k, v)
+		}
+	}
+	c.Status(resp.StatusCode)
+
+	// Stream or buffer
+	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
+	if isStream {
+		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start, isOpenClaw, isDowngraded)
+	} else {
+		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start, isOpenClaw, isDowngraded)
+	}
+}
+
+// doRequest performs the actual HTTP request to the backend
+func (h *Handler) doRequest(c *gin.Context, backend *Backend, upstreamPath, targetURL string, body []byte) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, targetURL, bytes.NewReader(body))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "build request failed"})
-		return
+		return nil, err
 	}
 
 	// Copy headers, replace Authorization
@@ -143,43 +251,48 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	req.Header.Set("x-api-key", backend.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	start := time.Now()
-	resp, err := backend.Client().Do(req)
-	if err != nil {
-		backend.RecordError()
-		logger.Errorf("backend %s error: %v", backend.Name, err)
-		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
-		return
+	return backend.Client().Do(req)
+}
+
+// doRequestWithDowngrade retries the request with a downgraded model
+func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstreamPath string, body []byte, originalModel string, isOpenClaw bool) (*http.Response, error) {
+	// Determine fallback model
+	fallbackModel := "gpt-5.3-codex"
+	if isOpenClaw {
+		fallbackModel = "gpt-5.4"
 	}
-	defer resp.Body.Close()
-	backend.RecordSuccess()
-	backend.RecordStatusCode(resp.StatusCode)
 
-	// Expose backend name for the request logger
-	c.Set("proxy_backend", backend.Name)
-
-	// Copy response headers
-	for k, vv := range resp.Header {
-		for _, v := range vv {
-			c.Header(k, v)
-		}
+	// Replace model in body
+	newBody := h.replaceModelInBody(body, originalModel, fallbackModel)
+	if newBody == nil {
+		return nil, fmt.Errorf("failed to replace model in body")
 	}
-	c.Status(resp.StatusCode)
 
-	keyInfo, _ := c.Get(middleware.CtxKeyInfo)
+	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
+	return h.doRequest(c, backend, upstreamPath, targetURL, newBody)
+}
 
-	// Stream or buffer
-	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
-	if isStream {
-		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start, isOpenClaw)
-	} else {
-		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, resp.StatusCode, start, isOpenClaw)
+// replaceModelInBody creates a new body with the model replaced
+func (h *Handler) replaceModelInBody(body []byte, oldModel, newModel string) []byte {
+	// Try both formats: "model":"value" and "model": "value"
+	oldToken := `"model":"` + oldModel + `"`
+	newToken := `"model":"` + newModel + `"`
+	newBody := bytes.Replace(body, []byte(oldToken), []byte(newToken), 1)
+	if len(newBody) == len(body) {
+		// Try with space format
+		oldTokenSpace := `"model": "` + oldModel + `"`
+		newTokenSpace := `"model": "` + newModel + `"`
+		newBody = bytes.Replace(body, []byte(oldTokenSpace), []byte(newTokenSpace), 1)
 	}
+	if len(newBody) == len(body) {
+		return nil
+	}
+	return newBody
 }
 
 const streamTailSize = 2048
 
-func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw bool) {
+func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw, isDowngraded bool) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -215,10 +328,10 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 
 	in, out := parseStreamTokens(tail)
-	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
-func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw bool) {
+func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, statusCode int, start time.Time, isOpenClaw, isDowngraded bool) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("read response body: %v", err)
@@ -227,7 +340,7 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
-	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
 // parseBodyTokens extracts token counts from a non-streaming JSON response.
@@ -319,7 +432,7 @@ func costUSD(model string, inputTokens, outputTokens int) float64 {
 	return (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice) / 1_000_000
 }
 
-func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw bool, userAgent string) {
+func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isDowngraded bool, userAgent string) {
 	if h.collector == nil || keyInfo == nil {
 		return
 	}
@@ -342,6 +455,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, backendName, model string, stat
 		StatusCode:   statusCode,
 		Latency:      latency,
 		IsOpenClaw:   isOpenClaw,
+		IsDowngraded: isDowngraded,
 		UA:           ua,
 	})
 }
@@ -370,5 +484,12 @@ func (h *Handler) Passthrough(c *gin.Context) {
 func (h *Handler) UpdateModelReplacements(m map[string]string) {
 	h.mu.Lock()
 	h.modelReplacements = m
+	h.mu.Unlock()
+}
+
+// UpdateConfig updates the handler config.
+func (h *Handler) UpdateConfig(cfg *config.Config) {
+	h.mu.Lock()
+	h.config = cfg
 	h.mu.Unlock()
 }

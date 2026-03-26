@@ -6,25 +6,26 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
-// ApplicationHandler manages model access applications.
+// ApplicationHandler manages account activation applications.
 type ApplicationHandler struct {
-	db *db.DB
+	db       *db.DB
+	keyStore *auth.KeyStore
 }
 
-func NewApplicationHandler(database *db.DB) *ApplicationHandler {
-	return &ApplicationHandler{db: database}
+func NewApplicationHandler(database *db.DB, ks *auth.KeyStore) *ApplicationHandler {
+	return &ApplicationHandler{db: database, keyStore: ks}
 }
 
 // Submit godoc: POST /api/applications
 func (h *ApplicationHandler) Submit(c *gin.Context) {
 	userID := c.GetInt64(middleware.CtxUserID)
 	var req struct {
-		Model  string `json:"model"  binding:"required"`
 		Reason string `json:"reason" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -33,7 +34,6 @@ func (h *ApplicationHandler) Submit(c *gin.Context) {
 	}
 	app := &model.Application{
 		UserID: userID,
-		Model:  req.Model,
 		Reason: req.Reason,
 	}
 	if err := h.db.CreateApplication(app); err != nil {
@@ -72,9 +72,9 @@ func (h *ApplicationHandler) Review(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Status   string `json:"status" binding:"required"` // approved | rejected
-		Note     string `json:"note"`
-		GroupID  *int   `json:"group_id"` // optional: set user's group when approving
+		Status  string `json:"status" binding:"required"` // approved | rejected
+		Note    string `json:"note"`
+		GroupID *int   `json:"group_id"` // optional: set user's group when approving
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -98,12 +98,19 @@ func (h *ApplicationHandler) Review(c *gin.Context) {
 		return
 	}
 
-	// If approving and group_id provided, update user's group
-	if req.Status == "approved" && req.GroupID != nil {
-		user, err := h.db.GetUserByID(app.UserID)
-		if err == nil && user != nil {
-			user.GroupID = *req.GroupID
-			h.db.UpdateUser(user)
+	// Sync user status: approved → active, rejected → disabled
+	user, err := h.db.GetUserByID(app.UserID)
+	if err == nil && user != nil {
+		if req.Status == "approved" {
+			user.Status = "active"
+			if req.GroupID != nil {
+				user.GroupID = *req.GroupID
+			}
+		} else {
+			user.Status = "disabled"
+		}
+		if err := h.db.UpdateUser(user); err == nil {
+			h.keyStore.UpdateUserStatus(user.ID, user.Status)
 		}
 	}
 

@@ -17,17 +17,17 @@ type User struct {
 
 // APIKey represents a user's API key.
 type APIKey struct {
-	ID         int64      `db:"id"          json:"id"`
-	UserID     int64      `db:"user_id"     json:"user_id"`
-	Key        string     `db:"key"         json:"key"`
-	Name       string     `db:"name"        json:"name"`
-	Status     string     `db:"status"      json:"status"`
-	ExpiresAt  *time.Time `db:"expires_at"  json:"expires_at"`
-	CreatedAt  time.Time  `db:"created_at"  json:"created_at"`
-	UpdatedAt  time.Time  `db:"updated_at"  json:"updated_at"`
-	LastUsedAt *time.Time `db:"last_used_at" json:"last_used_at"`
-	Requests   int64      `db:"-"            json:"requests"`
-	CostUSD    float64    `db:"-"            json:"cost_usd"`
+	ID           int64      `db:"id"          json:"id"`
+	UserID       int64      `db:"user_id"     json:"user_id"`
+	Key          string     `db:"key"         json:"key"`
+	Name         string     `db:"name"        json:"name"`
+	Status       string     `db:"status"      json:"status"`
+	AutoDowngrade bool      `db:"auto_downgrade" json:"auto_downgrade"`
+	CreatedAt    time.Time  `db:"created_at"  json:"created_at"`
+	UpdatedAt    time.Time  `db:"updated_at"  json:"updated_at"`
+	LastUsedAt   *time.Time `db:"last_used_at" json:"last_used_at"`
+	Requests     int64      `db:"-"            json:"requests"`
+	CostUSD      float64    `db:"-"            json:"cost_usd"`
 }
 
 // UsageLog records a single API call.
@@ -45,6 +45,7 @@ type UsageLog struct {
 	StatusCode   int       `db:"status_code"   json:"status_code"`
 	Latency      int64     `db:"latency_ms"    json:"latency_ms"`
 	IsOpenClaw   bool      `db:"is_openclaw"   json:"is_openclaw"`
+	IsDowngraded bool      `db:"is_downgraded" json:"is_downgraded"`
 	UA           string    `db:"ua"            json:"ua"`
 	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
 }
@@ -62,14 +63,14 @@ type DailyStats struct {
 	CostUSD      float64 `db:"cost_usd"      json:"cost_usd"`
 }
 
-// Application is a user's request to access a model.
+// Application is a user's request to activate their account.
 type Application struct {
 	ID          int64     `db:"id"          json:"id"`
 	UserID      int64     `db:"user_id"     json:"user_id"`
 	UserItcode  string    `db:"-"           json:"user_itcode"`
 	UserName    string    `db:"-"           json:"user_name"`
+	UserStatus  string    `db:"-"           json:"user_status"`
 	GroupID     int       `db:"-"           json:"group_id"`
-	Model       string    `db:"model"       json:"model"`
 	Reason      string    `db:"reason"      json:"reason"`
 	Status      string    `db:"status"      json:"status"`
 	ReviewerID  *int64    `db:"reviewer_id" json:"reviewer_id"`

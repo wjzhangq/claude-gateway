@@ -37,10 +37,12 @@ export const logout = () => api.post('/api/auth/logout')
 
 // API Keys
 export const listKeys = () => api.get('/api/keys')
-export const createKey = (name: string, expiresAt?: string) =>
-  api.post('/api/keys', { name, expires_at: expiresAt })
+export const createKey = (name: string) =>
+  api.post('/api/keys', { name })
 export const disableKey = (id: number) => api.put(`/api/keys/${id}/disable`)
 export const enableKey = (id: number) => api.put(`/api/keys/${id}/enable`)
+export const setAutoDowngrade = (id: number, autoDowngrade: boolean) =>
+  api.put(`/api/keys/${id}/auto-downgrade`, { auto_downgrade: autoDowngrade })
 export const deleteKey = (id: number) => api.delete(`/api/keys/${id}`)
 
 // Usage
@@ -50,8 +52,8 @@ export const getMyDailyStats = (params?: Record<string, string | number>) =>
   api.get('/api/usage/daily', { params })
 
 // Applications
-export const submitApplication = (model: string, reason: string) =>
-  api.post('/api/applications', { model, reason })
+export const submitApplication = (reason: string) =>
+  api.post('/api/applications', { reason })
 export const listMyApplications = (status?: string) =>
   api.get('/api/applications', { params: status ? { status } : {} })
 

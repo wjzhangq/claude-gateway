@@ -66,6 +66,18 @@ func (d *DB) migrate() error {
 		return err
 	}
 
+	// Add auto_downgrade column to api_keys if it doesn't exist
+	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN auto_downgrade INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
+	// Add is_downgraded column to usage_logs if it doesn't exist
+	_, err = d.Exec(`ALTER TABLE usage_logs ADD COLUMN is_downgraded INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
 	return nil
 }
 
@@ -88,7 +100,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
     key        TEXT    NOT NULL UNIQUE,
     name       TEXT    NOT NULL DEFAULT '',
     status     TEXT    NOT NULL DEFAULT 'active',
-    expires_at DATETIME,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -131,7 +142,7 @@ CREATE INDEX IF NOT EXISTS idx_daily_stats_user_id ON daily_stats(user_id);
 CREATE TABLE IF NOT EXISTS applications (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL REFERENCES users(id),
-    model       TEXT    NOT NULL,
+    model       TEXT    NOT NULL DEFAULT '',
     reason      TEXT    NOT NULL DEFAULT '',
     status      TEXT    NOT NULL DEFAULT 'pending',
     reviewer_id INTEGER,

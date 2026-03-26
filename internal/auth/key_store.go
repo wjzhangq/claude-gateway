@@ -17,6 +17,8 @@ type KeyInfo struct {
 	DailyQuotaTokens int64  // 0 = unlimited
 	UserStatus  string // active | disabled
 	CreatedAt   time.Time // key creation time
+	AutoDowngrade bool    // whether auto-downgrade is enabled
+	DowngradedUntil time.Time // if set and in future, skip original model and use GPT directly
 }
 
 // KeyStore holds all active API keys in memory for O(1) lookup.
@@ -48,6 +50,7 @@ func (ks *KeyStore) Load(keys []model.APIKey, users map[int64]*model.User) {
 			DailyQuotaTokens: u.DailyQuotaTokens,
 			UserStatus:  u.Status,
 			CreatedAt:  k.CreatedAt,
+			AutoDowngrade: k.AutoDowngrade,
 		}
 	}
 	ks.mu.Lock()
@@ -82,6 +85,25 @@ func (ks *KeyStore) Remove(key string) {
 	ks.mu.Lock()
 	delete(ks.keys, key)
 	ks.mu.Unlock()
+}
+
+// SetDowngradedUntil sets the time until which this API key should use GPT directly.
+func (ks *KeyStore) SetDowngradedUntil(key string, until time.Time) {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	if info, ok := ks.keys[key]; ok {
+		info.DowngradedUntil = until
+	}
+}
+
+// IsDowngraded checks if the key is currently in the downgraded period.
+func (ks *KeyStore) IsDowngraded(key string) bool {
+	ks.mu.RLock()
+	defer ks.mu.RUnlock()
+	if info, ok := ks.keys[key]; ok {
+		return !info.DowngradedUntil.IsZero() && time.Now().Before(info.DowngradedUntil)
+	}
+	return false
 }
 
 // UpdateUserStatus updates the UserStatus for all keys belonging to a user.

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listKeys, createKey, disableKey, enableKey, deleteKey } from '../api'
+import { listKeys, createKey, disableKey, enableKey, deleteKey, setAutoDowngrade } from '../api'
 import { formatTime, formatDate } from '../utils/time'
 
 interface APIKey {
@@ -7,8 +7,8 @@ interface APIKey {
   name: string
   key: string
   status: string
+  auto_downgrade: boolean
   created_at: string
-  expires_at: string | null
   last_used_at: string | null
   requests: number
   cost_usd: number
@@ -17,7 +17,7 @@ interface APIKey {
 function SkeletonRow() {
   return (
     <tr>
-      {[80, 160, 60, 70, 70, 90, 110, 120].map((w, i) => (
+      {[80, 160, 60, 50, 70, 70, 90, 110, 120].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -73,6 +73,11 @@ export default function APIKeysPage() {
   const handleToggle = async (k: APIKey) => {
     if (k.status === 'active') await disableKey(k.id)
     else await enableKey(k.id)
+    load()
+  }
+
+  const handleAutoDowngradeToggle = async (k: APIKey) => {
+    await setAutoDowngrade(k.id, !k.auto_downgrade)
     load()
   }
 
@@ -152,7 +157,7 @@ export default function APIKeysPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['名称', 'Key', '状态', '请求数', '费用', '创建时间', '最后使用', '操作'].map((h) => (
+              {['名称', 'Key', '状态', '自动降级', '请求数', '费用', '创建时间', '最后使用', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -164,7 +169,7 @@ export default function APIKeysPage() {
               Array.from({ length: 3 }).map((_, i) => <SkeletonRow key={i} />)
             ) : keys.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">暂无 API Key</td>
+                <td colSpan={9} className="px-4 py-10 text-center text-sm text-gray-400">暂无 API Key</td>
               </tr>
             ) : (
               keys.map((k) => (
@@ -187,6 +192,20 @@ export default function APIKeysPage() {
                     >
                       {k.status === 'active' ? '启用' : '禁用'}
                     </span>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <button
+                      onClick={() => handleAutoDowngradeToggle(k)}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${
+                        k.auto_downgrade ? 'bg-red-600' : 'bg-gray-200'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform ${
+                          k.auto_downgrade ? 'translate-x-4' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
                   </td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs">{(k.requests || 0).toLocaleString()}</td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs">${(k.cost_usd || 0).toFixed(4)}</td>

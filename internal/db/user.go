@@ -158,9 +158,9 @@ func (d *DB) EnsureAdmin(itcode string) error {
 func (d *DB) CreateAPIKey(k *model.APIKey) error {
 	now := time.Now()
 	res, err := d.Exec(
-		`INSERT INTO api_keys (user_id, key, name, status, expires_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		k.UserID, k.Key, k.Name, k.Status, k.ExpiresAt, now, now,
+		`INSERT INTO api_keys (user_id, key, name, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		k.UserID, k.Key, k.Name, k.Status, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create api_key: %w", err)
@@ -174,9 +174,9 @@ func (d *DB) CreateAPIKey(k *model.APIKey) error {
 func (d *DB) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 	k := &model.APIKey{}
 	err := d.QueryRow(
-		`SELECT id, user_id, key, name, status, expires_at, created_at, updated_at
+		`SELECT id, user_id, key, name, status, auto_downgrade, created_at, updated_at
 		 FROM api_keys WHERE key = ?`, key,
-	).Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.ExpiresAt, &k.CreatedAt, &k.UpdatedAt)
+	).Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.AutoDowngrade, &k.CreatedAt, &k.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -185,7 +185,7 @@ func (d *DB) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 
 func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 	rows, err := d.Query(
-		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.expires_at, k.created_at, k.updated_at,
+		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.auto_downgrade, k.created_at, k.updated_at,
 		        MAX(l.created_at) as last_used_at,
 		        COALESCE(COUNT(l.id), 0) as requests,
 		        COALESCE(SUM(l.cost_usd), 0) as cost_usd
@@ -202,7 +202,7 @@ func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 	for rows.Next() {
 		k := &model.APIKey{}
 		var lastUsed *string
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.ExpiresAt, &k.CreatedAt, &k.UpdatedAt, &lastUsed, &k.Requests, &k.CostUSD); err != nil {
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.AutoDowngrade, &k.CreatedAt, &k.UpdatedAt, &lastUsed, &k.Requests, &k.CostUSD); err != nil {
 			return nil, err
 		}
 		k.LastUsedAt = parseNullableTime(lastUsed)
@@ -213,7 +213,7 @@ func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 
 func (d *DB) ListAllActiveAPIKeys() ([]*model.APIKey, error) {
 	rows, err := d.Query(
-		`SELECT id, user_id, key, name, status, expires_at, created_at, updated_at
+		`SELECT id, user_id, key, name, status, auto_downgrade, created_at, updated_at
 		 FROM api_keys WHERE status = 'active'`)
 	if err != nil {
 		return nil, err
@@ -222,7 +222,7 @@ func (d *DB) ListAllActiveAPIKeys() ([]*model.APIKey, error) {
 	var keys []*model.APIKey
 	for rows.Next() {
 		k := &model.APIKey{}
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.ExpiresAt, &k.CreatedAt, &k.UpdatedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.AutoDowngrade, &k.CreatedAt, &k.UpdatedAt); err != nil {
 			return nil, err
 		}
 		keys = append(keys, k)
@@ -234,6 +234,14 @@ func (d *DB) UpdateAPIKeyStatus(id int64, status string) error {
 	_, err := d.Exec(
 		`UPDATE api_keys SET status=?, updated_at=? WHERE id=?`,
 		status, time.Now(), id,
+	)
+	return err
+}
+
+func (d *DB) UpdateAPIKeyAutoDowngrade(id int64, autoDowngrade bool) error {
+	_, err := d.Exec(
+		`UPDATE api_keys SET auto_downgrade=?, updated_at=? WHERE id=?`,
+		autoDowngrade, time.Now(), id,
 	)
 	return err
 }
