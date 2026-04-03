@@ -84,6 +84,24 @@ func (d *DB) migrate() error {
 		return err
 	}
 
+	// Add aws_enabled column to users if it doesn't exist
+	_, err = d.Exec(`ALTER TABLE users ADD COLUMN aws_enabled INTEGER NOT NULL DEFAULT 0`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
+	// Add channel column to api_keys if it doesn't exist
+	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN channel TEXT NOT NULL DEFAULT 'backend'`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+
+	// Create AWS usage tables
+	_, err = d.Exec(awsSchema)
+	if err != nil {
+		return fmt.Errorf("aws schema: %w", err)
+	}
+
 	return nil
 }
 
@@ -159,4 +177,43 @@ CREATE TABLE IF NOT EXISTS applications (
 );
 CREATE INDEX IF NOT EXISTS idx_applications_user_id ON applications(user_id);
 CREATE INDEX IF NOT EXISTS idx_applications_status  ON applications(status);
+`
+
+const awsSchema = `
+CREATE TABLE IF NOT EXISTS aws_usage_logs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id           INTEGER NOT NULL,
+    api_key_id        INTEGER NOT NULL,
+    model             TEXT    NOT NULL,
+    bedrock_model     TEXT    NOT NULL DEFAULT '',
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    total_tokens      INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL    NOT NULL DEFAULT 0,
+    status_code       INTEGER NOT NULL DEFAULT 200,
+    latency_ms        INTEGER NOT NULL DEFAULT 0,
+    ua                TEXT    NOT NULL DEFAULT '',
+    created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_user_id    ON aws_usage_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_created_at ON aws_usage_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS aws_daily_stats (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    date              TEXT    NOT NULL,
+    user_id           INTEGER NOT NULL,
+    model             TEXT    NOT NULL,
+    requests          INTEGER NOT NULL DEFAULT 0,
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    total_tokens      INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd          REAL    NOT NULL DEFAULT 0,
+    UNIQUE(date, user_id, model)
+);
+CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_date    ON aws_daily_stats(date);
+CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_user_id ON aws_daily_stats(user_id);
 `

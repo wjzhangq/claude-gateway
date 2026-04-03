@@ -14,6 +14,7 @@ import (
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/awsproxy"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/handler"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
@@ -93,11 +94,33 @@ func main() {
 	proxyH := proxy.NewHandler(lb, collector, keyStore, cfg, cfg.ModelReplacements)
 	lb.ValidateBackends()
 
+	// ─── AWS Bedrock initialization ───────────────────────────────────
+	var awsProxyH *awsproxy.Handler
+	var awsCollector *stats.AWSCollector
+	var awsAggregator *stats.AWSAggregator
+
+	if cfg.AWS.Region != "" && cfg.AWS.AccessKeyID != "" {
+		bedrockClient, err := awsproxy.NewBedrockClient(
+			cfg.AWS.Region, cfg.AWS.AccessKeyID, cfg.AWS.SecretAccessKey,
+		)
+		if err != nil {
+			logger.Fatalf("init bedrock client: %v", err)
+		}
+		awsCollector = stats.NewAWSCollector(database, keyStore, 1024)
+		awsProxyH = awsproxy.NewHandler(bedrockClient, awsCollector, keyStore, &cfg.AWS)
+		awsAggregator = stats.NewAWSAggregator(database, cfg.UsageSync)
+		awsAggregator.Start()
+		logger.Infof("AWS Bedrock channel initialized (region: %s)", cfg.AWS.Region)
+	} else {
+		logger.Infof("AWS Bedrock channel not configured, skipping initialization")
+	}
+
 	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database, keyStore)
 	statsH := handler.NewStatsHandler(database, cfg)
 	appH := handler.NewApplicationHandler(database, keyStore)
+	awsStatsH := handler.NewAWSStatsHandler(database, cfg)
 
 	apiAuth := r.Group("/api/auth")
 	apiAuth.Use(middleware.RateLimit(10, time.Minute))
@@ -107,16 +130,26 @@ func main() {
 		apiAuth.POST("/logout", authH.Logout)
 	}
 
+	// /v1/* — dispatch by channel attribute of the API key
 	v1 := r.Group("/v1")
 	v1.Use(middleware.AuthMiddleware(keyStore))
 	{
-		v1.Any("/*path", proxyH.Passthrough)
+		v1.Any("/*path", func(c *gin.Context) {
+			ch, _ := c.Get("channel")
+			if ch == "aws" && awsProxyH != nil {
+				awsProxyH.Passthrough(c)
+			} else if ch == "aws" {
+				c.JSON(503, gin.H{"error": "AWS channel not configured"})
+			} else {
+				proxyH.Passthrough(c)
+			}
+		})
 	}
 
 	// Public API (no auth required)
 	r.POST("/api/check_key", keyH.CheckKey)
 
-	// User API routes (session auth for web console)
+	// User API routes (session auth)
 	apiUser := r.Group("/api")
 	apiUser.Use(middleware.SessionAuthMiddleware())
 	{
@@ -126,11 +159,24 @@ func main() {
 		apiUser.PUT("/keys/:id/enable", keyH.EnableKey)
 		apiUser.PUT("/keys/:id/auto-downgrade", keyH.SetAutoDowngrade)
 		apiUser.PUT("/keys/:id/rename", keyH.RenameKey)
+		apiUser.PUT("/keys/:id/channel", keyH.SwitchChannel) // channel migration
 		apiUser.DELETE("/keys/:id", keyH.DeleteKey)
 		apiUser.GET("/usage", statsH.GetMyUsage)
 		apiUser.GET("/usage/daily", statsH.GetMyDailyStats)
 		apiUser.POST("/applications", appH.Submit)
 		apiUser.GET("/applications", appH.ListMine)
+	}
+
+	// User AWS API (requires aws_enabled)
+	apiAWS := r.Group("/api/aws")
+	apiAWS.Use(middleware.SessionAuthMiddleware())
+	apiAWS.Use(middleware.AWSEnabledRequired(database))
+	{
+		apiAWS.GET("/dashboard", awsStatsH.GetMyDashboard)
+		apiAWS.GET("/keys", keyH.ListAWSKeys)
+		apiAWS.POST("/keys", keyH.CreateAWSKey)
+		apiAWS.GET("/usage", awsStatsH.GetMyUsage)
+		apiAWS.GET("/usage/daily", awsStatsH.GetMyDailyStats)
 	}
 
 	adminAPI := r.Group("/admin/api")
@@ -158,6 +204,21 @@ func main() {
 		adminAPI.PUT("/applications/:id/review", appH.Review)
 	}
 
+	// Admin AWS API
+	adminAWS := r.Group("/admin/api/aws")
+	adminAWS.Use(middleware.SessionAuthMiddleware())
+	adminAWS.Use(middleware.AdminRequired())
+	{
+		adminAWS.GET("/users", awsStatsH.ListAWSUsers)
+		adminAWS.PUT("/users/:id/toggle", awsStatsH.ToggleAWSEnabled)
+		adminAWS.POST("/users/enable", awsStatsH.EnableAWSByItcode)
+		adminAWS.GET("/keys", keyH.AdminListAWSKeys)
+		adminAWS.GET("/usage", awsStatsH.GetUsage)
+		adminAWS.GET("/usage/daily", awsStatsH.GetDailyStats)
+		adminAWS.GET("/usage/user-daily", awsStatsH.GetUserDailyCostRanking)
+		adminAWS.GET("/bedrock/stats", awsStatsH.GetBedrockStats)
+	}
+
 	// Serve frontend static files
 	r.Static("/assets", "web/dist/assets")
 	r.StaticFile("/favicon.ico", "web/dist/favicon.ico")
@@ -168,7 +229,8 @@ func main() {
 	// Register SIGHUP before starting server to avoid race
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP)
-	go handleReload(sigCh, cfgPath, collector, aggregator, lb, proxyH, statsH, database, keyStore, cfg)
+	go handleReload(sigCh, cfgPath, collector, awsCollector, aggregator, awsAggregator,
+		lb, proxyH, awsProxyH, statsH, awsStatsH, database, keyStore, cfg)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Infof("Claude Gateway listening on %s", addr)
@@ -213,20 +275,29 @@ func sessionLoader() gin.HandlerFunc {
 	}
 }
 
-func handleReload(sigCh <-chan os.Signal, cfgPath string, collector *stats.Collector, aggregator *stats.Aggregator,
-	lb *proxy.LoadBalancer, proxyH *proxy.Handler, statsH *handler.StatsHandler,
+func handleReload(sigCh <-chan os.Signal, cfgPath string,
+	collector *stats.Collector, awsCollector *stats.AWSCollector,
+	aggregator *stats.Aggregator, awsAggregator *stats.AWSAggregator,
+	lb *proxy.LoadBalancer, proxyH *proxy.Handler, awsProxyH *awsproxy.Handler,
+	statsH *handler.StatsHandler, awsStatsH *handler.AWSStatsHandler,
 	database *db.DB, keyStore *auth.KeyStore, currentCfg *config.Config) {
 
 	for range sigCh {
 		logger.Infof("received SIGHUP, starting reload...")
 
-		// Step 1: flush pending usage records to DB
+		// Step 1: flush pending usage records
 		logger.Infof("reload: flushing collector...")
 		collector.Flush()
+		if awsCollector != nil {
+			awsCollector.Flush()
+		}
 
 		// Step 2: aggregate daily stats
 		logger.Infof("reload: aggregating daily stats...")
 		aggregator.RunNow()
+		if awsAggregator != nil {
+			awsAggregator.RunNow()
+		}
 
 		// Step 3: reload config file
 		logger.Infof("reload: loading config from %s", cfgPath)
@@ -236,20 +307,22 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string, collector *stats.Colle
 			continue
 		}
 
-		// Step 4: apply new config to components
+		// Step 4: apply new config
 		lb.UpdateBackends(newCfg.Backends)
 		proxyH.UpdateModelReplacements(newCfg.ModelReplacements)
 		proxyH.UpdateConfig(newCfg)
 		statsH.UpdateConfig(newCfg)
+		awsStatsH.UpdateConfig(newCfg)
+		if awsProxyH != nil {
+			awsProxyH.UpdateConfig(&newCfg.AWS)
+		}
 
 		// Step 5: reload key store
 		if err := loadKeyStore(database, keyStore); err != nil {
 			logger.Errorf("reload: failed to reload key store: %v", err)
 		}
 
-		// Update the shared config pointer
 		*currentCfg = *newCfg
-
 		logger.Infof("reload: completed successfully")
 	}
 }

@@ -20,6 +20,7 @@ type KeyInfo struct {
 	AutoDowngrade    bool      // whether auto-downgrade is enabled
 	DowngradedUntil  time.Time // if set and in future, skip original model and use GPT directly
 	LastUsedAt       time.Time // updated in-memory on every request, flushed to DB periodically
+	Channel          string    // "backend" | "aws"
 }
 
 // KeyStore holds all active API keys in memory for O(1) lookup.

@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 )
 
@@ -53,6 +54,7 @@ func AuthMiddleware(ks *auth.KeyStore) gin.HandlerFunc {
 
 		c.Set(CtxKeyInfo, info)
 		c.Set(CtxUserID, info.UserID)
+		c.Set("channel", info.Channel)
 		c.Next()
 	}
 }
@@ -75,6 +77,19 @@ func AdminRequired() gin.HandlerFunc {
 		role, _ := c.Get(CtxUserRole)
 		if role != "admin" {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin required"})
+			return
+		}
+		c.Next()
+	}
+}
+
+// AWSEnabledRequired checks that the session user has aws_enabled = true.
+func AWSEnabledRequired(database *db.DB) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID := c.GetInt64(CtxUserID)
+		user, err := database.GetUserByID(userID)
+		if err != nil || user == nil || !user.AWSEnabled {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "AWS channel not enabled for this user"})
 			return
 		}
 		c.Next()

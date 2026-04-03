@@ -8,6 +8,12 @@ const userNav = [
   { to: '/usage', label: '使用统计' },
 ]
 
+const awsUserNav = [
+  { to: '/aws', label: 'AWS 仪表盘' },
+  { to: '/aws/keys', label: 'AWS Keys' },
+  { to: '/aws/usage', label: 'AWS 统计' },
+]
+
 const adminNav = [
   { to: '/admin/users', label: '用户管理' },
   { to: '/admin/keys', label: 'Key 管理' },
@@ -17,8 +23,22 @@ const adminNav = [
   { to: '/admin/backends', label: 'Backend 统计' },
 ]
 
+const awsAdminNav = [
+  { to: '/admin/aws/users', label: 'AWS 用户' },
+  { to: '/admin/aws/usage', label: 'AWS 使用统计' },
+  { to: '/admin/aws/user-daily', label: 'AWS 用户费用' },
+  { to: '/admin/aws/bedrock', label: 'Bedrock 统计' },
+]
+
+const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+  `flex items-center px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+    isActive
+      ? 'bg-red-50 text-red-700 border-l-2 border-red-600 pl-[10px]'
+      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+  }`
+
 export default function Layout() {
-  const { user, isAdmin, setUser } = useAuth()
+  const { user, isAdmin, isAWSEnabled, setUser } = useAuth()
   const navigate = useNavigate()
 
   const handleLogout = async () => {
@@ -46,38 +66,39 @@ export default function Layout() {
           <p className="px-3 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">工作台</p>
           <div className="space-y-0.5">
             {userNav.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) =>
-                  `flex items-center px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    isActive
-                      ? 'bg-red-50 text-red-700 border-l-2 border-red-600 pl-[10px]'
-                      : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                  }`
-                }
-              >
+              <NavLink key={item.to} to={item.to} className={navLinkClass}>
                 {item.label}
               </NavLink>
             ))}
           </div>
+
+          {isAWSEnabled && (
+            <>
+              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">AWS</p>
+              <div className="space-y-0.5">
+                {awsUserNav.map((item) => (
+                  <NavLink key={item.to} to={item.to} className={navLinkClass}>
+                    {item.label}
+                  </NavLink>
+                ))}
+              </div>
+            </>
+          )}
 
           {isAdmin && (
             <>
               <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">管理员</p>
               <div className="space-y-0.5">
                 {adminNav.map((item) => (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    className={({ isActive }) =>
-                      `flex items-center px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                        isActive
-                          ? 'bg-red-50 text-red-700 border-l-2 border-red-600 pl-[10px]'
-                          : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
-                      }`
-                    }
-                  >
+                  <NavLink key={item.to} to={item.to} className={navLinkClass}>
+                    {item.label}
+                  </NavLink>
+                ))}
+              </div>
+              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">AWS 管理</p>
+              <div className="space-y-0.5">
+                {awsAdminNav.map((item) => (
+                  <NavLink key={item.to} to={item.to} className={navLinkClass}>
                     {item.label}
                   </NavLink>
                 ))}

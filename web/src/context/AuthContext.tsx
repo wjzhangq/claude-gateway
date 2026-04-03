@@ -6,6 +6,7 @@ interface AuthUser {
   itcode: string
   role: string
   status: string
+  aws_enabled: boolean
 }
 
 interface AuthContextType {
@@ -13,6 +14,7 @@ interface AuthContextType {
   setUser: (u: AuthUser | null) => void
   isAdmin: boolean
   isActive: boolean
+  isAWSEnabled: boolean
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -20,6 +22,7 @@ const AuthContext = createContext<AuthContextType>({
   setUser: () => {},
   isAdmin: false,
   isActive: false,
+  isAWSEnabled: false,
 })
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -45,6 +48,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setUser: handleSetUser,
         isAdmin: user?.role === 'admin',
         isActive: user?.status === 'active',
+        isAWSEnabled: user?.aws_enabled ?? false,
       }}
     >
       {children}

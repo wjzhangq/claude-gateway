@@ -12,9 +12,9 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:8080',
-      '/admin': 'http://localhost:8080',
-      '/v1': 'http://localhost:8080',
+      '/api': 'http://localhost:8081',
+      '/admin': 'http://localhost:8081',
+      '/v1': 'http://localhost:8081',
     },
   },
 })

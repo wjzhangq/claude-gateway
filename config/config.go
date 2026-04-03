@@ -19,6 +19,7 @@ type Config struct {
 	UsageSync         time.Duration     `yaml:"usage_sync_time"`
 	ModelReplacements map[string]string `yaml:"model_replacements"`
 	DowngradedTTL     time.Duration     `yaml:"downgraded_ttl"` // how long to skip original model after downgrade
+	AWS               AWSConfig         `yaml:"aws"`
 }
 
 // Group represents a user group for organizing users and tracking usage.
@@ -57,6 +58,26 @@ type BackendAPI struct {
 	APIKey  string `yaml:"api_key"`
 	Weight  int    `yaml:"weight"`
 	Enabled bool   `yaml:"enabled"`
+}
+
+// AWSConfig holds all AWS Bedrock channel configuration.
+type AWSConfig struct {
+	Region          string                       `yaml:"region"`
+	AccessKeyID     string                       `yaml:"access_key_id"`
+	SecretAccessKey string                       `yaml:"secret_access_key"`
+	CacheEnabled    int                          `yaml:"cache_enabled"`
+	CacheTTL        time.Duration                `yaml:"cache_ttl"`
+	ModelReplace    map[string]string            `yaml:"model_replace"` // exact: upstream name -> Bedrock ARN
+	ModelDefault    map[string]string            `yaml:"model_default"` // glob pattern -> upstream name
+	ModelPricing    map[string]ModelPricingEntry `yaml:"model_pricing"` // glob pattern -> pricing
+}
+
+// ModelPricingEntry holds per-model pricing in USD per 1M tokens.
+type ModelPricingEntry struct {
+	Input      float64 `yaml:"input"`
+	Output     float64 `yaml:"output"`
+	CacheRead  float64 `yaml:"cache_read"`
+	CacheWrite float64 `yaml:"cache_write"`
 }
 
 // Load reads and parses the YAML config file at path.

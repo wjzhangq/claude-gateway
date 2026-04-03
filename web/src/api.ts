@@ -46,6 +46,8 @@ export const setAutoDowngrade = (id: number, autoDowngrade: boolean) =>
 export const renameKey = (id: number, name: string) =>
   api.put(`/api/keys/${id}/rename`, { name })
 export const deleteKey = (id: number) => api.delete(`/api/keys/${id}`)
+export const switchKeyChannel = (id: number, channel: 'backend' | 'aws') =>
+  api.put(`/api/keys/${id}/channel`, { channel })
 
 // Usage
 export const getMyUsage = (params?: Record<string, string | number>) =>
@@ -104,3 +106,30 @@ export const adminGetBackendStatus = () => api.get('/admin/api/backends/status')
 
 // Admin - Groups
 export const adminGetGroups = () => api.get('/admin/api/groups')
+
+// ===== User AWS =====
+export const getAWSDashboard = () => api.get('/api/aws/dashboard')
+export const listAWSKeys = () => api.get('/api/aws/keys')
+export const createAWSKey = (name: string) => api.post('/api/aws/keys', { name })
+export const getAWSMyUsage = (params?: Record<string, string | number>) =>
+  api.get('/api/aws/usage', { params })
+export const getAWSMyDailyStats = (params?: Record<string, string | number>) =>
+  api.get('/api/aws/usage/daily', { params })
+
+// ===== Admin AWS =====
+export const adminListAWSUsers = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/aws/users', { params })
+export const adminToggleAWSUser = (id: number) =>
+  api.put(`/admin/api/aws/users/${id}/toggle`)
+export const adminEnableAWSByItcode = (itcode: string) =>
+  api.post('/admin/api/aws/users/enable', { itcode })
+export const adminGetAWSUsage = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/aws/usage', { params })
+export const adminGetAWSDailyStats = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/aws/usage/daily', { params })
+export const adminGetAWSUserDailyCost = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/aws/usage/user-daily', { params })
+export const adminGetAWSKeys = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/aws/keys', { params })
+export const adminGetAWSBedrockStats = (params?: Record<string, string>) =>
+  api.get('/admin/api/aws/bedrock/stats', { params })
