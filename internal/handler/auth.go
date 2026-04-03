@@ -15,6 +15,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
+	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
@@ -169,4 +170,23 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	sess.Clear()
 	_ = sess.Save()
 	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
+}
+
+// Me godoc: GET /api/me — returns up-to-date current user info from DB.
+func (h *AuthHandler) Me(c *gin.Context) {
+	userID := c.GetInt64(middleware.CtxUserID)
+	user, err := h.db.GetUserByID(userID)
+	if err != nil || user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"user": gin.H{
+			"id":          user.ID,
+			"itcode":      user.Itcode,
+			"role":        user.Role,
+			"status":      user.Status,
+			"aws_enabled": user.AWSEnabled,
+		},
+	})
 }

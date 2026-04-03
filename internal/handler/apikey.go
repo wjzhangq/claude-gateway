@@ -351,6 +351,97 @@ func (h *APIKeyHandler) AdminListAWSKeys(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"keys": keys, "total": total, "page": page, "page_size": pageSize})
 }
 
+// AdminSwitchChannel godoc: PUT /admin/api/keys/:id/channel
+// Admin can switch any key's channel without ownership checks.
+func (h *APIKeyHandler) AdminSwitchChannel(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Channel string `json:"channel" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Channel != "backend" && req.Channel != "aws" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "channel must be 'backend' or 'aws'"})
+		return
+	}
+	if err := h.db.UpdateAPIKeyChannel(id, req.Channel); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.reloadKeys()
+	c.JSON(http.StatusOK, gin.H{"channel": req.Channel})
+}
+
+// AdminCreateKey godoc: POST /admin/api/keys
+// Admin creates a key for any user (user_id required); channel optional ("backend"/"aws").
+func (h *APIKeyHandler) AdminCreateKey(c *gin.Context) {
+	var req struct {
+		UserID  int64  `json:"user_id" binding:"required"`
+		Name    string `json:"name"`
+		Channel string `json:"channel"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.Channel == "" {
+		req.Channel = "backend"
+	}
+	if req.Channel != "backend" && req.Channel != "aws" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "channel must be 'backend' or 'aws'"})
+		return
+	}
+
+	user, err := h.db.GetUserByID(req.UserID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get user info"})
+		return
+	}
+	if user == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	if req.Channel == "aws" && !user.AWSEnabled {
+		c.JSON(http.StatusForbidden, gin.H{"error": "AWS channel not enabled for this user"})
+		return
+	}
+
+	keyStr, err := auth.GenerateKey()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "key generation failed"})
+		return
+	}
+
+	k := &model.APIKey{
+		UserID:  req.UserID,
+		Key:     keyStr,
+		Name:    req.Name,
+		Status:  "active",
+		Channel: req.Channel,
+	}
+	if err := h.db.CreateAPIKey(k); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.keyStore.Add(keyStr, &auth.KeyInfo{
+		KeyID:            k.ID,
+		UserID:           req.UserID,
+		Itcode:           user.Itcode,
+		DailyQuotaTokens: user.DailyQuotaTokens,
+		UserStatus:       user.Status,
+		Channel:          req.Channel,
+	})
+
+	c.JSON(http.StatusCreated, gin.H{"key": k})
+}
+
 // TransferKey godoc: PUT /admin/api/keys/:id/transfer
 func (h *APIKeyHandler) TransferKey(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)

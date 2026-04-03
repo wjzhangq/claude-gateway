@@ -136,6 +136,8 @@ func main() {
 	{
 		v1.Any("/*path", func(c *gin.Context) {
 			ch, _ := c.Get("channel")
+			keyPrefix, _ := c.Get("raw_api_key")
+			logger.Infof("v1 request: path=%s key=%s channel=%v", c.Param("path"), keyPrefix, ch)
 			if ch == "aws" && awsProxyH != nil {
 				awsProxyH.Passthrough(c)
 			} else if ch == "aws" {
@@ -153,6 +155,7 @@ func main() {
 	apiUser := r.Group("/api")
 	apiUser.Use(middleware.SessionAuthMiddleware())
 	{
+		apiUser.GET("/me", authH.Me)
 		apiUser.GET("/keys", keyH.ListKeys)
 		apiUser.POST("/keys", keyH.CreateKey)
 		apiUser.PUT("/keys/:id/disable", keyH.DisableKey)
@@ -189,7 +192,9 @@ func main() {
 		adminAPI.PUT("/users/:id", userH.UpdateUser)
 		adminAPI.PUT("/users/:id/itcode", userH.UpdateItcode)
 		adminAPI.GET("/keys", keyH.AdminListKeys)
+		adminAPI.POST("/keys", keyH.AdminCreateKey)
 		adminAPI.PUT("/keys/:id/rename", keyH.RenameKey)
+		adminAPI.PUT("/keys/:id/channel", keyH.AdminSwitchChannel)
 		adminAPI.PUT("/keys/:id/transfer", keyH.TransferKey)
 		adminAPI.GET("/usage", statsH.GetUsage)
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)

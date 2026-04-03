@@ -504,13 +504,15 @@ func convertAnthropicStreamChunk(chunk []byte, id, model string, created int64) 
 	return nil
 }
 
-// prepareAnthropicBody sets anthropic_version to "bedrock-2023-05-31" and removes the model field.
+// prepareAnthropicBody sets anthropic_version to "bedrock-2023-05-31" and removes
+// fields that Bedrock does not accept: "model" and "stream".
 func prepareAnthropicBody(body []byte) []byte {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
 	}
 	delete(m, "model")
+	delete(m, "stream") // Bedrock rejects this field: "Extra inputs are not permitted"
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
 	if out, err := json.Marshal(m); err == nil {
 		return out

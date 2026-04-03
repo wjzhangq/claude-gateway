@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { adminListKeys, adminRenameKey, adminTransferKey, adminListUsers } from '../api'
+import { adminListKeys, adminRenameKey, adminTransferKey, adminListUsers, adminSwitchKeyChannel, adminCreateKey } from '../api'
 import { formatTime, formatDate } from '../utils/time'
 
 interface APIKeyWithUser {
@@ -7,9 +7,11 @@ interface APIKeyWithUser {
   user_id: number
   user_itcode: string
   user_name: string
+  user_aws_enabled: boolean
   name: string
   key: string
   status: string
+  channel: string
   auto_downgrade: boolean
   last_used_at: string | null
   created_at: string
@@ -20,12 +22,13 @@ interface APIKeyWithUser {
 interface User {
   id: number
   itcode: string
+  aws_enabled: boolean
 }
 
 function SkeletonRow() {
   return (
     <tr>
-      {[80, 80, 120, 60, 60, 70, 90, 110, 130].map((w, i) => (
+      {[80, 80, 120, 60, 60, 60, 80, 70, 90, 110, 130].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -49,6 +52,14 @@ export default function AdminKeysPage() {
   const [transferring, setTransferring] = useState(false)
   const [revealedId, setRevealedId] = useState<number | null>(null)
   const [copied, setCopied] = useState<number | null>(null)
+
+  // Create key form state
+  const [createUserId, setCreateUserId] = useState('')
+  const [createName, setCreateName] = useState('')
+  const [createAWS, setCreateAWS] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
+  const [createSuccess, setCreateSuccess] = useState('')
 
   const load = (p = page, uid = filterUserId) => {
     setLoading(true)
@@ -96,6 +107,40 @@ export default function AdminKeysPage() {
     }
   }
 
+  const handleSwitchChannel = async (k: APIKeyWithUser) => {
+    const newCh = k.channel === 'aws' ? 'backend' : 'aws'
+    if (!confirm(`确认将 Key "${k.name || k.key.slice(0, 12)}" 切换到 ${newCh === 'aws' ? 'AWS' : 'Backend'} 渠道？`)) return
+    await adminSwitchKeyChannel(k.id, newCh)
+    load()
+  }
+
+  const selectedUser = users.find((u) => String(u.id) === createUserId)
+
+  const handleCreate = async () => {
+    if (!createUserId) { setCreateError('请选择用户'); return }
+    setCreating(true)
+    setCreateError('')
+    setCreateSuccess('')
+    try {
+      const res = await adminCreateKey({
+        user_id: Number(createUserId),
+        name: createName.trim() || undefined,
+        channel: createAWS ? 'aws' : 'backend',
+      })
+      const key = res.data.key
+      setCreateSuccess(`已创建 Key: ${key?.key ?? ''}`)
+      setCreateName('')
+      setCreateAWS(false)
+      load(1)
+      setPage(1)
+    } catch (e: unknown) {
+      const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
+      setCreateError(msg || '创建失败')
+    } finally {
+      setCreating(false)
+    }
+  }
+
   const totalPages = Math.ceil(total / pageSize)
 
   return (
@@ -139,6 +184,49 @@ export default function AdminKeysPage() {
         </div>
       </div>
 
+      {/* Create key panel */}
+      <div className="bg-white rounded-xl border border-gray-100 p-5 mb-5 shadow-sm">
+        <h3 className="text-sm font-semibold text-gray-700 mb-3">创建 Key</h3>
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={createUserId}
+            onChange={(e) => { setCreateUserId(e.target.value); setCreateAWS(false); setCreateError(''); setCreateSuccess('') }}
+            className="w-48 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+          >
+            <option value="">选择用户</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>{u.itcode}</option>
+            ))}
+          </select>
+          <input
+            value={createName}
+            onChange={(e) => { setCreateName(e.target.value); setCreateError(''); setCreateSuccess('') }}
+            placeholder="Key 名称（可选）"
+            className="w-44 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+          />
+          {selectedUser?.aws_enabled && (
+            <label className="flex items-center gap-1.5 text-sm text-amber-700 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={createAWS}
+                onChange={(e) => setCreateAWS(e.target.checked)}
+                className="w-3.5 h-3.5 accent-amber-500"
+              />
+              AWS Key
+            </label>
+          )}
+          <button
+            onClick={handleCreate}
+            disabled={creating || !createUserId}
+            className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-xl hover:bg-red-700 disabled:opacity-50 transition-colors"
+          >
+            {creating ? '创建中...' : '创建 Key'}
+          </button>
+        </div>
+        {createError && <p className="mt-2 text-sm text-red-600">{createError}</p>}
+        {createSuccess && <p className="mt-2 text-xs text-green-600 font-mono break-all">{createSuccess}</p>}
+      </div>
+
       <div className="mb-4 flex items-center gap-3">
         <select
           value={filterUserId}
@@ -158,7 +246,7 @@ export default function AdminKeysPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['用户', 'Key名称', 'Key', '状态', '请求数', '费用', '创建时间', '最后使用', '操作'].map((h) => (
+              {['用户', 'Key名称', 'Key', '状态', '渠道', '请求数', '费用', '创建时间', '最后使用', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>
               ))}
             </tr>
@@ -167,7 +255,7 @@ export default function AdminKeysPage() {
             {loading ? (
               Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
             ) : keys.length === 0 ? (
-              <tr><td colSpan={9} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td></tr>
+              <tr><td colSpan={10} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td></tr>
             ) : (
               keys.map((k) => (
                 <tr key={k.id} className="hover:bg-gray-50/50 transition-colors">
@@ -197,6 +285,15 @@ export default function AdminKeysPage() {
                       {k.status === 'active' ? '启用' : '禁用'}
                     </span>
                   </td>
+                  <td className="px-4 py-3.5">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${
+                      k.channel === 'aws'
+                        ? 'bg-amber-50 text-amber-700 ring-amber-100'
+                        : 'bg-blue-50 text-blue-700 ring-blue-100'
+                    }`}>
+                      {k.channel === 'aws' ? 'AWS' : 'Backend'}
+                    </span>
+                  </td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs">{(k.requests || 0).toLocaleString()}</td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs">${(k.cost_usd || 0).toFixed(4)}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">{formatDate(k.created_at)}</td>
@@ -211,6 +308,14 @@ export default function AdminKeysPage() {
                       </button>
                       <button onClick={() => { setRenamingId(k.id); setRenameValue(k.name || '') }} className="text-xs text-blue-400 hover:text-blue-600 transition-colors">改名</button>
                       <button onClick={() => { setTransferId(k.id); setTransferTarget('') }} className="text-xs text-purple-400 hover:text-purple-600 transition-colors">转移</button>
+                      {k.user_aws_enabled && (
+                        <button
+                          onClick={() => handleSwitchChannel(k)}
+                          className={`text-xs transition-colors ${k.channel === 'aws' ? 'text-gray-400 hover:text-gray-600' : 'text-amber-500 hover:text-amber-700'}`}
+                        >
+                          {k.channel === 'aws' ? '切换 Backend' : '切换 AWS'}
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

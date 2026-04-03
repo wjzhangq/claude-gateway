@@ -34,6 +34,7 @@ export const login = (itcode: string, code: string, inviteCode?: string) =>
   api.post("/api/auth/login", { itcode, code, invite_code: inviteCode || undefined })
 
 export const logout = () => api.post('/api/auth/logout')
+export const getMe = () => api.get('/api/me')
 
 // API Keys
 export const listKeys = () => api.get('/api/keys')
@@ -75,8 +76,12 @@ export const adminUpdateItcode = (id: number, itcode: string) =>
 // Admin - Keys
 export const adminListKeys = (params?: Record<string, string | number>) =>
   api.get('/admin/api/keys', { params })
+export const adminCreateKey = (data: { user_id: number; name?: string; channel?: string }) =>
+  api.post('/admin/api/keys', data)
 export const adminRenameKey = (id: number, name: string) =>
   api.put(`/admin/api/keys/${id}/rename`, { name })
+export const adminSwitchKeyChannel = (id: number, channel: 'backend' | 'aws') =>
+  api.put(`/admin/api/keys/${id}/channel`, { channel })
 export const adminTransferKey = (id: number, itcode: string) =>
   api.put(`/admin/api/keys/${id}/transfer`, { itcode })
 

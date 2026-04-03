@@ -11,8 +11,8 @@ import (
 func (d *DB) CreateApplication(a *model.Application) error {
 	now := time.Now()
 	res, err := d.Exec(
-		`INSERT INTO applications (user_id, reason, status, created_at, updated_at)
-		 VALUES (?, ?, 'pending', ?, ?)`,
+		`INSERT INTO applications (user_id, model, reason, status, created_at, updated_at)
+		 VALUES (?, '', ?, 'pending', ?, ?)`,
 		a.UserID, a.Reason, now, now,
 	)
 	if err != nil {

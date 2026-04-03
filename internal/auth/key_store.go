@@ -53,6 +53,7 @@ func (ks *KeyStore) Load(keys []model.APIKey, users map[int64]*model.User) {
 			UserStatus:       u.Status,
 			CreatedAt:        k.CreatedAt,
 			AutoDowngrade:    k.AutoDowngrade,
+			Channel:          k.Channel,
 		}
 		if k.LastUsedAt != nil {
 			info.LastUsedAt = *k.LastUsedAt

@@ -1,5 +1,6 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useState, useEffect } from 'react'
 import type { ReactNode } from 'react'
+import { getMe } from '../api'
 
 interface AuthUser {
   id: number
@@ -40,6 +41,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (u) sessionStorage.setItem('user', JSON.stringify(u))
     else sessionStorage.removeItem('user')
   }
+
+  // Refresh user info from server on mount so changes (e.g. aws_enabled) are reflected
+  // without requiring a re-login.
+  useEffect(() => {
+    if (!sessionStorage.getItem('user')) return
+    getMe()
+      .then((res) => {
+        const fresh = res.data.user
+        if (fresh) handleSetUser(fresh)
+      })
+      .catch(() => {
+        // 401 means session expired — clear local state
+        handleSetUser(null)
+      })
+  }, [])
 
   return (
     <AuthContext.Provider
