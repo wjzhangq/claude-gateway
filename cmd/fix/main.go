@@ -100,7 +100,8 @@ func openDB(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-// fixSchema 补全代码中定义但数据库中缺失的列。
+// fixSchema 补全代码中定义但数据库中缺失的列，并确保 AWS 表存在。
+// 同时修复 applications.model 无 DEFAULT 的问题。
 // 返回实际补全的列数。
 func fixSchema(db *sql.DB) (int, error) {
 	type colDef struct {
@@ -109,16 +110,21 @@ func fixSchema(db *sql.DB) (int, error) {
 		ddl   string
 	}
 
-	// 与 internal/db/db.go migrate() 保持一致，列出所有应存在的列
+	// 与 internal/db/db.go migrate() 保持完全一致，列出所有应存在的列
 	cols := []colDef{
+		// users
 		{"users", "group_id", "ALTER TABLE users ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0"},
 		{"users", "daily_quota_tokens", "ALTER TABLE users ADD COLUMN daily_quota_tokens INTEGER NOT NULL DEFAULT 0"},
+		{"users", "aws_enabled", "ALTER TABLE users ADD COLUMN aws_enabled INTEGER NOT NULL DEFAULT 0"},
+		// api_keys
 		{"api_keys", "auto_downgrade", "ALTER TABLE api_keys ADD COLUMN auto_downgrade INTEGER NOT NULL DEFAULT 0"},
 		{"api_keys", "last_used_at", "ALTER TABLE api_keys ADD COLUMN last_used_at DATETIME"},
+		{"api_keys", "channel", "ALTER TABLE api_keys ADD COLUMN channel TEXT NOT NULL DEFAULT 'backend'"},
+		// usage_logs
+		{"usage_logs", "backend", "ALTER TABLE usage_logs ADD COLUMN backend TEXT NOT NULL DEFAULT ''"},
 		{"usage_logs", "is_openclaw", "ALTER TABLE usage_logs ADD COLUMN is_openclaw INTEGER NOT NULL DEFAULT 0"},
 		{"usage_logs", "is_downgraded", "ALTER TABLE usage_logs ADD COLUMN is_downgraded INTEGER NOT NULL DEFAULT 0"},
 		{"usage_logs", "ua", "ALTER TABLE usage_logs ADD COLUMN ua TEXT NOT NULL DEFAULT ''"},
-		{"usage_logs", "backend", "ALTER TABLE usage_logs ADD COLUMN backend TEXT NOT NULL DEFAULT ''"},
 	}
 
 	added := 0
@@ -138,15 +144,67 @@ func fixSchema(db *sql.DB) (int, error) {
 		added++
 	}
 
-	// 确保索引存在
+	// 确保 AWS 相关表存在
+	awsTables := []string{
+		`CREATE TABLE IF NOT EXISTS aws_usage_logs (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			user_id           INTEGER NOT NULL,
+			api_key_id        INTEGER NOT NULL,
+			model             TEXT    NOT NULL,
+			bedrock_model     TEXT    NOT NULL DEFAULT '',
+			input_tokens      INTEGER NOT NULL DEFAULT 0,
+			output_tokens     INTEGER NOT NULL DEFAULT 0,
+			total_tokens      INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			cost_usd          REAL    NOT NULL DEFAULT 0,
+			status_code       INTEGER NOT NULL DEFAULT 200,
+			latency_ms        INTEGER NOT NULL DEFAULT 0,
+			ua                TEXT    NOT NULL DEFAULT '',
+			created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS aws_daily_stats (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			date              TEXT    NOT NULL,
+			user_id           INTEGER NOT NULL,
+			model             TEXT    NOT NULL,
+			requests          INTEGER NOT NULL DEFAULT 0,
+			input_tokens      INTEGER NOT NULL DEFAULT 0,
+			output_tokens     INTEGER NOT NULL DEFAULT 0,
+			total_tokens      INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			cost_usd          REAL    NOT NULL DEFAULT 0,
+			UNIQUE(date, user_id, model)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_user_id    ON aws_usage_logs(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_created_at ON aws_usage_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_date      ON aws_daily_stats(date)`,
+		`CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_user_id   ON aws_daily_stats(user_id)`,
+	}
+	for _, ddl := range awsTables {
+		if _, err := db.Exec(ddl); err != nil {
+			log.Printf("    [警告] 创建 AWS 表/索引失败: %v", err)
+		}
+	}
+
+	// 修复 applications.model 无 DEFAULT 问题（SQLite 不支持 ALTER COLUMN，需重建表）
+	if n, err := fixApplicationsModelDefault(db); err != nil {
+		log.Printf("    [警告] 修复 applications.model DEFAULT 失败: %v", err)
+	} else if n > 0 {
+		log.Printf("    [修复] applications.model 已补全 DEFAULT ''，迁移行数: %d", n)
+		added++
+	}
+
+	// 确保所有索引存在
 	indexes := []string{
-		`CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id ON usage_logs(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at ON usage_logs(created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date)`,
-		`CREATE INDEX IF NOT EXISTS idx_daily_stats_user_id ON daily_stats(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_applications_user_id ON applications(user_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_api_keys_user_id       ON api_keys(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id     ON usage_logs(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_logs_created_at  ON usage_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_daily_stats_date       ON daily_stats(date)`,
+		`CREATE INDEX IF NOT EXISTS idx_daily_stats_user_id    ON daily_stats(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_applications_user_id   ON applications(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_applications_status    ON applications(status)`,
 	}
 	for _, idx := range indexes {
 		if _, err := db.Exec(idx); err != nil {
@@ -155,6 +213,90 @@ func fixSchema(db *sql.DB) (int, error) {
 	}
 
 	return added, nil
+}
+
+// fixApplicationsModelDefault 检查 applications.model 是否缺少 DEFAULT ''。
+// 若缺少则通过重建表的方式补全（SQLite 不支持 ALTER COLUMN）。
+// 返回迁移的行数（0 表示无需修复）。
+func fixApplicationsModelDefault(db *sql.DB) (int, error) {
+	// 检查 model 列是否有 DEFAULT 值
+	rows, err := db.Query("PRAGMA table_info(applications)")
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	needFix := false
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return 0, err
+		}
+		if name == "model" && !dflt.Valid {
+			needFix = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if !needFix {
+		log.Printf("    [跳过] applications.model DEFAULT 已正确")
+		return 0, nil
+	}
+
+	// 重建 applications 表以补全 DEFAULT
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. 统计行数
+	var count int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM applications").Scan(&count); err != nil {
+		return 0, err
+	}
+
+	// 2. 创建新表
+	_, err = tx.Exec(`CREATE TABLE IF NOT EXISTS applications_new (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		user_id     INTEGER NOT NULL REFERENCES users(id),
+		model       TEXT    NOT NULL DEFAULT '',
+		reason      TEXT    NOT NULL DEFAULT '',
+		status      TEXT    NOT NULL DEFAULT 'pending',
+		reviewer_id INTEGER,
+		review_note TEXT    NOT NULL DEFAULT '',
+		created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+	)`)
+	if err != nil {
+		return 0, fmt.Errorf("创建 applications_new: %w", err)
+	}
+
+	// 3. 复制数据
+	_, err = tx.Exec(`INSERT INTO applications_new
+		SELECT id, user_id, COALESCE(model,''), reason, status, reviewer_id, review_note, created_at, updated_at
+		FROM applications`)
+	if err != nil {
+		return 0, fmt.Errorf("复制数据: %w", err)
+	}
+
+	// 4. 删除旧表、重命名新表
+	if _, err := tx.Exec("DROP TABLE applications"); err != nil {
+		return 0, fmt.Errorf("删除旧表: %w", err)
+	}
+	if _, err := tx.Exec("ALTER TABLE applications_new RENAME TO applications"); err != nil {
+		return 0, fmt.Errorf("重命名新表: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit: %w", err)
+	}
+	return count, nil
 }
 
 func columnExists(db *sql.DB, table, col string) (bool, error) {

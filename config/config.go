@@ -67,6 +67,7 @@ type AWSConfig struct {
 	SecretAccessKey string                       `yaml:"secret_access_key"`
 	CacheEnabled    int                          `yaml:"cache_enabled"`
 	CacheTTL        time.Duration                `yaml:"cache_ttl"`
+	Socks5Proxy     string                       `yaml:"socks5"` // optional socks5 proxy, e.g. socks5://user:pass@host:port or user:pass@host:port
 	ModelReplace    map[string]string            `yaml:"model_replace"` // exact: upstream name -> Bedrock ARN
 	ModelDefault    map[string]string            `yaml:"model_default"` // glob pattern -> upstream name
 	ModelPricing    map[string]ModelPricingEntry `yaml:"model_pricing"` // glob pattern -> pricing

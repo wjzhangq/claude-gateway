@@ -506,6 +506,7 @@ func convertAnthropicStreamChunk(chunk []byte, id, model string, created int64) 
 
 // prepareAnthropicBody sets anthropic_version to "bedrock-2023-05-31" and removes
 // fields that Bedrock does not accept: "model" and "stream".
+// It also ensures max_tokens > thinking.budget_tokens when extended thinking is used.
 func prepareAnthropicBody(body []byte) []byte {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
@@ -514,6 +515,29 @@ func prepareAnthropicBody(body []byte) []byte {
 	delete(m, "model")
 	delete(m, "stream") // Bedrock rejects this field: "Extra inputs are not permitted"
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
+
+	// Enforce max_tokens > thinking.budget_tokens (Bedrock requirement).
+	if thinkingRaw, ok := m["thinking"]; ok {
+		var thinking struct {
+			BudgetTokens int `json:"budget_tokens"`
+		}
+		if err := json.Unmarshal(thinkingRaw, &thinking); err == nil && thinking.BudgetTokens > 0 {
+			var maxTokens int
+			if maxRaw, ok := m["max_tokens"]; ok {
+				_ = json.Unmarshal(maxRaw, &maxTokens)
+			}
+			if maxTokens <= thinking.BudgetTokens {
+				// Set max_tokens to budget_tokens + 1024 to leave headroom for output.
+				newMax := thinking.BudgetTokens + 1024
+				if raw, err := json.Marshal(newMax); err == nil {
+					m["max_tokens"] = raw
+					logger.Warnf("prepareAnthropicBody: max_tokens (%d) <= thinking.budget_tokens (%d), adjusted to %d",
+						maxTokens, thinking.BudgetTokens, newMax)
+				}
+			}
+		}
+	}
+
 	if out, err := json.Marshal(m); err == nil {
 		return out
 	}

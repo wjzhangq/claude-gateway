@@ -44,3 +44,20 @@ backends:
   #   api_key: "sk-ant-api03-ANOTHER_KEY"
   #   weight: 5
   #   enabled: true
+
+# AWS Bedrock 渠道（可选）
+# aws:
+#   region: us-west-2
+#   access_key_id: AKIAIOSFODNN7EXAMPLE
+#   secret_access_key: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+#   # SOCKS5 代理，支持以下格式（留空则直连）：
+#   #   user:pass@host:port
+#   #   socks5://user:pass@host:port
+#   #   host:port（无认证）
+#   socks5: ""
+#   cache_enabled: 0
+#   cache_ttl: 5m
+#   model_replace:
+#     claude-3-5-sonnet-20241022: arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0
+#   model_default:
+#     "claude-3-5-*": claude-3-5-sonnet-20241022

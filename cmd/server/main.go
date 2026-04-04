@@ -101,7 +101,7 @@ func main() {
 
 	if cfg.AWS.Region != "" && cfg.AWS.AccessKeyID != "" {
 		bedrockClient, err := awsproxy.NewBedrockClient(
-			cfg.AWS.Region, cfg.AWS.AccessKeyID, cfg.AWS.SecretAccessKey,
+			cfg.AWS.Region, cfg.AWS.AccessKeyID, cfg.AWS.SecretAccessKey, cfg.AWS.Socks5Proxy,
 		)
 		if err != nil {
 			logger.Fatalf("init bedrock client: %v", err)
@@ -110,7 +110,11 @@ func main() {
 		awsProxyH = awsproxy.NewHandler(bedrockClient, awsCollector, keyStore, &cfg.AWS)
 		awsAggregator = stats.NewAWSAggregator(database, cfg.UsageSync)
 		awsAggregator.Start()
-		logger.Infof("AWS Bedrock channel initialized (region: %s)", cfg.AWS.Region)
+		if cfg.AWS.Socks5Proxy != "" {
+			logger.Infof("AWS Bedrock channel initialized (region: %s, proxy: %s)", cfg.AWS.Region, cfg.AWS.Socks5Proxy)
+		} else {
+			logger.Infof("AWS Bedrock channel initialized (region: %s, proxy: none)", cfg.AWS.Region)
+		}
 	} else {
 		logger.Infof("AWS Bedrock channel not configured, skipping initialization")
 	}
