@@ -110,13 +110,14 @@ func (b *Backend) GetErrorRate() float64 {
 
 // BackendInfo represents backend status info for API responses.
 type BackendInfo struct {
-	Name            string   `json:"name"`
-	URL             string   `json:"url"`
-	Weight          int      `json:"weight"`
-	Disabled        bool     `json:"disabled"`
-	ErrCount        int64    `json:"err_count"`
+	Name            string      `json:"name"`
+	URL             string      `json:"url"`
+	Weight          int         `json:"weight"`
+	Disabled        bool        `json:"disabled"`
+	ErrCount        int64       `json:"err_count"`
 	StatusCodeDist  map[int]int `json:"status_code_dist"`
-	ErrorRate       float64  `json:"error_rate"`
+	StatusCodes     []int       `json:"status_codes"`
+	ErrorRate       float64     `json:"error_rate"`
 }
 
 // GetBackends returns all backends with their status info.
@@ -133,6 +134,7 @@ func (lb *LoadBalancer) GetBackends() []BackendInfo {
 			Disabled:       b.disabled.Load(),
 			ErrCount:       b.errCount.Load(),
 			StatusCodeDist: b.GetStatusCodeDist(),
+			StatusCodes:    b.GetStatusCodes(),
 			ErrorRate:      b.GetErrorRate(),
 		})
 	}

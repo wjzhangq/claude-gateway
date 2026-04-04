@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { adminGetBackendStats, adminGetBackendStatus } from '../api'
 import { toDateStr } from '../utils/time'
 
@@ -18,6 +18,7 @@ interface BackendStatus {
   disabled: boolean
   err_count: number
   status_code_dist: Record<number, number>
+  status_codes: number[]
   error_rate: number
 }
 
@@ -57,18 +58,18 @@ export default function AdminBackendsPage() {
       .finally(() => setLoading(false))
   }
 
-  const loadStatus = () => {
-    setStatusLoading(true)
+  const loadStatus = (silent?: boolean) => {
+    if (!silent) setStatusLoading(true)
     adminGetBackendStatus()
       .then((res) => setBackendStatus(res.data || []))
       .catch(() => {})
-      .finally(() => setStatusLoading(false))
+      .finally(() => { if (!silent) setStatusLoading(false) })
   }
 
   useEffect(() => { load(date) }, [date])
   useEffect(() => { loadStatus() }, [])
   useEffect(() => {
-    const interval = setInterval(loadStatus, 5000)
+    const interval = setInterval(() => loadStatus(true), 5000)
     return () => clearInterval(interval)
   }, [])
 
@@ -92,12 +93,20 @@ export default function AdminBackendsPage() {
 
   const totalStatusCodes = Object.values(combinedStatusDist).reduce((s, c) => s + c, 0)
 
+  // Merge all backends' status_codes into a single ordered list (last 50)
+  const allStatusCodes: number[] = backendStatus.flatMap(b => b.status_codes || [])
+  // Take last 50
+  const recentCodes = allStatusCodes.slice(-50)
+
   // Status code colors and labels
   const getStatusInfo = (code: number) => {
-    if (code === 200) return { label: '200 正常', color: 'bg-green-500', bg: 'bg-green-50', text: 'text-green-700' }
-    if (code === 419) return { label: '419 额度超', color: 'bg-orange-500', bg: 'bg-orange-50', text: 'text-orange-700' }
-    if (code === 503) return { label: '503 服务异常', color: 'bg-red-500', bg: 'bg-red-50', text: 'text-red-700' }
-    return { label: `${code}`, color: 'bg-gray-400', bg: 'bg-gray-50', text: 'text-gray-600' }
+    if (code === 200) return { label: '200 正常', color: 'bg-green-500', dotColor: '#22c55e', bg: 'bg-green-50', text: 'text-green-700' }
+    if (code === 419) return { label: '419 额度超', color: 'bg-orange-500', dotColor: '#f97316', bg: 'bg-orange-50', text: 'text-orange-700' }
+    if (code === 503) return { label: '503 服务异常', color: 'bg-red-500', dotColor: '#ef4444', bg: 'bg-red-50', text: 'text-red-700' }
+    if (code >= 200 && code < 300) return { label: `${code}`, color: 'bg-green-400', dotColor: '#4ade80', bg: 'bg-green-50', text: 'text-green-600' }
+    if (code >= 400 && code < 500) return { label: `${code}`, color: 'bg-orange-400', dotColor: '#fb923c', bg: 'bg-orange-50', text: 'text-orange-600' }
+    if (code >= 500) return { label: `${code}`, color: 'bg-red-400', dotColor: '#f87171', bg: 'bg-red-50', text: 'text-red-600' }
+    return { label: `${code}`, color: 'bg-gray-400', dotColor: '#9ca3af', bg: 'bg-gray-50', text: 'text-gray-600' }
   }
 
   const pieData = Object.entries(combinedStatusDist)
@@ -171,45 +180,43 @@ export default function AdminBackendsPage() {
           <h3 className="text-sm font-semibold text-gray-700">HTTP 状态码分布 (最近50请求)</h3>
           <span className="text-xs text-gray-400">每5秒刷新</span>
         </div>
-        <div className="p-6">
+        <div className="p-5">
           {statusLoading ? (
             <div className="text-center text-sm text-gray-400">加载中...</div>
-          ) : totalStatusCodes === 0 ? (
+          ) : recentCodes.length === 0 ? (
             <div className="text-center text-sm text-gray-400">暂无请求数据</div>
           ) : (
-            <div className="flex items-center gap-8">
-              {/* Pie chart visualization */}
-              <div className="relative w-32 h-32 flex-shrink-0">
-                <svg viewBox="0 0 36 36" className="w-32 h-32 transform -rotate-90">
-                  {pieData.reduce((acc, d) => {
-                    const prev = acc.prev
-                    const dash = (d.pct / 100) * 100
-                    acc.elements.push(
-                      <circle
-                        key={d.code}
-                        cx="18"
-                        cy="18"
-                        r="15.9155"
-                        fill="transparent"
-                        stroke={d.code === 200 ? '#22c55e' : d.code === 419 ? '#f97316' : d.code === 503 ? '#ef4444' : '#9ca3af'}
-                        strokeWidth="4"
-                        strokeDasharray={`${dash} ${100 - dash}`}
-                        strokeDashoffset={-prev}
+            <div>
+              {/* 50-slot strip */}
+              <div className="flex gap-1 mb-4">
+                {Array.from({ length: 50 }).map((_, i) => {
+                  const code = recentCodes[i]
+                  if (code == null) {
+                    return (
+                      <div
+                        key={i}
+                        className="flex-1 h-7 rounded-sm bg-gray-100"
+                        title="—"
                       />
                     )
-                    acc.prev += dash
-                    return acc
-                  }, { elements: [] as React.ReactNode[], prev: 0 }).elements}
-                </svg>
+                  }
+                  const info = getStatusInfo(code)
+                  return (
+                    <div
+                      key={i}
+                      className={`flex-1 h-7 rounded-sm ${info.color} cursor-default transition-opacity hover:opacity-75`}
+                      title={`#${i + 1} ${info.label}`}
+                    />
+                  )
+                })}
               </div>
               {/* Legend */}
-              <div className="flex-1 grid grid-cols-2 gap-3">
+              <div className="flex flex-wrap gap-x-5 gap-y-1.5">
                 {pieData.map((d) => (
-                  <div key={d.code} className="flex items-center gap-2">
-                    <span className={`w-3 h-3 rounded-full ${d.color}`} />
-                    <span className={`text-sm font-medium ${d.text}`}>{d.code}</span>
-                    <span className="text-sm text-gray-500">{d.label?.replace(`${d.code} `, '') || ''}</span>
-                    <span className="text-sm text-gray-400 ml-auto">{d.count} ({d.pct.toFixed(1)}%)</span>
+                  <div key={d.code} className="flex items-center gap-1.5">
+                    <span className={`w-2.5 h-2.5 rounded-sm ${d.color}`} />
+                    <span className={`text-xs font-medium ${d.text}`}>{d.label}</span>
+                    <span className="text-xs text-gray-400 tabular-nums">{d.count} ({d.pct.toFixed(1)}%)</span>
                   </div>
                 ))}
               </div>
