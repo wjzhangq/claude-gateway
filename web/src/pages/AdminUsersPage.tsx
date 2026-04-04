@@ -18,6 +18,8 @@ interface User {
   requests: number
   cost_usd: number
   oc_cost_usd: number
+  backend_cost_usd: number
+  aws_cost_usd: number
 }
 
 interface Group {
@@ -47,7 +49,7 @@ interface EditState {
 function SkeletonRow() {
   return (
     <tr>
-      {[90, 60, 60, 70, 90, 70, 80, 80, 110, 80, 80].map((w, i) => (
+      {[90, 60, 60, 70, 90, 70, 80, 80, 80, 110, 80, 80].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -199,6 +201,8 @@ export default function AdminUsersPage() {
     else if (sortKey === 'daily_quota_tokens') { aVal = a.daily_quota_tokens; bVal = b.daily_quota_tokens }
     else if (sortKey === 'requests') { aVal = a.requests || 0; bVal = b.requests || 0 }
     else if (sortKey === 'cost_usd') { aVal = a.cost_usd || 0; bVal = b.cost_usd || 0 }
+    else if (sortKey === 'backend_cost_usd') { aVal = a.backend_cost_usd || 0; bVal = b.backend_cost_usd || 0 }
+    else if (sortKey === 'aws_cost_usd') { aVal = a.aws_cost_usd || 0; bVal = b.aws_cost_usd || 0 }
     else if (sortKey === 'created_at') { aVal = a.created_at; bVal = b.created_at }
     else if (sortKey === 'last_used_at') { aVal = a.last_used_at || ''; bVal = b.last_used_at || '' }
 
@@ -451,8 +455,9 @@ export default function AdminUsersPage() {
                 { key: 'group_id', label: '分组' },
                 { key: 'daily_quota_tokens', label: 'Token限额$' },
                 { key: 'requests', label: '请求数' },
-                { key: 'cost_usd', label: '费用' },
+                { key: 'backend_cost_usd', label: 'Backend 费用' },
                 { key: 'oc_cost_usd', label: 'OC 费用' },
+                { key: 'aws_cost_usd', label: 'AWS 费用' },
                 { key: 'last_used_at', label: '最后使用' },
                 { key: 'created_at', label: '注册时间' },
                 { key: '', label: '操作' },
@@ -520,15 +525,16 @@ export default function AdminUsersPage() {
                     </td>
                     <td className="px-4 py-3.5 text-gray-600">{u.daily_quota_tokens?.toLocaleString() || '0'}</td>
                     <td className="px-4 py-3.5 text-gray-600">{(u.requests || 0).toLocaleString()}</td>
-                    <td className="px-4 py-3.5 font-medium text-gray-800">${(u.cost_usd || 0).toFixed(4)}</td>
+                    <td className="px-4 py-3.5 font-medium text-gray-800">${(u.backend_cost_usd || 0).toFixed(4)}</td>
                     <td className="px-4 py-3.5 text-orange-600 font-medium">
                       ${(u.oc_cost_usd || 0).toFixed(4)}
-                      {u.cost_usd > 0 && (
+                      {u.backend_cost_usd > 0 && (
                         <span className="ml-1 text-[10px] text-gray-400">
-                          ({((u.oc_cost_usd || 0) / u.cost_usd * 100).toFixed(0)}%)
+                          ({((u.oc_cost_usd || 0) / u.backend_cost_usd * 100).toFixed(0)}%)
                         </span>
                       )}
                     </td>
+                    <td className="px-4 py-3.5 font-medium text-amber-700">${(u.aws_cost_usd || 0).toFixed(4)}</td>
                     <td className="px-4 py-3.5 text-gray-400 text-xs">
                       {formatTime(u.last_used_at)}
                     </td>
@@ -560,7 +566,7 @@ export default function AdminUsersPage() {
                   </tr>
                   {editId === u.id && (
                     <tr key={`edit-${u.id}`}>
-                      <td colSpan={11} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
+                      <td colSpan={12} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
                         <div className="flex items-center gap-3 flex-wrap">
                           <div className="flex items-center gap-1.5">
                             <label className="text-xs text-gray-500 font-medium">名称</label>

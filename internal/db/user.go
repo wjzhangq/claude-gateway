@@ -91,10 +91,12 @@ func (d *DB) ListUsers() ([]*model.User, error) {
 // UserWithStats extends User with aggregated usage info.
 type UserWithStats struct {
 	model.User
-	LastUsedAt  *time.Time `json:"last_used_at"`
-	Requests    int64      `json:"requests"`
-	CostUSD     float64    `json:"cost_usd"`
-	OCCostUSD   float64    `json:"oc_cost_usd"`
+	LastUsedAt     *time.Time `json:"last_used_at"`
+	Requests       int64      `json:"requests"`
+	CostUSD        float64    `json:"cost_usd"`
+	OCCostUSD      float64    `json:"oc_cost_usd"`
+	BackendCostUSD float64    `json:"backend_cost_usd"`
+	AWSCostUSD     float64    `json:"aws_cost_usd"`
 }
 
 func (d *DB) ListUsersWithStats(page, pageSize int) ([]*UserWithStats, int, error) {
@@ -116,7 +118,9 @@ func (d *DB) ListUsersWithStats(page, pageSize int) ([]*UserWithStats, int, erro
 		        MAX(l.created_at) as last_used_at,
 		        COALESCE(COUNT(l.id), 0) as requests,
 		        COALESCE(SUM(l.cost_usd), 0) as cost_usd,
-		        COALESCE(SUM(CASE WHEN l.is_openclaw = 1 THEN l.cost_usd ELSE 0 END), 0) as oc_cost_usd
+		        COALESCE(SUM(CASE WHEN l.is_openclaw = 1 THEN l.cost_usd ELSE 0 END), 0) as oc_cost_usd,
+		        COALESCE(SUM(l.cost_usd), 0) as backend_cost_usd,
+		        COALESCE((SELECT SUM(a.cost_usd) FROM aws_usage_logs a WHERE a.user_id = u.id), 0) as aws_cost_usd
 		 FROM users u
 		 LEFT JOIN usage_logs l ON l.user_id = u.id
 		 GROUP BY u.id
@@ -131,7 +135,7 @@ func (d *DB) ListUsersWithStats(page, pageSize int) ([]*UserWithStats, int, erro
 		u := &UserWithStats{}
 		var lastUsed *string
 		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaTokens, &u.AWSEnabled,
-			&u.CreatedAt, &u.UpdatedAt, &lastUsed, &u.Requests, &u.CostUSD, &u.OCCostUSD); err != nil {
+			&u.CreatedAt, &u.UpdatedAt, &lastUsed, &u.Requests, &u.CostUSD, &u.OCCostUSD, &u.BackendCostUSD, &u.AWSCostUSD); err != nil {
 			return nil, 0, err
 		}
 		u.LastUsedAt = parseNullableTime(lastUsed)
