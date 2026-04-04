@@ -504,9 +504,32 @@ func convertAnthropicStreamChunk(chunk []byte, id, model string, created int64) 
 	return nil
 }
 
+// stripCacheControlScope removes the "scope" field from any cache_control object
+// found anywhere in a JSON value. Bedrock does not support cache_control.scope
+// (it is an Anthropic-only extension added after bedrock-2023-05-31).
+func stripCacheControlScope(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		if cc, ok := val["cache_control"]; ok {
+			if ccMap, ok := cc.(map[string]interface{}); ok {
+				delete(ccMap, "scope")
+			}
+		}
+		for k, child := range val {
+			val[k] = stripCacheControlScope(child)
+		}
+	case []interface{}:
+		for i, item := range val {
+			val[i] = stripCacheControlScope(item)
+		}
+	}
+	return v
+}
+
 // prepareAnthropicBody sets anthropic_version to "bedrock-2023-05-31" and removes
 // fields that Bedrock does not accept: "model" and "stream".
-// It also ensures max_tokens > thinking.budget_tokens when extended thinking is used.
+// It also ensures max_tokens > thinking.budget_tokens when extended thinking is used,
+// and strips cache_control.scope which Bedrock does not support.
 func prepareAnthropicBody(body []byte) []byte {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
@@ -515,6 +538,19 @@ func prepareAnthropicBody(body []byte) []byte {
 	delete(m, "model")
 	delete(m, "stream") // Bedrock rejects this field: "Extra inputs are not permitted"
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
+
+	// Strip cache_control.scope from system/messages — Bedrock does not support it.
+	for _, key := range []string{"system", "messages"} {
+		if raw, ok := m[key]; ok {
+			var parsed interface{}
+			if err := json.Unmarshal(raw, &parsed); err == nil {
+				cleaned := stripCacheControlScope(parsed)
+				if b, err := json.Marshal(cleaned); err == nil {
+					m[key] = b
+				}
+			}
+		}
+	}
 
 	// Enforce max_tokens > thinking.budget_tokens (Bedrock requirement).
 	if thinkingRaw, ok := m["thinking"]; ok {
@@ -601,6 +637,7 @@ func (h *Handler) emitUsage(keyInfo *auth.KeyInfo, keyStr, reqModel, bedrockMode
 
 	h.collector.Emit(stats.AWSRecord{
 		UserID:           keyInfo.UserID,
+		GroupID:          keyInfo.GroupID,
 		APIKeyID:         keyInfo.KeyID,
 		KeyStr:           keyStr,
 		Model:            reqModel,

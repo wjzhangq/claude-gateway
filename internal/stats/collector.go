@@ -17,6 +17,7 @@ const (
 // Record holds the data for a single API call to be persisted.
 type Record struct {
 	UserID       int64
+	GroupID      int
 	APIKeyID     int64
 	KeyStr       string // raw key string, used to update KeyStore.LastUsedAt
 	Model        string
@@ -52,12 +53,16 @@ func NewCollector(database *db.DB, ks *auth.KeyStore, bufSize int) *Collector {
 }
 
 // Emit sends a record to the collector (non-blocking) and immediately updates
-// the in-memory LastUsedAt on the KeyStore — no DB write on the hot path.
+// the in-memory LastUsedAt and cost accumulators on the KeyStore — no DB write on the hot path.
 func (c *Collector) Emit(r Record) {
 	r.CreatedAt = time.Now()
-	// Update last_used_at in memory immediately — O(1), no lock contention on writes
 	if r.KeyStr != "" && c.keyStore != nil {
+		// Update last_used_at in memory immediately — O(1), no lock contention on writes
 		c.keyStore.MarkUsed(r.KeyStr, r.CreatedAt)
+		// Accumulate cost in memory; flushed to DB every minute
+		if r.CostUSD > 0 {
+			c.keyStore.AddCost(r.KeyStr, "backend", r.CostUSD)
+		}
 	}
 	select {
 	case c.ch <- r:
@@ -120,6 +125,7 @@ func (c *Collector) worker() {
 func recordToLog(r Record) *model.UsageLog {
 	return &model.UsageLog{
 		UserID:       r.UserID,
+		GroupID:      r.GroupID,
 		APIKeyID:     r.APIKeyID,
 		Model:        r.Model,
 		Backend:      r.Backend,

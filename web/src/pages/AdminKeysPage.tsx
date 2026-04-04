@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { adminListKeys, adminRenameKey, adminTransferKey, adminListUsers, adminSwitchKeyChannel, adminCreateKey } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { adminListKeys, adminRenameKey, adminTransferKey, adminSearchUsers, adminSwitchKeyChannel, adminCreateKey } from '../api'
 import { formatTime, formatDate } from '../utils/time'
 
 interface APIKeyWithUser {
@@ -19,10 +19,88 @@ interface APIKeyWithUser {
   cost_usd: number
 }
 
-interface User {
+interface UserSuggestion {
   id: number
   itcode: string
   aws_enabled: boolean
+}
+
+// Reusable itcode search input with dropdown
+function ItcodeSearchInput({
+  value,
+  onChange,
+  onSelect,
+  placeholder,
+  className,
+}: {
+  value: string
+  onChange: (v: string) => void
+  onSelect: (u: UserSuggestion) => void
+  placeholder?: string
+  className?: string
+}) {
+  const [suggestions, setSuggestions] = useState<UserSuggestion[]>([])
+  const [open, setOpen] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  const search = (q: string) => {
+    if (!q.trim()) { setSuggestions([]); setOpen(false); return }
+    adminSearchUsers(q.trim(), 10)
+      .then((res) => {
+        const users: UserSuggestion[] = res.data.users || []
+        setSuggestions(users)
+        setOpen(users.length > 0)
+      })
+      .catch(() => {})
+  }
+
+  const handleChange = (v: string) => {
+    onChange(v)
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => search(v), 250)
+  }
+
+  const handleSelect = (u: UserSuggestion) => {
+    onChange(u.itcode)
+    onSelect(u)
+    setSuggestions([])
+    setOpen(false)
+  }
+
+  // Close on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <input
+        value={value}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder={placeholder || '输入 itcode 搜索用户'}
+        className={className || 'w-48 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all'}
+      />
+      {open && suggestions.length > 0 && (
+        <ul className="absolute z-50 left-0 top-full mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden max-h-52 overflow-y-auto">
+          {suggestions.map((u) => (
+            <li
+              key={u.id}
+              onMouseDown={() => handleSelect(u)}
+              className="px-3.5 py-2 text-sm cursor-pointer hover:bg-red-50 hover:text-red-700 transition-colors flex items-center justify-between"
+            >
+              <span>{u.itcode}</span>
+              {u.aws_enabled && <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded ring-1 ring-amber-100">AWS</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 }
 
 function SkeletonRow() {
@@ -43,8 +121,11 @@ export default function AdminKeysPage() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const pageSize = 20
+
+  // Filter state
+  const [filterItcode, setFilterItcode] = useState('')
   const [filterUserId, setFilterUserId] = useState('')
-  const [users, setUsers] = useState<User[]>([])
+
   const [renamingId, setRenamingId] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [transferId, setTransferId] = useState<number | null>(null)
@@ -54,7 +135,9 @@ export default function AdminKeysPage() {
   const [copied, setCopied] = useState<number | null>(null)
 
   // Create key form state
+  const [createItcode, setCreateItcode] = useState('')
   const [createUserId, setCreateUserId] = useState('')
+  const [createUserAWSEnabled, setCreateUserAWSEnabled] = useState(false)
   const [createName, setCreateName] = useState('')
   const [createAWS, setCreateAWS] = useState(false)
   const [creating, setCreating] = useState(false)
@@ -71,16 +154,11 @@ export default function AdminKeysPage() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => {
-    adminListUsers({ page: 1, page_size: 1000 })
-      .then((res) => setUsers(res.data.users || []))
-      .catch(() => {})
-    load()
-  }, [])
-
+  useEffect(() => { load() }, [])
   useEffect(() => { load(page, filterUserId) }, [page])
 
   const handleFilter = () => { setPage(1); load(1, filterUserId) }
+  const handleFilterClear = () => { setFilterItcode(''); setFilterUserId(''); setPage(1); load(1, '') }
 
   const handleCopy = (id: number, key: string) => {
     navigator.clipboard.writeText(key)
@@ -114,10 +192,8 @@ export default function AdminKeysPage() {
     load()
   }
 
-  const selectedUser = users.find((u) => String(u.id) === createUserId)
-
   const handleCreate = async () => {
-    if (!createUserId) { setCreateError('请选择用户'); return }
+    if (!createUserId) { setCreateError('请搜索并选择用户'); return }
     setCreating(true)
     setCreateError('')
     setCreateSuccess('')
@@ -188,23 +264,20 @@ export default function AdminKeysPage() {
       <div className="bg-white rounded-xl border border-gray-100 p-5 mb-5 shadow-sm">
         <h3 className="text-sm font-semibold text-gray-700 mb-3">创建 Key</h3>
         <div className="flex items-center gap-2 flex-wrap">
-          <select
-            value={createUserId}
-            onChange={(e) => { setCreateUserId(e.target.value); setCreateAWS(false); setCreateError(''); setCreateSuccess('') }}
+          <ItcodeSearchInput
+            value={createItcode}
+            onChange={(v) => { setCreateItcode(v); if (!v) { setCreateUserId(''); setCreateUserAWSEnabled(false) }; setCreateError(''); setCreateSuccess('') }}
+            onSelect={(u) => { setCreateUserId(String(u.id)); setCreateUserAWSEnabled(u.aws_enabled); setCreateAWS(false) }}
+            placeholder="搜索用户 itcode"
             className="w-48 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
-          >
-            <option value="">选择用户</option>
-            {users.map((u) => (
-              <option key={u.id} value={u.id}>{u.itcode}</option>
-            ))}
-          </select>
+          />
           <input
             value={createName}
             onChange={(e) => { setCreateName(e.target.value); setCreateError(''); setCreateSuccess('') }}
             placeholder="Key 名称（可选）"
             className="w-44 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
           />
-          {selectedUser?.aws_enabled && (
+          {createUserAWSEnabled && (
             <label className="flex items-center gap-1.5 text-sm text-amber-700 cursor-pointer select-none">
               <input
                 type="checkbox"
@@ -228,17 +301,17 @@ export default function AdminKeysPage() {
       </div>
 
       <div className="mb-4 flex items-center gap-3">
-        <select
-          value={filterUserId}
-          onChange={(e) => setFilterUserId(e.target.value)}
-          className="px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
-        >
-          <option value="">全部用户</option>
-          {users.map((u) => (
-            <option key={u.id} value={u.id}>{u.itcode}</option>
-          ))}
-        </select>
+        <ItcodeSearchInput
+          value={filterItcode}
+          onChange={(v) => { setFilterItcode(v); if (!v) setFilterUserId('') }}
+          onSelect={(u) => setFilterUserId(String(u.id))}
+          placeholder="按用户 itcode 筛选"
+          className="w-52 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+        />
         <button onClick={handleFilter} className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-xl hover:bg-red-700 transition-colors">查询</button>
+        {filterUserId && (
+          <button onClick={handleFilterClear} className="px-3 py-2 text-sm border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 transition-colors">清除</button>
+        )}
         <span className="text-sm text-gray-400">共 {total} 条</span>
       </div>
 

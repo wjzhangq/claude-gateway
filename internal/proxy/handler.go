@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -219,6 +220,18 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			c.Header(k, v)
 		}
 	}
+
+	// Inject X-Gateway-* informational headers
+	if info, ok := keyInfo.(*auth.KeyInfo); ok {
+		c.Header("X-Gateway-Model", reqModel)
+		c.Header("X-Gateway-Channel", info.Channel)
+		quota := info.DailyQuotaUSD
+		if info.Channel == "aws" {
+			quota = info.AWSDailyQuotaUSD
+		}
+		c.Header("X-Gateway-Daily-Quota", strconv.FormatFloat(quota, 'f', 4, 64))
+	}
+
 	c.Status(resp.StatusCode)
 
 	// Stream or buffer
@@ -445,6 +458,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	ua := parseUA(userAgent, isOpenClaw)
 	h.collector.Emit(stats.Record{
 		UserID:       info.UserID,
+		GroupID:      info.GroupID,
 		APIKeyID:     info.KeyID,
 		KeyStr:       keyStr,
 		Model:        model,

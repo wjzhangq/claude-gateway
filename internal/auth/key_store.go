@@ -13,14 +13,20 @@ import (
 type KeyInfo struct {
 	KeyID            int64
 	UserID           int64
+	GroupID          int
 	Itcode           string
-	DailyQuotaTokens int64     // 0 = unlimited
+	DailyQuotaUSD    float64   // 0 = unlimited (backend channel daily quota in USD)
+	AWSDailyQuotaUSD float64   // 0 = unlimited (aws channel daily quota in USD)
 	UserStatus       string    // active | disabled
 	CreatedAt        time.Time // key creation time
 	AutoDowngrade    bool      // whether auto-downgrade is enabled
 	DowngradedUntil  time.Time // if set and in future, skip original model and use GPT directly
 	LastUsedAt       time.Time // updated in-memory on every request, flushed to DB periodically
 	Channel          string    // "backend" | "aws"
+	// Cost accumulators (write-back pattern, flushed to DB periodically)
+	backendCostDelta float64 // pending backend cost not yet written to DB
+	awsCostDelta     float64 // pending aws cost not yet written to DB
+	costDirty        bool    // true if cost needs flush
 }
 
 // KeyStore holds all active API keys in memory for O(1) lookup.
@@ -48,8 +54,10 @@ func (ks *KeyStore) Load(keys []model.APIKey, users map[int64]*model.User) {
 		info := &KeyInfo{
 			KeyID:            k.ID,
 			UserID:           k.UserID,
+			GroupID:          u.GroupID,
 			Itcode:           u.Itcode,
-			DailyQuotaTokens: u.DailyQuotaTokens,
+			DailyQuotaUSD:    u.DailyQuotaUSD,
+			AWSDailyQuotaUSD: u.AWSDailyQuotaUSD,
 			UserStatus:       u.Status,
 			CreatedAt:        k.CreatedAt,
 			AutoDowngrade:    k.AutoDowngrade,
@@ -100,15 +108,58 @@ func (ks *KeyStore) MarkUsed(key string, t time.Time) {
 	info := ks.keys[key]
 	ks.mu.RUnlock()
 	if info != nil {
-		// LastUsedAt is a value field; update via pointer under read lock is safe
-		// because only this goroutine writes LastUsedAt for this key at this moment.
-		// Use a separate write lock to be safe.
 		ks.mu.Lock()
 		if info2, ok := ks.keys[key]; ok {
 			info2.LastUsedAt = t
 		}
 		ks.mu.Unlock()
 	}
+}
+
+// AddCost accumulates cost for a key in memory (channel-aware). No DB write.
+func (ks *KeyStore) AddCost(key string, channel string, costUSD float64) {
+	if costUSD <= 0 {
+		return
+	}
+	ks.mu.Lock()
+	if info, ok := ks.keys[key]; ok {
+		if channel == "aws" {
+			info.awsCostDelta += costUSD
+		} else {
+			info.backendCostDelta += costUSD
+		}
+		info.costDirty = true
+	}
+	ks.mu.Unlock()
+}
+
+// KeyCostUpdate holds pending cost delta for one key.
+type KeyCostUpdate struct {
+	KeyID          int64
+	BackendCostAdd float64
+	AWSCostAdd     float64
+}
+
+// FlushCosts returns and resets the pending cost deltas for all dirty keys.
+// Callers should persist the returned updates to DB.
+func (ks *KeyStore) FlushCosts() []KeyCostUpdate {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	var updates []KeyCostUpdate
+	for _, info := range ks.keys {
+		if !info.costDirty {
+			continue
+		}
+		updates = append(updates, KeyCostUpdate{
+			KeyID:          info.KeyID,
+			BackendCostAdd: info.backendCostDelta,
+			AWSCostAdd:     info.awsCostDelta,
+		})
+		info.backendCostDelta = 0
+		info.awsCostDelta = 0
+		info.costDirty = false
+	}
+	return updates
 }
 
 // FlushLastUsed returns a snapshot of keyID -> LastUsedAt for all keys that have

@@ -10,7 +10,8 @@ type User struct {
 	Role             string    `db:"role"              json:"role"`
 	Status           string    `db:"status"            json:"status"`
 	GroupID          int       `db:"group_id"          json:"group_id"`
-	DailyQuotaTokens int64     `db:"daily_quota_tokens" json:"daily_quota_tokens"`
+	DailyQuotaUSD    float64   `db:"daily_quota_usd"   json:"daily_quota_usd"`
+	AWSDailyQuotaUSD float64   `db:"aws_daily_quota_usd" json:"aws_daily_quota_usd"`
 	AWSEnabled       bool      `db:"aws_enabled"       json:"aws_enabled"`
 	CreatedAt        time.Time `db:"created_at"        json:"created_at"`
 	UpdatedAt        time.Time `db:"updated_at"        json:"updated_at"`
@@ -18,24 +19,26 @@ type User struct {
 
 // APIKey represents a user's API key.
 type APIKey struct {
-	ID            int64      `db:"id"             json:"id"`
-	UserID        int64      `db:"user_id"        json:"user_id"`
-	Key           string     `db:"key"            json:"key"`
-	Name          string     `db:"name"           json:"name"`
-	Status        string     `db:"status"         json:"status"`
-	Channel       string     `db:"channel"        json:"channel"` // "backend" | "aws"
-	AutoDowngrade bool       `db:"auto_downgrade" json:"auto_downgrade"`
-	CreatedAt     time.Time  `db:"created_at"     json:"created_at"`
-	UpdatedAt     time.Time  `db:"updated_at"     json:"updated_at"`
-	LastUsedAt    *time.Time `db:"last_used_at"   json:"last_used_at"`
-	Requests      int64      `db:"-"              json:"requests"`
-	CostUSD       float64    `db:"-"              json:"cost_usd"`
+	ID             int64      `db:"id"               json:"id"`
+	UserID         int64      `db:"user_id"          json:"user_id"`
+	Key            string     `db:"key"              json:"key"`
+	Name           string     `db:"name"             json:"name"`
+	Status         string     `db:"status"           json:"status"`
+	Channel        string     `db:"channel"          json:"channel"` // "backend" | "aws"
+	AutoDowngrade  bool       `db:"auto_downgrade"   json:"auto_downgrade"`
+	CreatedAt      time.Time  `db:"created_at"       json:"created_at"`
+	UpdatedAt      time.Time  `db:"updated_at"       json:"updated_at"`
+	LastUsedAt     *time.Time `db:"last_used_at"     json:"last_used_at"`
+	TotalCostUSD   float64    `db:"total_cost_usd"   json:"total_cost_usd"`
+	BackendCostUSD float64    `db:"backend_cost_usd" json:"backend_cost_usd"`
+	AWSCostUSD     float64    `db:"aws_cost_usd"     json:"aws_cost_usd"`
 }
 
 // UsageLog records a single API call.
 type UsageLog struct {
 	ID           int64     `db:"id"            json:"id"`
 	UserID       int64     `db:"user_id"       json:"user_id"`
+	GroupID      int       `db:"group_id"      json:"group_id"`
 	Itcode       string    `db:"-"             json:"itcode"`
 	APIKeyID     int64     `db:"api_key_id"    json:"api_key_id"`
 	Model        string    `db:"model"         json:"model"`
@@ -96,6 +99,7 @@ type GroupStats struct {
 type AWSUsageLog struct {
 	ID               int64     `db:"id"                json:"id"`
 	UserID           int64     `db:"user_id"           json:"user_id"`
+	GroupID          int       `db:"group_id"          json:"group_id"`
 	Itcode           string    `db:"-"                 json:"itcode"`
 	APIKeyID         int64     `db:"api_key_id"        json:"api_key_id"`
 	Model            string    `db:"model"             json:"model"`

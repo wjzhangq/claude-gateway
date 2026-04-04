@@ -22,15 +22,36 @@ func NewAPIKeyHandler(database *db.DB, ks *auth.KeyStore) *APIKeyHandler {
 	return &APIKeyHandler{db: database, keyStore: ks}
 }
 
-// ListKeys godoc: GET /api/keys  (shows backend channel keys only)
+// ListKeys godoc: GET /api/keys
+// Optional query param: channel=backend|aws|"" (empty = all)
 func (h *APIKeyHandler) ListKeys(c *gin.Context) {
 	userID := c.GetInt64(middleware.CtxUserID)
-	keys, err := h.db.ListAPIKeysByUserAndChannel(userID, "backend")
+	channel := c.DefaultQuery("channel", "backend")
+	keys, err := h.db.ListAPIKeysByUserAndChannel(userID, channel)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"keys": keys})
+}
+
+// verifyKeyOwnership returns the key record if it belongs to the calling user, or writes an error response.
+func (h *APIKeyHandler) verifyKeyOwnership(c *gin.Context, id int64) bool {
+	userID := c.GetInt64(middleware.CtxUserID)
+	k, err := h.db.GetAPIKeyByID(id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return false
+	}
+	if k == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
+		return false
+	}
+	if k.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return false
+	}
+	return true
 }
 
 // CreateKey godoc: POST /api/keys
@@ -73,17 +94,14 @@ func (h *APIKeyHandler) CreateKey(c *gin.Context) {
 		return
 	}
 
-	// Load user to get quota
-	var quota int64
-	if user != nil {
-		quota = user.DailyQuotaTokens
-	}
 	h.keyStore.Add(keyStr, &auth.KeyInfo{
-		KeyID:       k.ID,
-		UserID:      userID,
-		Itcode:      user.Itcode,
-		DailyQuotaTokens: quota,
-		UserStatus:  user.Status,
+		KeyID:            k.ID,
+		UserID:           userID,
+		GroupID:          user.GroupID,
+		Itcode:           user.Itcode,
+		DailyQuotaUSD:    user.DailyQuotaUSD,
+		AWSDailyQuotaUSD: user.AWSDailyQuotaUSD,
+		UserStatus:       user.Status,
 	})
 
 	c.JSON(http.StatusCreated, gin.H{"key": k})
@@ -105,6 +123,9 @@ func (h *APIKeyHandler) setKeyStatus(c *gin.Context, status string) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
+	if !h.verifyKeyOwnership(c, id) {
+		return
+	}
 	if err := h.db.UpdateAPIKeyStatus(id, status); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -122,6 +143,9 @@ func (h *APIKeyHandler) DeleteKey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
+	if !h.verifyKeyOwnership(c, id) {
+		return
+	}
 	if err := h.db.DeleteAPIKey(id); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -135,6 +159,9 @@ func (h *APIKeyHandler) SetAutoDowngrade(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if !h.verifyKeyOwnership(c, id) {
 		return
 	}
 	var req struct {
@@ -196,12 +223,18 @@ func (h *APIKeyHandler) CheckKey(c *gin.Context) {
 }
 
 // RenameKey godoc: PUT /api/keys/:id/rename  (user renames own key)
-// Also used by admin: PUT /admin/api/keys/:id/rename
+// Also used by admin: PUT /admin/api/keys/:id/rename  (no ownership check when admin)
 func (h *APIKeyHandler) RenameKey(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
+	}
+	// Only enforce ownership for non-admin routes
+	if role, _ := c.Get(middleware.CtxUserRole); role != "admin" {
+		if !h.verifyKeyOwnership(c, id) {
+			return
+		}
 	}
 	var req struct {
 		Name string `json:"name" binding:"required"`
@@ -237,6 +270,9 @@ func (h *APIKeyHandler) SwitchChannel(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if !h.verifyKeyOwnership(c, id) {
 		return
 	}
 	var req struct {
@@ -327,8 +363,10 @@ func (h *APIKeyHandler) CreateAWSKey(c *gin.Context) {
 	h.keyStore.Add(keyStr, &auth.KeyInfo{
 		KeyID:            k.ID,
 		UserID:           userID,
+		GroupID:          user.GroupID,
 		Itcode:           user.Itcode,
-		DailyQuotaTokens: user.DailyQuotaTokens,
+		DailyQuotaUSD:    user.DailyQuotaUSD,
+		AWSDailyQuotaUSD: user.AWSDailyQuotaUSD,
 		UserStatus:       user.Status,
 		Channel:          "aws",
 	})
@@ -433,8 +471,10 @@ func (h *APIKeyHandler) AdminCreateKey(c *gin.Context) {
 	h.keyStore.Add(keyStr, &auth.KeyInfo{
 		KeyID:            k.ID,
 		UserID:           req.UserID,
+		GroupID:          user.GroupID,
 		Itcode:           user.Itcode,
-		DailyQuotaTokens: user.DailyQuotaTokens,
+		DailyQuotaUSD:    user.DailyQuotaUSD,
+		AWSDailyQuotaUSD: user.AWSDailyQuotaUSD,
 		UserStatus:       user.Status,
 		Channel:          req.Channel,
 	})

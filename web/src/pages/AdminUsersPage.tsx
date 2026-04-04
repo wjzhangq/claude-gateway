@@ -12,7 +12,8 @@ interface User {
   role: string
   status: string
   group_id: number
-  daily_quota_tokens: number
+  daily_quota_usd: number
+  aws_daily_quota_usd: number
   created_at: string
   last_used_at: string | null
   requests: number
@@ -42,14 +43,15 @@ interface EditState {
   role: string
   status: string
   group_id: number
-  daily_quota_tokens: string
+  daily_quota_usd: string
+  aws_daily_quota_usd: string
   name: string
 }
 
 function SkeletonRow() {
   return (
     <tr>
-      {[90, 60, 60, 70, 90, 70, 80, 80, 80, 110, 80, 80].map((w, i) => (
+      {[90, 60, 60, 70, 70, 80, 70, 80, 80, 80, 110, 80, 80].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -152,10 +154,11 @@ export default function AdminUsersPage() {
   const [error, setError] = useState('')
   const [chartUser, setChartUser] = useState<User | null>(null)
   const [editId, setEditId] = useState<number | null>(null)
-  const [editState, setEditState] = useState<EditState>({ role: '', status: '', group_id: 0, daily_quota_tokens: '', name: '' })
+  const [editState, setEditState] = useState<EditState>({ role: '', status: '', group_id: 0, daily_quota_usd: '', aws_daily_quota_usd: '', name: '' })
   const [saving, setSaving] = useState(false)
   const [sortKey, setSortKey] = useState<string>('id')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
+  const [searchQuery, setSearchQuery] = useState('')
   // itcode rename
   const [renamingItcodeId, setRenamingItcodeId] = useState<number | null>(null)
   const [itcodeValue, setItcodeValue] = useState('')
@@ -191,14 +194,25 @@ export default function AdminUsersPage() {
     }
   }
 
-  const sortedUsers = [...users].sort((a, b) => {
+  const filteredUsers = searchQuery.trim()
+    ? users.filter((u) => {
+        const q = searchQuery.trim().toLowerCase()
+        return (
+          u.itcode.toLowerCase().includes(q) ||
+          (u.name ?? '').toLowerCase().includes(q)
+        )
+      })
+    : users
+
+  const sortedUsers = [...filteredUsers].sort((a, b) => {
     let aVal: string | number = a.id
     let bVal: string | number = b.id
     if (sortKey === 'itcode') { aVal = a.itcode; bVal = b.itcode }
     else if (sortKey === 'role') { aVal = a.role; bVal = b.role }
     else if (sortKey === 'status') { aVal = a.status; bVal = b.status }
     else if (sortKey === 'group_id') { aVal = a.group_id; bVal = b.group_id }
-    else if (sortKey === 'daily_quota_tokens') { aVal = a.daily_quota_tokens; bVal = b.daily_quota_tokens }
+    else if (sortKey === 'daily_quota_usd') { aVal = a.daily_quota_usd || 0; bVal = b.daily_quota_usd || 0 }
+    else if (sortKey === 'aws_daily_quota_usd') { aVal = a.aws_daily_quota_usd || 0; bVal = b.aws_daily_quota_usd || 0 }
     else if (sortKey === 'requests') { aVal = a.requests || 0; bVal = b.requests || 0 }
     else if (sortKey === 'cost_usd') { aVal = a.cost_usd || 0; bVal = b.cost_usd || 0 }
     else if (sortKey === 'backend_cost_usd') { aVal = a.backend_cost_usd || 0; bVal = b.backend_cost_usd || 0 }
@@ -219,7 +233,14 @@ export default function AdminUsersPage() {
 
   const openEdit = (u: User) => {
     setEditId(u.id)
-    setEditState({ role: u.role, status: u.status, group_id: u.group_id ?? 0, daily_quota_tokens: String(u.daily_quota_tokens ?? 0), name: u.name ?? '' })
+    setEditState({
+      role: u.role,
+      status: u.status,
+      group_id: u.group_id ?? 0,
+      daily_quota_usd: String(u.daily_quota_usd ?? 0),
+      aws_daily_quota_usd: String(u.aws_daily_quota_usd ?? 0),
+      name: u.name ?? '',
+    })
   }
 
   const handleSave = async (id: number) => {
@@ -230,7 +251,8 @@ export default function AdminUsersPage() {
         role: editState.role,
         status: editState.status,
         group_id: editState.group_id,
-        daily_quota_tokens: parseInt(editState.daily_quota_tokens) || 0,
+        daily_quota_usd: parseFloat(editState.daily_quota_usd) || 0,
+        aws_daily_quota_usd: parseFloat(editState.aws_daily_quota_usd) || 0,
       })
       setEditId(null)
       load()
@@ -250,7 +272,7 @@ export default function AdminUsersPage() {
         role: newRole,
         status: newStatus,
         group_id: newGroup,
-        daily_quota_tokens: parseInt(newQuota) || 0,
+        daily_quota_usd: parseFloat(newQuota) || 0,
       })
       setShowCreate(false)
       setNewItcode('')
@@ -356,12 +378,20 @@ export default function AdminUsersPage() {
           <h2 className="text-xl font-bold text-gray-900">用户管理</h2>
           <p className="text-sm text-gray-400 mt-0.5">管理系统用户和权限</p>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-xl hover:bg-red-700 shadow-sm hover:shadow-md transition-all"
-        >
-          + 新建用户
-        </button>
+        <div className="flex items-center gap-3">
+          <input
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="搜索 itcode / 名称..."
+            className="w-56 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+          />
+          <button
+            onClick={() => setShowCreate(true)}
+            className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-xl hover:bg-red-700 shadow-sm hover:shadow-md transition-all"
+          >
+            + 新建用户
+          </button>
+        </div>
       </div>
 
       {showCreate && (
@@ -453,7 +483,8 @@ export default function AdminUsersPage() {
                 { key: 'role', label: '角色' },
                 { key: 'status', label: '状态' },
                 { key: 'group_id', label: '分组' },
-                { key: 'daily_quota_tokens', label: 'Token限额$' },
+                { key: 'daily_quota_usd', label: '日限额$' },
+                { key: 'aws_daily_quota_usd', label: 'AWS日限额$' },
                 { key: 'requests', label: '请求数' },
                 { key: 'backend_cost_usd', label: 'Backend 费用' },
                 { key: 'oc_cost_usd', label: 'OC 费用' },
@@ -523,7 +554,8 @@ export default function AdminUsersPage() {
                     <td className="px-4 py-3.5 text-gray-600">
                       {groups.find((g) => g.id === u.group_id)?.name || (u.group_id ? `分组${u.group_id}` : '未分组')}
                     </td>
-                    <td className="px-4 py-3.5 text-gray-600">{u.daily_quota_tokens?.toLocaleString() || '0'}</td>
+                    <td className="px-4 py-3.5 text-gray-600">{u.daily_quota_usd != null ? u.daily_quota_usd.toFixed(2) : '0.00'}</td>
+                    <td className="px-4 py-3.5 text-gray-600">{u.aws_daily_quota_usd != null ? u.aws_daily_quota_usd.toFixed(2) : '0.00'}</td>
                     <td className="px-4 py-3.5 text-gray-600">{(u.requests || 0).toLocaleString()}</td>
                     <td className="px-4 py-3.5 font-medium text-gray-800">${(u.backend_cost_usd || 0).toFixed(4)}</td>
                     <td className="px-4 py-3.5 text-orange-600 font-medium">
@@ -566,7 +598,7 @@ export default function AdminUsersPage() {
                   </tr>
                   {editId === u.id && (
                     <tr key={`edit-${u.id}`}>
-                      <td colSpan={12} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
+                      <td colSpan={13} className="px-4 py-3 bg-amber-50/40 border-l-2 border-amber-400">
                         <div className="flex items-center gap-3 flex-wrap">
                           <div className="flex items-center gap-1.5">
                             <label className="text-xs text-gray-500 font-medium">名称</label>
@@ -613,12 +645,23 @@ export default function AdminUsersPage() {
                             </select>
                           </div>
                           <div className="flex items-center gap-1.5">
-                            <label className="text-xs text-gray-500 font-medium">Token 每日最大费用$</label>
+                            <label className="text-xs text-gray-500 font-medium">日限额$</label>
                             <input
                               type="number"
-                              value={editState.daily_quota_tokens}
-                              onChange={(e) => setEditState((s) => ({ ...s, daily_quota_tokens: e.target.value }))}
-                              className="w-32 px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                              step="0.01"
+                              value={editState.daily_quota_usd}
+                              onChange={(e) => setEditState((s) => ({ ...s, daily_quota_usd: e.target.value }))}
+                              className="w-28 px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+                            />
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <label className="text-xs text-gray-500 font-medium">AWS日限额$</label>
+                            <input
+                              type="number"
+                              step="0.01"
+                              value={editState.aws_daily_quota_usd}
+                              onChange={(e) => setEditState((s) => ({ ...s, aws_daily_quota_usd: e.target.value }))}
+                              className="w-28 px-2.5 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
                             />
                           </div>
                           <button

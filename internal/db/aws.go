@@ -39,9 +39,9 @@ func (d *DB) BatchInsertAWSUsageLogs(logs []*model.AWSUsageLog) error {
 	}
 	stmt, err := tx.Prepare(
 		`INSERT INTO aws_usage_logs
-		 (user_id, api_key_id, model, bedrock_model, input_tokens, output_tokens, total_tokens,
+		 (user_id, group_id, api_key_id, model, bedrock_model, input_tokens, output_tokens, total_tokens,
 		  cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, ua, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		tx.Rollback()
 		return fmt.Errorf("prepare stmt: %w", err)
@@ -54,7 +54,7 @@ func (d *DB) BatchInsertAWSUsageLogs(logs []*model.AWSUsageLog) error {
 			ts = log.CreatedAt
 		}
 		if _, err := stmt.Exec(
-			log.UserID, log.APIKeyID, log.Model, log.BedrockModel,
+			log.UserID, log.GroupID, log.APIKeyID, log.Model, log.BedrockModel,
 			log.InputTokens, log.OutputTokens, log.TotalTokens,
 			log.CacheReadTokens, log.CacheWriteTokens,
 			log.CostUSD, log.StatusCode, log.Latency, log.UA, ts,
@@ -290,12 +290,16 @@ func (d *DB) GetAWSUserDailyCostRanking(date string, limit int) (*AWSUserDailyCo
 
 // BedrockStat holds aggregated usage for a single Bedrock model.
 type BedrockStat struct {
-	BedrockModel string  `json:"bedrock_model"`
-	Requests     int     `json:"requests"`
-	TotalTokens  int64   `json:"total_tokens"`
-	CostUSD      float64 `json:"cost_usd"`
-	AvgLatencyMs float64 `json:"avg_latency_ms"`
-	ErrorCount   int     `json:"error_count"`
+	BedrockModel    string  `json:"bedrock_model"`
+	Requests        int     `json:"requests"`
+	InputTokens     int64   `json:"input_tokens"`
+	OutputTokens    int64   `json:"output_tokens"`
+	TotalTokens     int64   `json:"total_tokens"`
+	CacheReadTokens int64   `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	CostUSD         float64 `json:"cost_usd"`
+	AvgLatencyMs    float64 `json:"avg_latency_ms"`
+	ErrorCount      int     `json:"error_count"`
 }
 
 // GetAWSBedrockStats aggregates aws_usage_logs by bedrock_model for the given date range.
@@ -315,7 +319,11 @@ func (d *DB) GetAWSBedrockStats(startDate, endDate string) ([]*BedrockStat, erro
 	rows, err := d.Query(
 		`SELECT bedrock_model,
 		        COUNT(*) as requests,
+		        SUM(input_tokens) as input_tokens,
+		        SUM(output_tokens) as output_tokens,
 		        SUM(total_tokens) as total_tokens,
+		        SUM(cache_read_tokens) as cache_read_tokens,
+		        SUM(cache_write_tokens) as cache_write_tokens,
 		        SUM(cost_usd) as cost_usd,
 		        AVG(latency_ms) as avg_latency_ms,
 		        SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as error_count
@@ -330,7 +338,10 @@ func (d *DB) GetAWSBedrockStats(startDate, endDate string) ([]*BedrockStat, erro
 	var result []*BedrockStat
 	for rows.Next() {
 		s := &BedrockStat{}
-		if err := rows.Scan(&s.BedrockModel, &s.Requests, &s.TotalTokens, &s.CostUSD, &s.AvgLatencyMs, &s.ErrorCount); err != nil {
+		if err := rows.Scan(&s.BedrockModel, &s.Requests,
+			&s.InputTokens, &s.OutputTokens, &s.TotalTokens,
+			&s.CacheReadTokens, &s.CacheWriteTokens,
+			&s.CostUSD, &s.AvgLatencyMs, &s.ErrorCount); err != nil {
 			return nil, err
 		}
 		result = append(result, s)
@@ -361,7 +372,7 @@ func (d *DB) ListAWSUsersWithStats(page, pageSize int) ([]*AWSUserWithStats, int
 	}
 
 	rows, err := d.Query(
-		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_tokens, u.aws_enabled, u.created_at, u.updated_at,
+		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_usd, u.aws_daily_quota_usd, u.aws_enabled, u.created_at, u.updated_at,
 		        COALESCE(s.requests,0), COALESCE(s.cost_usd,0)
 		 FROM users u
 		 LEFT JOIN (SELECT user_id, COUNT(*) as requests, SUM(cost_usd) as cost_usd FROM aws_usage_logs GROUP BY user_id) s
@@ -377,7 +388,7 @@ func (d *DB) ListAWSUsersWithStats(page, pageSize int) ([]*AWSUserWithStats, int
 	var users []*AWSUserWithStats
 	for rows.Next() {
 		u := &AWSUserWithStats{}
-		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaTokens, &u.AWSEnabled,
+		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaUSD, &u.AWSDailyQuotaUSD, &u.AWSEnabled,
 			&u.CreatedAt, &u.UpdatedAt, &u.AWSRequests, &u.AWSCostUSD); err != nil {
 			return nil, 0, err
 		}

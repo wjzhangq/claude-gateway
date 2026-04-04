@@ -1,9 +1,91 @@
-import { useEffect, useState } from 'react'
-import { adminGetUsage, adminGetDailyStats } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { adminGetUsage, adminGetDailyStats, adminSearchUsers } from '../api'
 import { formatTime, toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
+
+interface UserSuggestion {
+  id: number
+  itcode: string
+  aws_enabled: boolean
+}
+
+function ItcodeSearchInput({
+  value,
+  onChange,
+  onSelect,
+  onClear,
+  placeholder,
+}: {
+  value: string
+  onChange: (v: string) => void
+  onSelect: (u: UserSuggestion) => void
+  onClear?: () => void
+  placeholder?: string
+}) {
+  const [suggestions, setSuggestions] = useState<UserSuggestion[]>([])
+  const [open, setOpen] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  const search = (q: string) => {
+    if (!q.trim()) { setSuggestions([]); setOpen(false); return }
+    adminSearchUsers(q.trim(), 10)
+      .then((res) => {
+        const users: UserSuggestion[] = res.data.users || []
+        setSuggestions(users)
+        setOpen(users.length > 0)
+      })
+      .catch(() => {})
+  }
+
+  const handleChange = (v: string) => {
+    onChange(v)
+    if (!v && onClear) onClear()
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => search(v), 250)
+  }
+
+  const handleSelect = (u: UserSuggestion) => {
+    onChange(u.itcode)
+    onSelect(u)
+    setSuggestions([])
+    setOpen(false)
+  }
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <input
+        value={value}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder={placeholder || '按用户 itcode 筛选'}
+        className="w-48 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+      />
+      {open && suggestions.length > 0 && (
+        <ul className="absolute z-50 left-0 top-full mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden max-h-52 overflow-y-auto">
+          {suggestions.map((u) => (
+            <li
+              key={u.id}
+              onMouseDown={() => handleSelect(u)}
+              className="px-3.5 py-2 text-sm cursor-pointer hover:bg-red-50 hover:text-red-700 transition-colors"
+            >
+              {u.itcode}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
 
 interface DailyStat {
   id: number
@@ -50,30 +132,40 @@ export default function AdminUsagePage() {
   const [loading, setLoading] = useState(true)
   const pageSize = 20
 
+  // User filter
+  const [filterItcode, setFilterItcode] = useState('')
+  const [filterUserId, setFilterUserId] = useState('')
+
   useEffect(() => {
     const end = date
     const start = toDateStr(new Date(new Date(date).getTime() - 13 * 86400000))
-    adminGetDailyStats({ start_date: start, end_date: end })
+    const params: Record<string, string | number> = { start_date: start, end_date: end }
+    if (filterUserId) params.user_id = filterUserId
+    adminGetDailyStats(params)
       .then((res) => setDailyStats(res.data.stats || []))
       .catch(() => {})
-  }, [date])
+  }, [date, filterUserId])
 
   const [dayCost, setDayCost] = useState(0)
   const [dayOcCost, setDayOcCost] = useState(0)
 
   useEffect(() => {
     setLoading(true)
-    adminGetUsage({ page, page_size: pageSize, start_date: date, end_date: date })
+    const params: Record<string, string | number> = { page, page_size: pageSize, start_date: date, end_date: date }
+    if (filterUserId) params.user_id = filterUserId
+    adminGetUsage(params)
       .then((res) => {
         setLogs(res.data.logs || [])
         setTotal(res.data.total || 0)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [date, page])
+  }, [date, page, filterUserId])
 
   useEffect(() => {
-    adminGetUsage({ page: 1, page_size: 10000, start_date: date, end_date: date })
+    const params: Record<string, string | number> = { page: 1, page_size: 10000, start_date: date, end_date: date }
+    if (filterUserId) params.user_id = filterUserId
+    adminGetUsage(params)
       .then((res) => {
         const all: UsageLog[] = res.data.logs || []
         let cost = 0, ocCost = 0
@@ -85,7 +177,7 @@ export default function AdminUsagePage() {
         setDayOcCost(ocCost)
       })
       .catch(() => {})
-  }, [date])
+  }, [date, filterUserId])
 
   const shiftDate = (days: number) => {
     setPage(1)
@@ -113,26 +205,43 @@ export default function AdminUsagePage() {
           <h2 className="text-xl font-bold text-gray-900">使用统计</h2>
           <p className="text-sm text-gray-400 mt-0.5">全局 API 调用记录</p>
         </div>
-        <div className="flex items-center gap-1.5 ml-auto bg-white border border-gray-200 rounded-xl px-2 py-1.5 shadow-sm">
-          <button
-            onClick={() => shiftDate(-1)}
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors text-sm font-medium"
-          >
-            ‹
-          </button>
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => { setPage(1); setDate(e.target.value) }}
-            className="px-2 py-0.5 text-sm text-gray-700 focus:outline-none bg-transparent"
+        <div className="ml-auto flex items-center gap-3">
+          <ItcodeSearchInput
+            value={filterItcode}
+            onChange={(v) => { setFilterItcode(v); if (!v) { setFilterUserId(''); setPage(1) } }}
+            onSelect={(u) => { setFilterUserId(String(u.id)); setPage(1) }}
+            onClear={() => { setFilterUserId(''); setPage(1) }}
+            placeholder="按用户 itcode 筛选"
           />
-          <button
-            onClick={() => shiftDate(1)}
-            disabled={isToday}
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors text-sm font-medium"
-          >
-            ›
-          </button>
+          {filterUserId && (
+            <button
+              onClick={() => { setFilterItcode(''); setFilterUserId(''); setPage(1) }}
+              className="px-3 py-2 text-xs border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 transition-colors"
+            >
+              清除
+            </button>
+          )}
+          <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-xl px-2 py-1.5 shadow-sm">
+            <button
+              onClick={() => shiftDate(-1)}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors text-sm font-medium"
+            >
+              ‹
+            </button>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => { setPage(1); setDate(e.target.value) }}
+              className="px-2 py-0.5 text-sm text-gray-700 focus:outline-none bg-transparent"
+            />
+            <button
+              onClick={() => shiftDate(1)}
+              disabled={isToday}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors text-sm font-medium"
+            >
+              ›
+            </button>
+          </div>
         </div>
       </div>
 
@@ -172,7 +281,7 @@ export default function AdminUsagePage() {
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-700">{date} 请求记录</h3>
+          <h3 className="text-sm font-semibold text-gray-700">{date} 请求记录{filterItcode ? ` · ${filterItcode}` : ''}</h3>
           <span className="text-xs text-gray-400">共 {total} 条</span>
         </div>
         <table className="w-full text-sm">

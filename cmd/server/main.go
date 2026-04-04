@@ -73,15 +73,31 @@ func main() {
 
 	collector := stats.NewCollector(database, keyStore, 1024)
 
-	// Flush last_used_at from memory to DB every minute
+	// Flush last_used_at and key costs from memory to DB every minute
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
+			// Flush last_used_at
 			keyTimes := keyStore.FlushLastUsed()
 			if len(keyTimes) > 0 {
 				if err := database.BatchUpdateKeyLastUsedAt(keyTimes); err != nil {
 					logger.Errorf("flush last_used_at: %v", err)
+				}
+			}
+			// Flush accumulated key costs (backend + aws)
+			costUpdates := keyStore.FlushCosts()
+			if len(costUpdates) > 0 {
+				dbUpdates := make([]db.KeyCostUpdate, len(costUpdates))
+				for i, u := range costUpdates {
+					dbUpdates[i] = db.KeyCostUpdate{
+						KeyID:          u.KeyID,
+						BackendCostAdd: u.BackendCostAdd,
+						AWSCostAdd:     u.AWSCostAdd,
+					}
+				}
+				if err := database.BatchUpdateKeyCosts(dbUpdates); err != nil {
+					logger.Errorf("flush key costs: %v", err)
 				}
 			}
 		}
@@ -191,6 +207,7 @@ func main() {
 	adminAPI.Use(middleware.AdminRequired())
 	{
 		adminAPI.GET("/users", userH.ListUsers)
+		adminAPI.GET("/users/search", userH.SearchUsers)
 		adminAPI.GET("/users/:id", userH.GetUser)
 		adminAPI.POST("/users", userH.CreateUser)
 		adminAPI.PUT("/users/:id", userH.UpdateUser)

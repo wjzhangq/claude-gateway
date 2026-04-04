@@ -65,6 +65,8 @@ export const listMyApplications = (status?: string) =>
 // Admin - Users
 export const adminListUsers = (params?: Record<string, string | number>) =>
   api.get('/admin/api/users', { params })
+export const adminSearchUsers = (q: string, limit = 10) =>
+  api.get('/admin/api/users/search', { params: { q, limit } })
 export const adminGetUser = (id: number) => api.get(`/admin/api/users/${id}`)
 export const adminCreateUser = (data: Record<string, unknown>) =>
   api.post('/admin/api/users', data)

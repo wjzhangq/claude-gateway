@@ -1,6 +1,87 @@
-import { useEffect, useState } from 'react'
-import { adminGetAWSUsage } from '../api'
+import { useEffect, useRef, useState } from 'react'
+import { adminGetAWSUsage, adminSearchUsers } from '../api'
 import { formatTime } from '../utils/time'
+
+interface UserSuggestion {
+  id: number
+  itcode: string
+  aws_enabled: boolean
+}
+
+function ItcodeSearchInput({
+  value,
+  onChange,
+  onSelect,
+  onClear,
+}: {
+  value: string
+  onChange: (v: string) => void
+  onSelect: (u: UserSuggestion) => void
+  onClear?: () => void
+}) {
+  const [suggestions, setSuggestions] = useState<UserSuggestion[]>([])
+  const [open, setOpen] = useState(false)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const wrapRef = useRef<HTMLDivElement>(null)
+
+  const search = (q: string) => {
+    if (!q.trim()) { setSuggestions([]); setOpen(false); return }
+    adminSearchUsers(q.trim(), 10)
+      .then((res) => {
+        const users: UserSuggestion[] = res.data.users || []
+        setSuggestions(users)
+        setOpen(users.length > 0)
+      })
+      .catch(() => {})
+  }
+
+  const handleChange = (v: string) => {
+    onChange(v)
+    if (!v && onClear) onClear()
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(() => search(v), 250)
+  }
+
+  const handleSelect = (u: UserSuggestion) => {
+    onChange(u.itcode)
+    onSelect(u)
+    setSuggestions([])
+    setOpen(false)
+  }
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <input
+        value={value}
+        onChange={(e) => handleChange(e.target.value)}
+        placeholder="搜索用户 itcode"
+        className="px-3 py-2 border border-gray-200 rounded-lg text-sm w-44 focus:outline-none focus:ring-1 focus:ring-amber-400"
+      />
+      {open && suggestions.length > 0 && (
+        <ul className="absolute z-50 left-0 top-full mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden max-h-52 overflow-y-auto">
+          {suggestions.map((u) => (
+            <li
+              key={u.id}
+              onMouseDown={() => handleSelect(u)}
+              className="px-3.5 py-2 text-sm cursor-pointer hover:bg-amber-50 hover:text-amber-700 transition-colors flex items-center justify-between"
+            >
+              <span>{u.itcode}</span>
+              {u.aws_enabled && <span className="text-[10px] font-semibold text-amber-600">AWS</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
 
 interface AWSUsageLog {
   id: number
@@ -37,14 +118,15 @@ export default function AdminAWSUsagePage() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
-  const [userIdFilter, setUserIdFilter] = useState('')
+  const [filterItcode, setFilterItcode] = useState('')
+  const [filterUserId, setFilterUserId] = useState('')
   const [modelFilter, setModelFilter] = useState('')
   const pageSize = 20
 
   const load = (p: number) => {
     setLoading(true)
     const params: Record<string, string | number> = { page: p, page_size: pageSize }
-    if (userIdFilter) params.user_id = userIdFilter
+    if (filterUserId) params.user_id = filterUserId
     if (modelFilter) params.model = modelFilter
     adminGetAWSUsage(params)
       .then((res) => {
@@ -62,6 +144,13 @@ export default function AdminAWSUsagePage() {
     load(1)
   }
 
+  const handleClear = () => {
+    setFilterItcode('')
+    setFilterUserId('')
+    setModelFilter('')
+    setPage(1)
+  }
+
   const totalPages = Math.ceil(total / pageSize)
 
   return (
@@ -71,12 +160,12 @@ export default function AdminAWSUsagePage() {
         <p className="text-sm text-gray-400 mt-0.5">全局 AWS Bedrock 请求记录</p>
       </div>
 
-      <div className="bg-white rounded-xl border border-gray-100 p-4 mb-5 shadow-sm flex gap-3 items-center">
-        <input
-          value={userIdFilter}
-          onChange={(e) => setUserIdFilter(e.target.value)}
-          placeholder="User ID"
-          className="px-3 py-2 border border-gray-200 rounded-lg text-sm w-32 focus:outline-none focus:ring-1 focus:ring-amber-400"
+      <div className="bg-white rounded-xl border border-gray-100 p-4 mb-5 shadow-sm flex gap-3 items-center flex-wrap">
+        <ItcodeSearchInput
+          value={filterItcode}
+          onChange={(v) => { setFilterItcode(v); if (!v) setFilterUserId('') }}
+          onSelect={(u) => setFilterUserId(String(u.id))}
+          onClear={() => setFilterUserId('')}
         />
         <input
           value={modelFilter}
@@ -90,6 +179,14 @@ export default function AdminAWSUsagePage() {
         >
           搜索
         </button>
+        {(filterUserId || modelFilter) && (
+          <button
+            onClick={handleClear}
+            className="px-3 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 text-gray-500 transition-colors"
+          >
+            清除
+          </button>
+        )}
       </div>
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">

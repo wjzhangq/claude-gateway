@@ -12,6 +12,7 @@ import (
 // AWSRecord holds data for a single AWS Bedrock API call.
 type AWSRecord struct {
 	UserID           int64
+	GroupID          int
 	APIKeyID         int64
 	KeyStr           string // raw key string, used to update KeyStore.LastUsedAt
 	Model            string // requested model name
@@ -51,6 +52,10 @@ func (c *AWSCollector) Emit(r AWSRecord) {
 	r.CreatedAt = time.Now()
 	if r.KeyStr != "" && c.keyStore != nil {
 		c.keyStore.MarkUsed(r.KeyStr, r.CreatedAt)
+		// Accumulate AWS cost in memory; flushed to DB every minute
+		if r.CostUSD > 0 {
+			c.keyStore.AddCost(r.KeyStr, "aws", r.CostUSD)
+		}
 	}
 	select {
 	case c.ch <- r:
@@ -113,6 +118,7 @@ func (c *AWSCollector) worker() {
 func awsRecordToLog(r AWSRecord) *model.AWSUsageLog {
 	return &model.AWSUsageLog{
 		UserID:           r.UserID,
+		GroupID:          r.GroupID,
 		APIKeyID:         r.APIKeyID,
 		Model:            r.Model,
 		BedrockModel:     r.BedrockModel,
