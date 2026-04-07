@@ -88,8 +88,25 @@ func (h *Handler) Models(c *gin.Context) {
 //  /v1/messages  (Anthropic Messages API)
 // ─────────────────────────────────────────────
 
+// isBlockedClient returns true if the User-Agent is from a client that is
+// officially banned from using this service via AWS Bedrock.
+func isBlockedClient(userAgent string) bool {
+	ua := strings.ToLower(userAgent)
+	return strings.Contains(ua, "openclaw")
+}
+
 // Messages handles POST /v1/messages.
 func (h *Handler) Messages(c *gin.Context) {
+	if isBlockedClient(c.Request.Header.Get("User-Agent")) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "permission_denied",
+				"message": "Access denied: your client (OpenClaw) is officially prohibited from using this service. Please use an authorized client.",
+			},
+		})
+		return
+	}
+
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "read request body failed"})
@@ -204,6 +221,16 @@ func (h *Handler) streamMessages(c *gin.Context, body []byte, bedrockModel, reqM
 
 // ChatCompletions handles POST /v1/chat/completions.
 func (h *Handler) ChatCompletions(c *gin.Context) {
+	if isBlockedClient(c.Request.Header.Get("User-Agent")) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": gin.H{
+				"type":    "permission_denied",
+				"message": "Access denied: your client (OpenClaw) is officially prohibited from using this service. Please use an authorized client.",
+			},
+		})
+		return
+	}
+
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "read request body failed"})
@@ -536,7 +563,8 @@ func prepareAnthropicBody(body []byte) []byte {
 		return body
 	}
 	delete(m, "model")
-	delete(m, "stream") // Bedrock rejects this field: "Extra inputs are not permitted"
+	delete(m, "stream")            // Bedrock rejects this field: "Extra inputs are not permitted"
+	delete(m, "context_management") // Bedrock does not support context_management (added by Claude Code CLI)
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
 
 	// Strip cache_control.scope from system/messages — Bedrock does not support it.
