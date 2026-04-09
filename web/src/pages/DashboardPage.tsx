@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getMyUsage, getMyDailyStats } from '../api'
+import { getMyUsage, getMyDailyStats, getMyDashboard } from '../api'
 import { formatTime, toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -52,8 +52,20 @@ export default function DashboardPage() {
   const [dailyData, setDailyData] = useState<{ date: string; cost: number }[]>([])
   const [todayCost, setTodayCost] = useState(0)
   const [todayOcCost, setTodayOcCost] = useState(0)
+  const [quota, setQuota] = useState<{
+    backend_daily_limit: number
+    backend_daily_used: number
+    backend_daily_remaining: number
+    aws_daily_limit: number
+    aws_daily_used: number
+    aws_daily_remaining: number
+  } | null>(null)
 
   useEffect(() => {
+    getMyDashboard()
+      .then((res) => setQuota(res.data))
+      .catch(() => {})
+
     getMyUsage({ page: 1, page_size: 5 })
       .then((res) => {
         setLogs(res.data.logs || [])
@@ -112,6 +124,82 @@ export default function DashboardPage() {
         <h2 className="text-xl font-bold text-gray-900">仪表盘</h2>
         <p className="text-sm text-gray-400 mt-0.5">查看你的 API 使用概览</p>
       </div>
+
+      {/* OpenClaw notice */}
+      <div className="mb-5 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5">
+        <span className="text-amber-500 mt-0.5 flex-shrink-0 text-base">&#9888;</span>
+        <div className="text-sm text-amber-800">
+          <span className="font-semibold">OpenClaw 提示：</span>OpenClaw 客户端已被模型官方禁用，Backend 和 AWS 渠道均不支持 OpenClaw 请求。请使用其他客户端工具。
+        </div>
+      </div>
+
+      {/* Quota cards */}
+      {quota && (quota.backend_daily_limit > 0 || quota.aws_daily_limit > 0) && (
+        <div className="grid grid-cols-2 gap-4 mb-5">
+          {quota.backend_daily_limit > 0 && (
+            <div className="bg-white rounded-xl border border-gray-100 px-6 py-5 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Backend 每日限额</span>
+                <span className="text-xs text-gray-400">
+                  ${quota.backend_daily_used.toFixed(2)} / ${quota.backend_daily_limit.toFixed(2)}
+                </span>
+              </div>
+              <div className="w-full bg-gray-100 rounded-full h-2.5 mb-2">
+                <div
+                  className={`h-2.5 rounded-full transition-all ${
+                    quota.backend_daily_remaining <= 0
+                      ? 'bg-red-500'
+                      : quota.backend_daily_used / quota.backend_daily_limit > 0.8
+                        ? 'bg-amber-500'
+                        : 'bg-green-500'
+                  }`}
+                  style={{ width: `${Math.min((quota.backend_daily_used / quota.backend_daily_limit) * 100, 100)}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-lg font-bold text-gray-900">
+                  ${quota.backend_daily_remaining.toFixed(2)}
+                  <span className="text-xs font-normal text-gray-400 ml-1">剩余</span>
+                </span>
+                {quota.backend_daily_remaining <= 0 && (
+                  <span className="text-xs text-red-500 font-medium">已达上限</span>
+                )}
+              </div>
+            </div>
+          )}
+          {quota.aws_daily_limit > 0 && (
+            <div className="bg-white rounded-xl border border-gray-100 px-6 py-5 shadow-sm">
+              <div className="flex items-center justify-between mb-3">
+                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">AWS 每日限额</span>
+                <span className="text-xs text-gray-400">
+                  ${quota.aws_daily_used.toFixed(2)} / ${quota.aws_daily_limit.toFixed(2)}
+                </span>
+              </div>
+              <div className="w-full bg-gray-100 rounded-full h-2.5 mb-2">
+                <div
+                  className={`h-2.5 rounded-full transition-all ${
+                    quota.aws_daily_remaining <= 0
+                      ? 'bg-red-500'
+                      : quota.aws_daily_used / quota.aws_daily_limit > 0.8
+                        ? 'bg-amber-500'
+                        : 'bg-green-500'
+                  }`}
+                  style={{ width: `${Math.min((quota.aws_daily_used / quota.aws_daily_limit) * 100, 100)}%` }}
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-lg font-bold text-gray-900">
+                  ${quota.aws_daily_remaining.toFixed(2)}
+                  <span className="text-xs font-normal text-gray-400 ml-1">剩余</span>
+                </span>
+                {quota.aws_daily_remaining <= 0 && (
+                  <span className="text-xs text-red-500 font-medium">已达上限</span>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Stat cards */}
       {error ? (

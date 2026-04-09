@@ -86,3 +86,51 @@ func (d *DB) GetDailyStats(userID int64, startDate, endDate, modelFilter string)
 	}
 	return result, rows.Err()
 }
+
+// GetUserDailyCostByDate returns a map of userID -> total backend cost_usd for a given date.
+// Used at startup to seed the in-memory daily cost tracking in KeyStore.
+func (d *DB) GetUserDailyCostByDate(date string) (map[int64]float64, error) {
+	rows, err := d.Query(
+		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM daily_stats WHERE date = ? GROUP BY user_id`,
+		date,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get user daily cost for %s: %w", date, err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64]float64)
+	for rows.Next() {
+		var userID int64
+		var cost float64
+		if err := rows.Scan(&userID, &cost); err != nil {
+			return nil, err
+		}
+		result[userID] = cost
+	}
+	return result, rows.Err()
+}
+
+// GetUserAWSDailyCostByDate returns a map of userID -> total AWS cost_usd for a given date.
+// Used at startup to seed the in-memory AWS daily cost tracking in KeyStore.
+func (d *DB) GetUserAWSDailyCostByDate(date string) (map[int64]float64, error) {
+	rows, err := d.Query(
+		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM aws_daily_stats WHERE date = ? GROUP BY user_id`,
+		date,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get user aws daily cost for %s: %w", date, err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64]float64)
+	for rows.Next() {
+		var userID int64
+		var cost float64
+		if err := rows.Scan(&userID, &cost); err != nil {
+			return nil, err
+		}
+		result[userID] = cost
+	}
+	return result, rows.Err()
+}

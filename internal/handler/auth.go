@@ -109,6 +109,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		Itcode     string `json:"itcode"      binding:"required"`
 		Code       string `json:"code"        binding:"required"`
 		InviteCode string `json:"invite_code"`
+		RememberMe bool   `json:"remember_me"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -148,6 +149,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	sess := sessions.Default(c)
 	sess.Set("user_id", user.ID)
 	sess.Set("user_role", user.Role)
+	// Override session MaxAge when user requests "remember me" (7 days)
+	if req.RememberMe {
+		sess.Options(sessions.Options{
+			MaxAge:   7 * 24 * 60 * 60, // 604800 seconds = 7 days
+			Path:     "/",
+			HttpOnly: true,
+		})
+	}
 	if err := sess.Save(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session error"})
 		return

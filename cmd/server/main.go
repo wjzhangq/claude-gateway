@@ -58,6 +58,23 @@ func main() {
 		logger.Fatalf("load key store: %v", err)
 	}
 
+	// Seed today's backend daily costs from daily_stats (for quota enforcement after restart)
+	today := time.Now().Format("2006-01-02")
+	if dailyCosts, err := database.GetUserDailyCostByDate(today); err != nil {
+		logger.Warnf("init daily costs: %v", err)
+	} else {
+		keyStore.InitDailyCosts(today, dailyCosts)
+		logger.Infof("init daily costs: loaded %d user records for %s", len(dailyCosts), today)
+	}
+
+	// Seed today's AWS daily costs from aws_daily_stats
+	if awsDailyCosts, err := database.GetUserAWSDailyCostByDate(today); err != nil {
+		logger.Warnf("init aws daily costs: %v", err)
+	} else {
+		keyStore.InitAWSDailyCosts(today, awsDailyCosts)
+		logger.Infof("init aws daily costs: loaded %d user records for %s", len(awsDailyCosts), today)
+	}
+
 	codeStore := auth.NewCodeStore(cfg.Auth.CodeExpiry)
 
 	if cfg.Server.Mode == "release" {
@@ -106,6 +123,19 @@ func main() {
 	aggregator := stats.NewAggregator(database, cfg.UsageSync)
 	aggregator.Start()
 
+	// Reset daily cost counters at midnight
+	go func() {
+		for {
+			// Calculate duration until next midnight
+			now := time.Now()
+			next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 5, 0, now.Location())
+			timer := time.NewTimer(time.Until(next))
+			<-timer.C
+			keyStore.ResetDailyCosts()
+			logger.Infof("daily cost counters reset for new day: %s", time.Now().Format("2006-01-02"))
+		}
+	}()
+
 	lb := proxy.NewLoadBalancer(cfg.Backends)
 	proxyH := proxy.NewHandler(lb, collector, keyStore, cfg, cfg.ModelReplacements)
 	lb.ValidateBackends()
@@ -138,7 +168,7 @@ func main() {
 	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database, keyStore)
-	statsH := handler.NewStatsHandler(database, cfg)
+	statsH := handler.NewStatsHandler(database, cfg, keyStore)
 	appH := handler.NewApplicationHandler(database, keyStore)
 	awsStatsH := handler.NewAWSStatsHandler(database, cfg)
 
@@ -176,6 +206,7 @@ func main() {
 	apiUser.Use(middleware.SessionAuthMiddleware())
 	{
 		apiUser.GET("/me", authH.Me)
+		apiUser.GET("/dashboard", statsH.GetMyDashboard)
 		apiUser.GET("/keys", keyH.ListKeys)
 		apiUser.POST("/keys", keyH.CreateKey)
 		apiUser.PUT("/keys/:id/disable", keyH.DisableKey)

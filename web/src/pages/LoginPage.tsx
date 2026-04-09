@@ -7,6 +7,7 @@ export default function LoginPage() {
   const [itcode, setItcode] = useState('')
   const [code, setCode] = useState('')
   const [inviteCode, setInviteCode] = useState('')
+  const [rememberMe, setRememberMe] = useState(false)
   const [countdown, setCountdown] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
@@ -49,7 +50,7 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      const res = await login(itcode, code, inviteCode)
+      const res = await login(itcode, code, inviteCode, rememberMe)
       setUser(res.data.user)
       navigate('/dashboard')
     } catch (e: unknown) {
@@ -138,6 +139,19 @@ export default function LoginPage() {
                     {countdown > 0 ? `${countdown}s` : '发送验证码'}
                   </button>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  id="remember-me"
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 rounded border-gray-300 text-red-600 focus:ring-red-500/30 cursor-pointer"
+                />
+                <label htmlFor="remember-me" className="text-sm text-gray-500 cursor-pointer select-none">
+                  保持登录一周
+                </label>
               </div>
 
               <button

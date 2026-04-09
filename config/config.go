@@ -18,7 +18,8 @@ type Config struct {
 	Backends          []BackendAPI      `yaml:"backends"`
 	UsageSync         time.Duration     `yaml:"usage_sync_time"`
 	ModelReplacements map[string]string `yaml:"model_replacements"`
-	DowngradedTTL     time.Duration     `yaml:"downgraded_ttl"` // how long to skip original model after downgrade
+	DowngradedTTL     time.Duration     `yaml:"downgraded_ttl"`    // how long to skip original model after downgrade
+	BackendDailyMax   float64           `yaml:"backend_daily_max"` // max backend spend per user per day in USD (0 = unlimited)
 	AWS               AWSConfig         `yaml:"aws"`
 }
 
@@ -67,7 +68,8 @@ type AWSConfig struct {
 	SecretAccessKey string                       `yaml:"secret_access_key"`
 	CacheEnabled    int                          `yaml:"cache_enabled"`
 	CacheTTL        time.Duration                `yaml:"cache_ttl"`
-	Socks5Proxy     string                       `yaml:"socks5"` // optional socks5 proxy, e.g. socks5://user:pass@host:port or user:pass@host:port
+	Socks5Proxy     string                       `yaml:"socks5"`        // optional socks5 proxy, e.g. socks5://user:pass@host:port or user:pass@host:port
+	AWSDailyMax     float64                      `yaml:"aws_daily_max"` // max AWS spend per user per day in USD (0 = unlimited)
 	ModelReplace    map[string]string            `yaml:"model_replace"` // exact: upstream name -> Bedrock ARN
 	ModelDefault    map[string]string            `yaml:"model_default"` // glob pattern -> upstream name
 	ModelPricing    map[string]ModelPricingEntry `yaml:"model_pricing"` // glob pattern -> pricing

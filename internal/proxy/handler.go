@@ -113,6 +113,25 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	isOpenClaw := detectOpenClaw(c.GetHeader("User-Agent"), body)
 	if isOpenClaw {
 		c.Set("is_openclaw", true)
+		// Block OpenClaw clients on backend channel
+		logger.Warnf("OpenClaw client blocked on backend channel: user_id=%v model=%s ua=%s",
+			func() interface{} {
+				if info, ok := c.Get(middleware.CtxKeyInfo); ok {
+					if ki, ok := info.(*auth.KeyInfo); ok {
+						return ki.UserID
+					}
+				}
+				return "?"
+			}(),
+			reqModel, c.GetHeader("User-Agent"))
+		c.JSON(http.StatusForbidden, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "forbidden",
+				"message": "OpenClaw client is not allowed on backend channel",
+			},
+		})
+		return
 	}
 
 	// Get key info for auto-downgrade check
@@ -129,6 +148,48 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 
 	// Check if we're in the downgraded period (skip original model and go directly to GPT)
 	inDowngradedPeriod := autoDowngrade && keyStr != "" && h.keyStore.IsDowngraded(keyStr)
+
+	// Check per-user daily backend spending limit
+	if info, ok := keyInfo.(*auth.KeyInfo); ok {
+		h.mu.RLock()
+		cfg := h.config
+		h.mu.RUnlock()
+
+		// Effective daily limit: use the smaller of global (BackendDailyMax) and per-user (DailyQuotaUSD),
+		// treating 0 as "no limit" for each.
+		effectiveLimit := 0.0
+		if cfg != nil {
+			globalMax := cfg.BackendDailyMax
+			userMax := info.DailyQuotaUSD
+			switch {
+			case globalMax > 0 && userMax > 0:
+				if globalMax < userMax {
+					effectiveLimit = globalMax
+				} else {
+					effectiveLimit = userMax
+				}
+			case globalMax > 0:
+				effectiveLimit = globalMax
+			case userMax > 0:
+				effectiveLimit = userMax
+			}
+		}
+
+		if effectiveLimit > 0 {
+			todayCost := h.keyStore.GetDailyCost(info.UserID)
+			if todayCost >= effectiveLimit {
+				logger.Warnf("daily backend limit exceeded: user_id=%d today=%.4f limit=%.4f", info.UserID, todayCost, effectiveLimit)
+				c.JSON(http.StatusTooManyRequests, gin.H{
+					"type": "error",
+					"error": gin.H{
+						"type":    "rate_limit_error",
+						"message": "Daily backend spending limit exceeded. Please try again tomorrow.",
+					},
+				})
+				return
+			}
+		}
+	}
 
 	// Apply model replacements: if request model contains a configured pattern, replace it
 	h.mu.RLock()
@@ -455,6 +516,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	}
 
 	total := inputTokens + outputTokens
+	cost := costUSD(model, inputTokens, outputTokens)
 	ua := parseUA(userAgent, isOpenClaw)
 	h.collector.Emit(stats.Record{
 		UserID:       info.UserID,
@@ -466,13 +528,18 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 		TotalTokens:  total,
-		CostUSD:      costUSD(model, inputTokens, outputTokens),
+		CostUSD:      cost,
 		StatusCode:   statusCode,
 		Latency:      latency,
 		IsOpenClaw:   isOpenClaw,
 		IsDowngraded: isDowngraded,
 		UA:           ua,
 	})
+
+	// Accumulate backend daily cost for per-user quota tracking
+	if cost > 0 && statusCode < 400 {
+		h.keyStore.AddDailyCost(info.UserID, cost)
+	}
 }
 
 // ChatCompletions handles POST /v1/chat/completions (OpenAI style).

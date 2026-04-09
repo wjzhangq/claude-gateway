@@ -8,18 +8,20 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wjzhangq/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 )
 
 // StatsHandler serves usage statistics endpoints.
 type StatsHandler struct {
-	db     *db.DB
-	config *config.Config
+	db       *db.DB
+	config   *config.Config
+	keyStore *auth.KeyStore
 }
 
-func NewStatsHandler(database *db.DB, cfg *config.Config) *StatsHandler {
-	return &StatsHandler{db: database, config: cfg}
+func NewStatsHandler(database *db.DB, cfg *config.Config, keyStore *auth.KeyStore) *StatsHandler {
+	return &StatsHandler{db: database, config: cfg, keyStore: keyStore}
 }
 
 // GetUsage godoc: GET /admin/api/usage
@@ -108,6 +110,78 @@ func (h *StatsHandler) GetMyDailyStats(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"stats": stats})
+}
+
+// GetMyDashboard godoc: GET /api/dashboard — returns quota and remaining balance for the current user.
+func (h *StatsHandler) GetMyDashboard(c *gin.Context) {
+	userID := c.GetInt64(middleware.CtxUserID)
+
+	user, err := h.db.GetUserByID(userID)
+	if err != nil || user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+
+	// Effective backend daily limit = min(global, per-user), 0 = unlimited
+	globalMax := h.config.BackendDailyMax
+	userMax := user.DailyQuotaUSD
+	var effectiveBackendLimit float64
+	switch {
+	case globalMax > 0 && userMax > 0:
+		if globalMax < userMax {
+			effectiveBackendLimit = globalMax
+		} else {
+			effectiveBackendLimit = userMax
+		}
+	case globalMax > 0:
+		effectiveBackendLimit = globalMax
+	case userMax > 0:
+		effectiveBackendLimit = userMax
+	}
+
+	backendUsed := h.keyStore.GetDailyCost(userID)
+	backendRemaining := 0.0
+	if effectiveBackendLimit > 0 {
+		backendRemaining = effectiveBackendLimit - backendUsed
+		if backendRemaining < 0 {
+			backendRemaining = 0
+		}
+	}
+
+	// Effective AWS daily limit = min(global aws_daily_max, per-user AWSDailyQuotaUSD), 0 = unlimited
+	awsGlobalMax := h.config.AWS.AWSDailyMax
+	awsUserMax := user.AWSDailyQuotaUSD
+	var effectiveAWSLimit float64
+	switch {
+	case awsGlobalMax > 0 && awsUserMax > 0:
+		if awsGlobalMax < awsUserMax {
+			effectiveAWSLimit = awsGlobalMax
+		} else {
+			effectiveAWSLimit = awsUserMax
+		}
+	case awsGlobalMax > 0:
+		effectiveAWSLimit = awsGlobalMax
+	case awsUserMax > 0:
+		effectiveAWSLimit = awsUserMax
+	}
+
+	awsUsed := h.keyStore.GetAWSDailyCost(userID)
+	awsRemaining := 0.0
+	if effectiveAWSLimit > 0 {
+		awsRemaining = effectiveAWSLimit - awsUsed
+		if awsRemaining < 0 {
+			awsRemaining = 0
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"backend_daily_limit":     effectiveBackendLimit,
+		"backend_daily_used":      backendUsed,
+		"backend_daily_remaining": backendRemaining,
+		"aws_daily_limit":         effectiveAWSLimit,
+		"aws_daily_used":          awsUsed,
+		"aws_daily_remaining":     awsRemaining,
+	})
 }
 
 // GetGroupStats godoc: GET /admin/api/groups/stats

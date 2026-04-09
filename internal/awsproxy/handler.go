@@ -95,6 +95,49 @@ func isBlockedClient(userAgent string) bool {
 	return strings.Contains(ua, "openclaw")
 }
 
+// checkAWSDailyLimit checks if the user has exceeded the AWS daily spending limit.
+// Returns true if the request should be blocked (limit exceeded).
+func (h *Handler) checkAWSDailyLimit(c *gin.Context) bool {
+	keyInfo, _ := extractKeyInfo(c)
+	if keyInfo == nil {
+		return false
+	}
+
+	cfg := h.awsCfg()
+	globalMax := cfg.AWSDailyMax
+	userMax := keyInfo.AWSDailyQuotaUSD
+
+	var effectiveLimit float64
+	switch {
+	case globalMax > 0 && userMax > 0:
+		if globalMax < userMax {
+			effectiveLimit = globalMax
+		} else {
+			effectiveLimit = userMax
+		}
+	case globalMax > 0:
+		effectiveLimit = globalMax
+	case userMax > 0:
+		effectiveLimit = userMax
+	}
+
+	if effectiveLimit > 0 {
+		todayCost := h.keyStore.GetAWSDailyCost(keyInfo.UserID)
+		if todayCost >= effectiveLimit {
+			logger.Warnf("daily AWS limit exceeded: user_id=%d today=%.4f limit=%.4f", keyInfo.UserID, todayCost, effectiveLimit)
+			c.JSON(http.StatusTooManyRequests, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "rate_limit_error",
+					"message": "Daily AWS spending limit exceeded. Please try again tomorrow.",
+				},
+			})
+			return true
+		}
+	}
+	return false
+}
+
 // Messages handles POST /v1/messages.
 func (h *Handler) Messages(c *gin.Context) {
 	if isBlockedClient(c.Request.Header.Get("User-Agent")) {
@@ -104,6 +147,10 @@ func (h *Handler) Messages(c *gin.Context) {
 				"message": "Access denied: your client (OpenClaw) is officially prohibited from using this service. Please use an authorized client.",
 			},
 		})
+		return
+	}
+
+	if h.checkAWSDailyLimit(c) {
 		return
 	}
 
@@ -228,6 +275,10 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				"message": "Access denied: your client (OpenClaw) is officially prohibited from using this service. Please use an authorized client.",
 			},
 		})
+		return
+	}
+
+	if h.checkAWSDailyLimit(c) {
 		return
 	}
 
@@ -680,6 +731,11 @@ func (h *Handler) emitUsage(keyInfo *auth.KeyInfo, keyStr, reqModel, bedrockMode
 		Latency:          latency,
 		UA:               ua,
 	})
+
+	// Accumulate AWS daily cost for per-user quota tracking
+	if cost > 0 && statusCode < 400 {
+		h.keyStore.AddAWSDailyCost(keyInfo.UserID, cost)
+	}
 }
 
 // parseUA extracts the UA product name (≤12 chars, lowercase).

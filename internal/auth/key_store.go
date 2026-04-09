@@ -31,13 +31,21 @@ type KeyInfo struct {
 
 // KeyStore holds all active API keys in memory for O(1) lookup.
 type KeyStore struct {
-	mu   sync.RWMutex
-	keys map[string]*KeyInfo // key string -> KeyInfo
+	mu              sync.RWMutex
+	keys            map[string]*KeyInfo // key string -> KeyInfo
+	dailyCosts      map[int64]float64   // userID -> today's accumulated backend cost (USD)
+	dailyCostDate   string              // "YYYY-MM-DD" of the current daily cost window
+	awsDailyCosts   map[int64]float64   // userID -> today's accumulated AWS cost (USD)
+	awsDailyCostDate string             // "YYYY-MM-DD" of the current AWS daily cost window
 }
 
 // NewKeyStore creates an empty KeyStore.
 func NewKeyStore() *KeyStore {
-	return &KeyStore{keys: make(map[string]*KeyInfo)}
+	return &KeyStore{
+		keys:          make(map[string]*KeyInfo),
+		dailyCosts:    make(map[int64]float64),
+		awsDailyCosts: make(map[int64]float64),
+	}
 }
 
 // Load replaces the entire key map (called at startup or reload).
@@ -215,6 +223,109 @@ func (ks *KeyStore) UpdateUserStatus(userID int64, status string) {
 			}
 		}
 	}
+}
+
+// ── Daily cost tracking ──────────────────────────────────────────────────────
+
+// todayStr returns the current date as "YYYY-MM-DD" in local time.
+func todayStr() string {
+	return time.Now().Format("2006-01-02")
+}
+
+// checkAndResetDaily resets dailyCosts if the date has rolled over.
+// Must be called with ks.mu held (write lock).
+func (ks *KeyStore) checkAndResetDaily() {
+	today := todayStr()
+	if ks.dailyCostDate != today {
+		ks.dailyCosts = make(map[int64]float64)
+		ks.dailyCostDate = today
+	}
+}
+
+// AddDailyCost accumulates backend spend for a user today. Thread-safe.
+func (ks *KeyStore) AddDailyCost(userID int64, costUSD float64) {
+	if costUSD <= 0 {
+		return
+	}
+	ks.mu.Lock()
+	ks.checkAndResetDaily()
+	ks.dailyCosts[userID] += costUSD
+	ks.mu.Unlock()
+}
+
+// GetDailyCost returns today's accumulated backend spend for a user. Thread-safe.
+func (ks *KeyStore) GetDailyCost(userID int64) float64 {
+	ks.mu.Lock()
+	ks.checkAndResetDaily()
+	cost := ks.dailyCosts[userID]
+	ks.mu.Unlock()
+	return cost
+}
+
+// InitDailyCosts seeds the in-memory daily cost map from a pre-fetched snapshot.
+// date must be "YYYY-MM-DD". Costs map is userID -> cost_usd for that date.
+// Call this once at startup (after loading daily_stats from DB).
+func (ks *KeyStore) InitDailyCosts(date string, costs map[int64]float64) {
+	ks.mu.Lock()
+	ks.dailyCostDate = date
+	ks.dailyCosts = make(map[int64]float64, len(costs))
+	for uid, c := range costs {
+		ks.dailyCosts[uid] = c
+	}
+	ks.mu.Unlock()
+}
+
+// ResetDailyCosts clears all accumulated daily costs (e.g. called at midnight).
+func (ks *KeyStore) ResetDailyCosts() {
+	ks.mu.Lock()
+	ks.dailyCosts = make(map[int64]float64)
+	ks.dailyCostDate = todayStr()
+	ks.awsDailyCosts = make(map[int64]float64)
+	ks.awsDailyCostDate = todayStr()
+	ks.mu.Unlock()
+}
+
+// ── AWS Daily cost tracking ───────────────────────────────────────────────────
+
+// checkAndResetAWSDaily resets awsDailyCosts if the date has rolled over.
+// Must be called with ks.mu held (write lock).
+func (ks *KeyStore) checkAndResetAWSDaily() {
+	today := todayStr()
+	if ks.awsDailyCostDate != today {
+		ks.awsDailyCosts = make(map[int64]float64)
+		ks.awsDailyCostDate = today
+	}
+}
+
+// AddAWSDailyCost accumulates AWS spend for a user today. Thread-safe.
+func (ks *KeyStore) AddAWSDailyCost(userID int64, costUSD float64) {
+	if costUSD <= 0 {
+		return
+	}
+	ks.mu.Lock()
+	ks.checkAndResetAWSDaily()
+	ks.awsDailyCosts[userID] += costUSD
+	ks.mu.Unlock()
+}
+
+// GetAWSDailyCost returns today's accumulated AWS spend for a user. Thread-safe.
+func (ks *KeyStore) GetAWSDailyCost(userID int64) float64 {
+	ks.mu.Lock()
+	ks.checkAndResetAWSDaily()
+	cost := ks.awsDailyCosts[userID]
+	ks.mu.Unlock()
+	return cost
+}
+
+// InitAWSDailyCosts seeds the in-memory AWS daily cost map from a pre-fetched snapshot.
+func (ks *KeyStore) InitAWSDailyCosts(date string, costs map[int64]float64) {
+	ks.mu.Lock()
+	ks.awsDailyCostDate = date
+	ks.awsDailyCosts = make(map[int64]float64, len(costs))
+	for uid, c := range costs {
+		ks.awsDailyCosts[uid] = c
+	}
+	ks.mu.Unlock()
 }
 
 // unambiguousChars excludes visually confusing characters: 0/O, 1/l/I.

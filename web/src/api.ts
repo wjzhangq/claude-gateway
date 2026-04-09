@@ -30,8 +30,8 @@ export default api
 export const sendCode = (itcode: string, inviteCode?: string) =>
   api.post("/api/auth/send-code", { itcode, invite_code: inviteCode || undefined })
 
-export const login = (itcode: string, code: string, inviteCode?: string) =>
-  api.post("/api/auth/login", { itcode, code, invite_code: inviteCode || undefined })
+export const login = (itcode: string, code: string, inviteCode?: string, rememberMe?: boolean) =>
+  api.post("/api/auth/login", { itcode, code, invite_code: inviteCode || undefined, remember_me: rememberMe || undefined })
 
 export const logout = () => api.post('/api/auth/logout')
 export const getMe = () => api.get('/api/me')
@@ -51,6 +51,7 @@ export const switchKeyChannel = (id: number, channel: 'backend' | 'aws') =>
   api.put(`/api/keys/${id}/channel`, { channel })
 
 // Usage
+export const getMyDashboard = () => api.get('/api/dashboard')
 export const getMyUsage = (params?: Record<string, string | number>) =>
   api.get('/api/usage', { params })
 export const getMyDailyStats = (params?: Record<string, string | number>) =>
