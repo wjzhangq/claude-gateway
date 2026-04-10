@@ -134,70 +134,37 @@ export default function DashboardPage() {
       </div>
 
       {/* Quota cards */}
-      {quota && (quota.backend_daily_limit > 0 || quota.aws_daily_limit > 0) && (
-        <div className="grid grid-cols-2 gap-4 mb-5">
-          {quota.backend_daily_limit > 0 && (
-            <div className="bg-white rounded-xl border border-gray-100 px-6 py-5 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Backend 每日限额</span>
-                <span className="text-xs text-gray-400">
-                  ${quota.backend_daily_used.toFixed(2)} / ${quota.backend_daily_limit.toFixed(2)}
-                </span>
-              </div>
-              <div className="w-full bg-gray-100 rounded-full h-2.5 mb-2">
-                <div
-                  className={`h-2.5 rounded-full transition-all ${
-                    quota.backend_daily_remaining <= 0
-                      ? 'bg-red-500'
-                      : quota.backend_daily_used / quota.backend_daily_limit > 0.8
-                        ? 'bg-amber-500'
-                        : 'bg-green-500'
-                  }`}
-                  style={{ width: `${Math.min((quota.backend_daily_used / quota.backend_daily_limit) * 100, 100)}%` }}
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-lg font-bold text-gray-900">
-                  ${quota.backend_daily_remaining.toFixed(2)}
-                  <span className="text-xs font-normal text-gray-400 ml-1">剩余</span>
-                </span>
-                {quota.backend_daily_remaining <= 0 && (
-                  <span className="text-xs text-red-500 font-medium">已达上限</span>
-                )}
-              </div>
+      {quota && quota.backend_daily_limit > 0 && (
+        <div className="mb-5">
+          <div className="bg-white rounded-xl border border-gray-100 px-6 py-5 shadow-sm max-w-md">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Backend 每日限额</span>
+              <span className="text-xs text-gray-400">
+                ${quota.backend_daily_used.toFixed(2)} / ${quota.backend_daily_limit.toFixed(2)}
+              </span>
             </div>
-          )}
-          {quota.aws_daily_limit > 0 && (
-            <div className="bg-white rounded-xl border border-gray-100 px-6 py-5 shadow-sm">
-              <div className="flex items-center justify-between mb-3">
-                <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">AWS 每日限额</span>
-                <span className="text-xs text-gray-400">
-                  ${quota.aws_daily_used.toFixed(2)} / ${quota.aws_daily_limit.toFixed(2)}
-                </span>
-              </div>
-              <div className="w-full bg-gray-100 rounded-full h-2.5 mb-2">
-                <div
-                  className={`h-2.5 rounded-full transition-all ${
-                    quota.aws_daily_remaining <= 0
-                      ? 'bg-red-500'
-                      : quota.aws_daily_used / quota.aws_daily_limit > 0.8
-                        ? 'bg-amber-500'
-                        : 'bg-green-500'
-                  }`}
-                  style={{ width: `${Math.min((quota.aws_daily_used / quota.aws_daily_limit) * 100, 100)}%` }}
-                />
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-lg font-bold text-gray-900">
-                  ${quota.aws_daily_remaining.toFixed(2)}
-                  <span className="text-xs font-normal text-gray-400 ml-1">剩余</span>
-                </span>
-                {quota.aws_daily_remaining <= 0 && (
-                  <span className="text-xs text-red-500 font-medium">已达上限</span>
-                )}
-              </div>
+            <div className="w-full bg-gray-100 rounded-full h-2.5 mb-2">
+              <div
+                className={`h-2.5 rounded-full transition-all ${
+                  quota.backend_daily_remaining <= 0
+                    ? 'bg-red-500'
+                    : quota.backend_daily_used / quota.backend_daily_limit > 0.8
+                      ? 'bg-amber-500'
+                      : 'bg-green-500'
+                }`}
+                style={{ width: `${Math.min((quota.backend_daily_used / quota.backend_daily_limit) * 100, 100)}%` }}
+              />
             </div>
-          )}
+            <div className="flex items-center justify-between">
+              <span className="text-lg font-bold text-gray-900">
+                ${quota.backend_daily_remaining.toFixed(2)}
+                <span className="text-xs font-normal text-gray-400 ml-1">剩余</span>
+              </span>
+              {quota.backend_daily_remaining <= 0 && (
+                <span className="text-xs text-red-500 font-medium">已达上限</span>
+              )}
+            </div>
+          </div>
         </div>
       )}
 

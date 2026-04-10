@@ -64,6 +64,15 @@ func detectOpenClaw(userAgent string, body []byte) bool {
 	return i3 >= 0
 }
 
+// isClaudeModel checks if the model name refers to a Claude model.
+func isClaudeModel(model string) bool {
+	m := strings.ToLower(model)
+	return strings.Contains(m, "claude") ||
+		strings.Contains(m, "sonnet") ||
+		strings.Contains(m, "opus") ||
+		strings.Contains(m, "haiku")
+}
+
 // parseUA extracts the UA product name from User-Agent header.
 // - Takes the part before "/" (if exists)
 // - Truncates to max 12 characters
@@ -113,25 +122,28 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	isOpenClaw := detectOpenClaw(c.GetHeader("User-Agent"), body)
 	if isOpenClaw {
 		c.Set("is_openclaw", true)
-		// Block OpenClaw clients on backend channel
-		logger.Warnf("OpenClaw client blocked on backend channel: user_id=%v model=%s ua=%s",
-			func() interface{} {
-				if info, ok := c.Get(middleware.CtxKeyInfo); ok {
-					if ki, ok := info.(*auth.KeyInfo); ok {
-						return ki.UserID
+		// Only block OpenClaw clients when requesting Claude models
+		if isClaudeModel(reqModel) {
+			logger.Warnf("OpenClaw client blocked on backend channel (claude model): user_id=%v model=%s ua=%s",
+				func() interface{} {
+					if info, ok := c.Get(middleware.CtxKeyInfo); ok {
+						if ki, ok := info.(*auth.KeyInfo); ok {
+							return ki.UserID
+						}
 					}
-				}
-				return "?"
-			}(),
-			reqModel, c.GetHeader("User-Agent"))
-		c.JSON(http.StatusForbidden, gin.H{
-			"type": "error",
-			"error": gin.H{
-				"type":    "forbidden",
-				"message": "OpenClaw client is not allowed on backend channel",
-			},
-		})
-		return
+					return "?"
+				}(),
+				reqModel, c.GetHeader("User-Agent"))
+			c.JSON(http.StatusForbidden, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "forbidden",
+					"message": "OpenClaw client is not allowed to use Claude models on backend channel",
+				},
+			})
+			return
+		}
+		logger.Infof("OpenClaw client allowed on backend channel (non-claude model): model=%s", reqModel)
 	}
 
 	// Get key info for auto-downgrade check
