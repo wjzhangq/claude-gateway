@@ -21,11 +21,12 @@ import (
 
 // Handler forwards requests to AWS Bedrock.
 type Handler struct {
-	client    *BedrockClient
-	collector *stats.AWSCollector
-	keyStore  *auth.KeyStore
-	mu        sync.RWMutex
-	config    *config.AWSConfig
+	client     *BedrockClient
+	collector  *stats.AWSCollector
+	keyStore   *auth.KeyStore
+	mu         sync.RWMutex
+	config     *config.AWSConfig
+	rootConfig *config.Config // full config for user_daily_limits lookup
 }
 
 // NewHandler creates a new AWS proxy handler.
@@ -36,6 +37,13 @@ func NewHandler(client *BedrockClient, collector *stats.AWSCollector, ks *auth.K
 		keyStore:  ks,
 		config:    cfg,
 	}
+}
+
+// SetRootConfig sets the full config on the handler (call after NewHandler).
+func (h *Handler) SetRootConfig(cfg *config.Config) {
+	h.mu.Lock()
+	h.rootConfig = cfg
+	h.mu.Unlock()
 }
 
 // UpdateConfig hot-swaps the AWS config (used on SIGHUP reload).
@@ -104,21 +112,36 @@ func (h *Handler) checkAWSDailyLimit(c *gin.Context) bool {
 	}
 
 	cfg := h.awsCfg()
-	globalMax := cfg.AWSDailyMax
-	userMax := keyInfo.AWSDailyQuotaUSD
 
+	// Effective daily limit resolution (highest priority first):
+	// 1. If the user's itcode appears in config.user_daily_limits with aws_daily_usd > 0,
+	//    use that value directly — it overrides both the global cap and the DB quota.
+	// 2. Otherwise fall back to min(global AWSDailyMax, per-user AWSDailyQuotaUSD),
+	//    treating 0 as "no limit" for each.
 	var effectiveLimit float64
-	switch {
-	case globalMax > 0 && userMax > 0:
-		if globalMax < userMax {
+	h.mu.RLock()
+	root := h.rootConfig
+	h.mu.RUnlock()
+	if root != nil {
+		if override := root.LookupUserDailyLimit(keyInfo.Itcode); override != nil && override.AWSDailyUSD > 0 {
+			effectiveLimit = override.AWSDailyUSD
+		}
+	}
+	if effectiveLimit == 0 {
+		globalMax := cfg.AWSDailyMax
+		userMax := keyInfo.AWSDailyQuotaUSD
+		switch {
+		case globalMax > 0 && userMax > 0:
+			if globalMax < userMax {
+				effectiveLimit = globalMax
+			} else {
+				effectiveLimit = userMax
+			}
+		case globalMax > 0:
 			effectiveLimit = globalMax
-		} else {
+		case userMax > 0:
 			effectiveLimit = userMax
 		}
-	case globalMax > 0:
-		effectiveLimit = globalMax
-	case userMax > 0:
-		effectiveLimit = userMax
 	}
 
 	if effectiveLimit > 0 {

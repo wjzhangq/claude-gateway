@@ -122,21 +122,27 @@ func (h *StatsHandler) GetMyDashboard(c *gin.Context) {
 		return
 	}
 
-	// Effective backend daily limit = min(global, per-user), 0 = unlimited
-	globalMax := h.config.BackendDailyMax
-	userMax := user.DailyQuotaUSD
+	// Effective backend daily limit:
+	// 1. If user appears in config.user_daily_limits with backend_daily_usd > 0, use that value directly.
+	// 2. Otherwise fall back to min(global BackendDailyMax, per-user DailyQuotaUSD), 0 = unlimited.
 	var effectiveBackendLimit float64
-	switch {
-	case globalMax > 0 && userMax > 0:
-		if globalMax < userMax {
+	if override := h.config.LookupUserDailyLimit(user.Itcode); override != nil && override.BackendDailyUSD > 0 {
+		effectiveBackendLimit = override.BackendDailyUSD
+	} else {
+		globalMax := h.config.BackendDailyMax
+		userMax := user.DailyQuotaUSD
+		switch {
+		case globalMax > 0 && userMax > 0:
+			if globalMax < userMax {
+				effectiveBackendLimit = globalMax
+			} else {
+				effectiveBackendLimit = userMax
+			}
+		case globalMax > 0:
 			effectiveBackendLimit = globalMax
-		} else {
+		case userMax > 0:
 			effectiveBackendLimit = userMax
 		}
-	case globalMax > 0:
-		effectiveBackendLimit = globalMax
-	case userMax > 0:
-		effectiveBackendLimit = userMax
 	}
 
 	backendUsed := h.keyStore.GetDailyCost(userID)

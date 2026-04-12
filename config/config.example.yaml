@@ -21,6 +21,20 @@ auth:
 
 usage_sync_time: 5m       # 使用量聚合间隔
 
+# 每日全局费用上限（所有用户共享，0 = 不限）
+# backend_daily_max: 10.0
+
+# 指定 itcode 的个人每日费用上限（优先级最高，可突破全局上限）
+# 若某 itcode 同时匹配此列表，则直接使用这里的值，忽略全局上限和数据库中的用户配额。
+# backend_daily_usd / aws_daily_usd 设为 0 表示该渠道不做覆盖，仍走默认逻辑。
+# user_daily_limits:
+#   - itcode: "zhangsan"
+#     backend_daily_usd: 50.0   # Backend 渠道每日上限 $50
+#     aws_daily_usd: 0           # AWS 渠道不覆盖，走默认逻辑
+#   - itcode: "lisi"
+#     backend_daily_usd: 20.0
+#     aws_daily_usd: 30.0
+
 # 用户分组（用于费用统计和用户管理）
 groups:
   - id: 1

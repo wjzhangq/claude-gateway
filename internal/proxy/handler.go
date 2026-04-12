@@ -167,23 +167,30 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		cfg := h.config
 		h.mu.RUnlock()
 
-		// Effective daily limit: use the smaller of global (BackendDailyMax) and per-user (DailyQuotaUSD),
-		// treating 0 as "no limit" for each.
+		// Effective daily limit resolution (highest priority first):
+		// 1. If the user's itcode appears in config.user_daily_limits with backend_daily_usd > 0,
+		//    use that value directly — it overrides both the global cap and the DB quota.
+		// 2. Otherwise fall back to min(global BackendDailyMax, per-user DailyQuotaUSD),
+		//    treating 0 as "no limit" for each.
 		effectiveLimit := 0.0
 		if cfg != nil {
-			globalMax := cfg.BackendDailyMax
-			userMax := info.DailyQuotaUSD
-			switch {
-			case globalMax > 0 && userMax > 0:
-				if globalMax < userMax {
+			if override := cfg.LookupUserDailyLimit(info.Itcode); override != nil && override.BackendDailyUSD > 0 {
+				effectiveLimit = override.BackendDailyUSD
+			} else {
+				globalMax := cfg.BackendDailyMax
+				userMax := info.DailyQuotaUSD
+				switch {
+				case globalMax > 0 && userMax > 0:
+					if globalMax < userMax {
+						effectiveLimit = globalMax
+					} else {
+						effectiveLimit = userMax
+					}
+				case globalMax > 0:
 					effectiveLimit = globalMax
-				} else {
+				case userMax > 0:
 					effectiveLimit = userMax
 				}
-			case globalMax > 0:
-				effectiveLimit = globalMax
-			case userMax > 0:
-				effectiveLimit = userMax
 			}
 		}
 

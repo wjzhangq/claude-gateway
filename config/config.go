@@ -8,6 +8,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// UserDailyLimit specifies a per-itcode daily spending override.
+// These entries take precedence over both the global cap and the per-user DB value,
+// allowing individual users to have a higher (or lower) ceiling than the global default.
+type UserDailyLimit struct {
+	Itcode          string  `yaml:"itcode"`
+	BackendDailyUSD float64 `yaml:"backend_daily_usd"` // 0 = not overridden for backend channel
+	AWSDailyUSD     float64 `yaml:"aws_daily_usd"`     // 0 = not overridden for AWS channel
+}
+
 // Config is the root configuration structure.
 type Config struct {
 	Server            ServerConfig      `yaml:"server"`
@@ -20,6 +29,7 @@ type Config struct {
 	ModelReplacements map[string]string `yaml:"model_replacements"`
 	DowngradedTTL     time.Duration     `yaml:"downgraded_ttl"`    // how long to skip original model after downgrade
 	BackendDailyMax   float64           `yaml:"backend_daily_max"` // max backend spend per user per day in USD (0 = unlimited)
+	UserDailyLimits   []UserDailyLimit  `yaml:"user_daily_limits"` // per-itcode daily spending overrides
 	AWS               AWSConfig         `yaml:"aws"`
 }
 
@@ -122,6 +132,16 @@ func defaultConfig() *Config {
 		UsageSync:     5 * time.Minute,
 		DowngradedTTL: 60 * time.Second,
 	}
+}
+
+// LookupUserDailyLimit returns the UserDailyLimit entry for the given itcode, or nil if not found.
+func (c *Config) LookupUserDailyLimit(itcode string) *UserDailyLimit {
+	for i := range c.UserDailyLimits {
+		if c.UserDailyLimits[i].Itcode == itcode {
+			return &c.UserDailyLimits[i]
+		}
+	}
+	return nil
 }
 
 func validate(cfg *Config) error {

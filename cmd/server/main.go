@@ -154,6 +154,7 @@ func main() {
 		}
 		awsCollector = stats.NewAWSCollector(database, keyStore, 1024)
 		awsProxyH = awsproxy.NewHandler(bedrockClient, awsCollector, keyStore, &cfg.AWS)
+		awsProxyH.SetRootConfig(cfg)
 		awsAggregator = stats.NewAWSAggregator(database, cfg.UsageSync)
 		awsAggregator.Start()
 		if cfg.AWS.Socks5Proxy != "" {
@@ -372,6 +373,7 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 		awsStatsH.UpdateConfig(newCfg)
 		if awsProxyH != nil {
 			awsProxyH.UpdateConfig(&newCfg.AWS)
+			awsProxyH.SetRootConfig(newCfg)
 		}
 
 		// Step 5: reload key store
