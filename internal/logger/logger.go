@@ -91,13 +91,21 @@ func rotateIfNeeded() {
 }
 
 // LogErrorRequest writes a structured error entry (with request details) to the
-// daily error log file. It also logs to stdout at error level. Fields should
-// contain keys like "error", "model", "user_id", "itcode", "body", etc.
-func LogErrorRequest(msg string, fields logrus.Fields) {
-	// Always log to stdout
-	log.WithFields(fields).Error(msg)
+// daily error log file. It also logs a summary to stdout at error level.
+// fileOnlyKeys lists field keys that should only appear in the file log (e.g.
+// "request_body") to avoid flooding the console with large payloads.
+func LogErrorRequest(msg string, fields logrus.Fields, fileOnlyKeys ...string) {
+	// Build console fields: exclude file-only keys
+	consoleFields := make(logrus.Fields, len(fields))
+	for k, v := range fields {
+		consoleFields[k] = v
+	}
+	for _, k := range fileOnlyKeys {
+		delete(consoleFields, k)
+	}
+	log.WithFields(consoleFields).Error(msg)
 
-	// Write to file if configured
+	// Write full fields (including body) to file if configured
 	if fileLogger == nil || logDir == "" {
 		return
 	}

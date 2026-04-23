@@ -467,14 +467,13 @@ type openAIMsg struct {
 }
 
 type anthropicRequest struct {
-	AnthropicVersion string        `json:"anthropic_version"`
-	System           string        `json:"system,omitempty"`
-	Messages         []openAIMsg   `json:"messages"`
-	MaxTokens        int           `json:"max_tokens"`
-	Temperature      *float64      `json:"temperature,omitempty"`
-	TopP             *float64      `json:"top_p,omitempty"`
-	Stream           bool          `json:"stream,omitempty"`
-	Stop             []string      `json:"stop_sequences,omitempty"`
+	AnthropicVersion string      `json:"anthropic_version"`
+	System           string      `json:"system,omitempty"`
+	Messages         []openAIMsg `json:"messages"`
+	MaxTokens        int         `json:"max_tokens"`
+	Temperature      *float64    `json:"temperature,omitempty"`
+	TopP             *float64    `json:"top_p,omitempty"`
+	Stop             []string    `json:"stop_sequences,omitempty"`
 }
 
 type anthropicMessageResponse struct {
@@ -501,7 +500,6 @@ func convertOAIToAnthropic(req openAIChatRequest) anthropicRequest {
 		MaxTokens:        req.MaxTokens,
 		Temperature:      req.Temperature,
 		TopP:             req.TopP,
-		Stream:           req.Stream,
 		Stop:             req.Stop,
 		System:           req.System,
 	}
@@ -805,5 +803,5 @@ func logBedrockError(msg string, err error, reqBody []byte, bedrockModel, reqMod
 	}
 	fields["request_body"] = body
 
-	logger.LogErrorRequest(msg, fields)
+	logger.LogErrorRequest(msg, fields, "request_body")
 }
