@@ -1,12 +1,25 @@
 package logger
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
 var log = logrus.New()
+
+// errorFileLogger writes error-level entries to daily-rotated files under logDir.
+var (
+	logDir       string
+	fileMu       sync.Mutex
+	currentDate  string
+	currentFile  *os.File
+	fileLogger   *logrus.Logger
+)
 
 // Init configures the global logger based on level and format strings.
 func Init(level, format string) {
@@ -27,6 +40,71 @@ func Init(level, format string) {
 			TimestampFormat: "2006-01-02T15:04:05.000Z07:00",
 		})
 	}
+}
+
+// InitErrorLog sets up daily-rotated error log files in dir.
+// If dir is empty, file logging is disabled.
+func InitErrorLog(dir string) {
+	if dir == "" {
+		return
+	}
+	logDir = dir
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		log.Errorf("failed to create log dir %s: %v", logDir, err)
+		return
+	}
+	fileLogger = logrus.New()
+	fileLogger.SetLevel(logrus.DebugLevel)
+	fileLogger.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: "2006-01-02T15:04:05.000Z07:00",
+	})
+	// Open the initial file
+	fileMu.Lock()
+	rotateIfNeeded()
+	fileMu.Unlock()
+	log.Infof("error log dir initialized: %s", logDir)
+}
+
+// rotateIfNeeded switches to a new daily log file if the date has changed.
+// Must be called with fileMu held or during init.
+func rotateIfNeeded() {
+	today := time.Now().Format("2006-01-02")
+	if today == currentDate && currentFile != nil {
+		return
+	}
+	// Close old file
+	if currentFile != nil {
+		currentFile.Close()
+	}
+	filename := filepath.Join(logDir, fmt.Sprintf("error-%s.log", today))
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Errorf("failed to open error log file %s: %v", filename, err)
+		currentFile = nil
+		return
+	}
+	currentFile = f
+	currentDate = today
+	if fileLogger != nil {
+		fileLogger.SetOutput(f)
+	}
+}
+
+// LogErrorRequest writes a structured error entry (with request details) to the
+// daily error log file. It also logs to stdout at error level. Fields should
+// contain keys like "error", "model", "user_id", "itcode", "body", etc.
+func LogErrorRequest(msg string, fields logrus.Fields) {
+	// Always log to stdout
+	log.WithFields(fields).Error(msg)
+
+	// Write to file if configured
+	if fileLogger == nil || logDir == "" {
+		return
+	}
+	fileMu.Lock()
+	rotateIfNeeded()
+	fileLogger.WithFields(fields).Error(msg)
+	fileMu.Unlock()
 }
 
 // Get returns the configured logrus logger.

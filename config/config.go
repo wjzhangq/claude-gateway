@@ -51,6 +51,7 @@ type DatabaseConfig struct {
 type LogConfig struct {
 	Level  string `yaml:"level"`  // debug | info | warn | error
 	Format string `yaml:"format"` // json | text
+	Dir    string `yaml:"dir"`    // directory for error log files (daily rotation)
 }
 
 type AuthConfig struct {

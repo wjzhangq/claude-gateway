@@ -36,6 +36,7 @@ func main() {
 	}
 
 	logger.Init(cfg.Log.Level, cfg.Log.Format)
+	logger.InitErrorLog(cfg.Log.Dir)
 
 	if err := os.MkdirAll("data", 0755); err != nil {
 		logger.Fatalf("create data dir: %v", err)

@@ -11,6 +11,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
@@ -217,7 +218,8 @@ func (h *Handler) syncMessages(c *gin.Context, body []byte, bedrockModel, reqMod
 
 	respBytes, err := h.client.InvokeModel(c.Request.Context(), bedrockModel, body)
 	if err != nil {
-		logger.Errorf("bedrock invoke: %v", err)
+		logBedrockError("bedrock invoke failed", err, body, bedrockModel, reqModel,
+			keyInfo, c.Request.Header.Get("User-Agent"), false)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "bedrock request failed"})
 		return
 	}
@@ -238,7 +240,8 @@ func (h *Handler) streamMessages(c *gin.Context, body []byte, bedrockModel, reqM
 
 	out, err := h.client.InvokeModelStream(c.Request.Context(), bedrockModel, body)
 	if err != nil {
-		logger.Errorf("bedrock stream invoke: %v", err)
+		logBedrockError("bedrock stream invoke failed", err, body, bedrockModel, reqModel,
+			keyInfo, c.Request.Header.Get("User-Agent"), true)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "bedrock stream request failed"})
 		return
 	}
@@ -347,7 +350,8 @@ func (h *Handler) syncChatCompletions(c *gin.Context, body []byte, bedrockModel,
 
 	respBytes, err := h.client.InvokeModel(c.Request.Context(), bedrockModel, body)
 	if err != nil {
-		logger.Errorf("bedrock invoke: %v", err)
+		logBedrockError("bedrock invoke failed", err, body, bedrockModel, reqModel,
+			keyInfo, c.Request.Header.Get("User-Agent"), false)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "bedrock request failed"})
 		return
 	}
@@ -378,7 +382,8 @@ func (h *Handler) streamChatCompletions(c *gin.Context, body []byte, bedrockMode
 
 	out, err := h.client.InvokeModelStream(c.Request.Context(), bedrockModel, body)
 	if err != nil {
-		logger.Errorf("bedrock stream invoke: %v", err)
+		logBedrockError("bedrock stream invoke failed", err, body, bedrockModel, reqModel,
+			keyInfo, c.Request.Header.Get("User-Agent"), true)
 		c.JSON(http.StatusBadGateway, gin.H{"error": "bedrock stream request failed"})
 		return
 	}
@@ -774,4 +779,31 @@ func parseUA(userAgent string) string {
 		ua = ua[:12]
 	}
 	return strings.ToLower(ua)
+}
+
+// logBedrockError logs a failed Bedrock request with full context to the
+// daily error log file for post-mortem analysis.
+func logBedrockError(msg string, err error, reqBody []byte, bedrockModel, reqModel string,
+	keyInfo *auth.KeyInfo, userAgent string, stream bool) {
+
+	fields := logrus.Fields{
+		"error":         err.Error(),
+		"bedrock_model": bedrockModel,
+		"req_model":     reqModel,
+		"stream":        stream,
+		"user_agent":    userAgent,
+	}
+	if keyInfo != nil {
+		fields["user_id"] = keyInfo.UserID
+		fields["itcode"] = keyInfo.Itcode
+		fields["key_id"] = keyInfo.KeyID
+	}
+	// Truncate body to 4KB to avoid huge log entries
+	body := string(reqBody)
+	if len(body) > 4096 {
+		body = body[:4096] + "...(truncated)"
+	}
+	fields["request_body"] = body
+
+	logger.LogErrorRequest(msg, fields)
 }
