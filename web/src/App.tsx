@@ -21,6 +21,9 @@ import AdminAWSUsersPage from './pages/AdminAWSUsersPage'
 import AdminAWSUsagePage from './pages/AdminAWSUsagePage'
 import AdminAWSUserDailyPage from './pages/AdminAWSUserDailyPage'
 import AdminAWSBedrockPage from './pages/AdminAWSBedrockPage'
+import AdminPublicStatsPage from './pages/AdminPublicStatsPage'
+import AdminPublicUsagePage from './pages/AdminPublicUsagePage'
+import PlaygroundPage from './pages/PlaygroundPage'
 
 export default function App() {
   return (
@@ -35,6 +38,7 @@ export default function App() {
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/keys" element={<APIKeysPage />} />
               <Route path="/usage" element={<UsagePage />} />
+              <Route path="/playground" element={<PlaygroundPage />} />
               <Route path="/aws" element={<AWSPage />} />
               <Route path="/aws/keys" element={<AWSKeysPage />} />
               <Route path="/aws/usage" element={<AWSUsagePage />} />
@@ -44,6 +48,8 @@ export default function App() {
                 <Route path="/admin/applications" element={<AdminApplicationsPage />} />
                 <Route path="/admin/usage" element={<AdminUsagePage />} />
                 <Route path="/admin/backends" element={<AdminBackendsPage />} />
+                <Route path="/admin/public/stats" element={<AdminPublicStatsPage />} />
+                <Route path="/admin/public/usage" element={<AdminPublicUsagePage />} />
                 <Route path="/admin/user-daily" element={<AdminUserDailyPage />} />
                 <Route path="/admin/aws/users" element={<AdminAWSUsersPage />} />
                 <Route path="/admin/aws/usage" element={<AdminAWSUsagePage />} />

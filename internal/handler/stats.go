@@ -25,16 +25,17 @@ func NewStatsHandler(database *db.DB, cfg *config.Config, keyStore *auth.KeyStor
 }
 
 // GetUsage godoc: GET /admin/api/usage
-// Query params: user_id, start_date (YYYY-MM-DD), end_date, model, page, page_size
+// Query params: user_id, start_date (YYYY-MM-DD), end_date, model, backend, page, page_size
 func (h *StatsHandler) GetUsage(c *gin.Context) {
 	userID, _ := strconv.ParseInt(c.Query("user_id"), 10, 64)
 	start := c.Query("start_date")
 	end := c.Query("end_date")
 	model := c.Query("model")
+	backend := c.Query("backend")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 
-	logs, total, err := h.db.ListUsageLogs(userID, start, end, model, page, pageSize)
+	logs, total, err := h.db.ListUsageLogs(userID, start, end, model, backend, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -81,10 +82,11 @@ func (h *StatsHandler) GetMyUsage(c *gin.Context) {
 	start := c.Query("start_date")
 	end := c.Query("end_date")
 	model := c.Query("model")
+	backend := c.Query("backend")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 
-	logs, total, err := h.db.ListUsageLogs(userID, start, end, model, page, pageSize)
+	logs, total, err := h.db.ListUsageLogs(userID, start, end, model, backend, page, pageSize)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

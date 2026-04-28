@@ -114,6 +114,15 @@ export const adminGetBackendStatus = () => api.get('/admin/api/backends/status')
 
 // Admin - Groups
 export const adminGetGroups = () => api.get('/admin/api/groups')
+export const adminGetGroupStats = (params?: Record<string, string>) =>
+  api.get('/admin/api/groups/stats', { params })
+
+// Admin - Public providers (usage logs filtered by backend=public:)
+export const adminGetPublicUsage = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/usage', { params: { ...params, backend: 'public:' } })
+// Playground — uses the gateway's own /v1 endpoints with a user's API key
+export const playgroundListModels = (apiKey: string) =>
+  api.get('/v1/models', { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 30000 })
 
 // ===== User AWS =====
 export const getAWSDashboard = () => api.get('/api/aws/dashboard')

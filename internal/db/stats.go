@@ -125,7 +125,8 @@ func (d *DB) BatchUpdateKeyCosts(updates []KeyCostUpdate) error {
 }
 
 // ListUsageLogs queries usage logs with optional filters.
-func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter string, page, pageSize int) ([]*model.UsageLog, int, error) {
+// backendFilter supports prefix matching: e.g. "public:" matches all public providers.
+func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backendFilter string, page, pageSize int) ([]*model.UsageLog, int, error) {
 	countWhere := "WHERE 1=1"
 	joinWhere := "WHERE 1=1"
 	args := []interface{}{}
@@ -149,6 +150,11 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter string,
 		countWhere += " AND model = ?"
 		joinWhere += " AND l.model = ?"
 		args = append(args, modelFilter)
+	}
+	if backendFilter != "" {
+		countWhere += " AND backend LIKE ?"
+		joinWhere += " AND l.backend LIKE ?"
+		args = append(args, backendFilter+"%")
 	}
 
 	var total int

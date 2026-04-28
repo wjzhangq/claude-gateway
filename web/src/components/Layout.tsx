@@ -6,6 +6,7 @@ const userNav = [
   { to: '/dashboard', label: '仪表盘' },
   { to: '/keys', label: 'API Keys' },
   { to: '/usage', label: '使用统计' },
+  { to: '/playground', label: 'Playground' },
 ]
 
 const awsUserNav = [
@@ -21,6 +22,8 @@ const adminNav = [
   { to: '/admin/usage', label: '使用统计' },
   { to: '/admin/user-daily', label: '用户费用' },
   { to: '/admin/backends', label: 'Backend 统计' },
+  { to: '/admin/public/stats', label: 'Public 统计' },
+  { to: '/admin/public/usage', label: 'Public 日志' },
 ]
 
 const awsAdminNav = [
