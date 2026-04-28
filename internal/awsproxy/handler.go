@@ -75,7 +75,7 @@ func (h *Handler) Passthrough(c *gin.Context) {
 	}
 }
 
-// Models handles GET /v1/models — returns only model_replace keys.
+// Models handles GET /v1/models — returns model_replace keys plus any extra models.
 func (h *Handler) Models(c *gin.Context) {
 	cfg := h.awsCfg()
 	models := ListAvailableModels(cfg.ModelReplace)
@@ -90,6 +90,14 @@ func (h *Handler) Models(c *gin.Context) {
 			"owned_by": "aws-bedrock",
 		})
 	}
+
+	// Append extra models (e.g. public providers) if set in context
+	if extra, ok := c.Get("extra_models"); ok {
+		if extraModels, ok := extra.([]gin.H); ok {
+			data = append(data, extraModels...)
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
 }
 
@@ -630,6 +638,57 @@ func stripCacheControlScope(v interface{}) interface{} {
 	return v
 }
 
+// stripEmptyTextBlocks removes empty text content blocks from messages.
+// Bedrock rejects requests with {"type":"text","text":""}.
+// When content is an array, filter out blocks where type=="text" and text is
+// empty. If all blocks are removed, replace with a single whitespace text block
+// so the message remains valid.
+func stripEmptyTextBlocks(messages []interface{}) []interface{} {
+	for i, msg := range messages {
+		msgMap, ok := msg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		content, ok := msgMap["content"]
+		if !ok {
+			continue
+		}
+		// content can be a string or an array of content blocks
+		blocks, ok := content.([]interface{})
+		if !ok {
+			// string content — if empty, replace with whitespace
+			if s, ok := content.(string); ok && strings.TrimSpace(s) == "" {
+				msgMap["content"] = " "
+				messages[i] = msgMap
+			}
+			continue
+		}
+		var filtered []interface{}
+		for _, block := range blocks {
+			bm, ok := block.(map[string]interface{})
+			if !ok {
+				filtered = append(filtered, block)
+				continue
+			}
+			typ, _ := bm["type"].(string)
+			if typ == "text" {
+				text, _ := bm["text"].(string)
+				if strings.TrimSpace(text) == "" {
+					continue // drop empty text block
+				}
+			}
+			filtered = append(filtered, block)
+		}
+		if len(filtered) == 0 {
+			// All blocks were empty; keep at least one to satisfy API requirement
+			filtered = []interface{}{map[string]interface{}{"type": "text", "text": " "}}
+		}
+		msgMap["content"] = filtered
+		messages[i] = msgMap
+	}
+	return messages
+}
+
 // prepareAnthropicBody sets anthropic_version to "bedrock-2023-05-31" and removes
 // fields that Bedrock does not accept: "model" and "stream".
 // It also ensures max_tokens > thinking.budget_tokens when extended thinking is used,
@@ -645,11 +704,17 @@ func prepareAnthropicBody(body []byte) []byte {
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
 
 	// Strip cache_control.scope from system/messages — Bedrock does not support it.
+	// Also strip empty text content blocks from messages — Bedrock rejects them.
 	for _, key := range []string{"system", "messages"} {
 		if raw, ok := m[key]; ok {
 			var parsed interface{}
 			if err := json.Unmarshal(raw, &parsed); err == nil {
 				cleaned := stripCacheControlScope(parsed)
+				if key == "messages" {
+					if msgs, ok := cleaned.([]interface{}); ok {
+						cleaned = stripEmptyTextBlocks(msgs)
+					}
+				}
 				if b, err := json.Marshal(cleaned); err == nil {
 					m[key] = b
 				}

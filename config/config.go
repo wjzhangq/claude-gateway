@@ -31,6 +31,22 @@ type Config struct {
 	BackendDailyMax   float64           `yaml:"backend_daily_max"` // max backend spend per user per day in USD (0 = unlimited)
 	UserDailyLimits   []UserDailyLimit  `yaml:"user_daily_limits"` // per-itcode daily spending overrides
 	AWS               AWSConfig         `yaml:"aws"`
+	PublicProviders   []PublicProvider  `yaml:"public_providers"`  // third-party model providers accessible from all channels
+}
+
+// PublicProvider represents a third-party model provider (e.g. Kimi, MiniMax)
+// that is accessible from both backend and AWS channels.
+// It exposes two URLs for transparent forwarding:
+//   - OpenAIURL:     for /v1/chat/completions requests
+//   - AnthropicURL:  for /v1/messages requests
+type PublicProvider struct {
+	Name         string                       `yaml:"name"`
+	OpenAIURL    string                       `yaml:"openai_url"`    // base URL for OpenAI-compatible API
+	AnthropicURL string                       `yaml:"anthropic_url"` // base URL for Anthropic-compatible API
+	APIKey       string                       `yaml:"api_key"`
+	Enabled      bool                         `yaml:"enabled"`
+	Models       []string                     `yaml:"models"`        // supported model names (exact match)
+	ModelPricing map[string]ModelPricingEntry  `yaml:"model_pricing"` // model name -> pricing per 1M tokens
 }
 
 // Group represents a user group for organizing users and tracking usage.
@@ -143,6 +159,34 @@ func (c *Config) LookupUserDailyLimit(itcode string) *UserDailyLimit {
 		}
 	}
 	return nil
+}
+
+// LookupPublicProvider returns the PublicProvider that serves the given model, or nil.
+func (c *Config) LookupPublicProvider(model string) *PublicProvider {
+	for i := range c.PublicProviders {
+		p := &c.PublicProviders[i]
+		if !p.Enabled {
+			continue
+		}
+		for _, m := range p.Models {
+			if m == model {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
+// PublicModelList returns all model names from enabled public providers.
+func (c *Config) PublicModelList() []string {
+	var models []string
+	for _, p := range c.PublicProviders {
+		if !p.Enabled {
+			continue
+		}
+		models = append(models, p.Models...)
+	}
+	return models
 }
 
 func validate(cfg *Config) error {

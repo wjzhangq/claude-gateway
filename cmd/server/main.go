@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +25,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/model"
 	"github.com/wjzhangq/claude-gateway/internal/proxy"
+	"github.com/wjzhangq/claude-gateway/internal/publicproxy"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
 )
 
@@ -167,6 +172,20 @@ func main() {
 		logger.Infof("AWS Bedrock channel not configured, skipping initialization")
 	}
 
+	// ─── Public providers initialization ─────────────────────────────
+	publicH := publicproxy.NewHandler(collector, keyStore, cfg)
+	if len(cfg.PublicProviders) > 0 {
+		var names []string
+		for _, p := range cfg.PublicProviders {
+			if p.Enabled {
+				names = append(names, p.Name)
+			}
+		}
+		if len(names) > 0 {
+			logger.Infof("Public providers initialized: %s", strings.Join(names, ", "))
+		}
+	}
+
 	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database, keyStore)
@@ -183,13 +202,58 @@ func main() {
 	}
 
 	// /v1/* — dispatch by channel attribute of the API key
+	// Priority: public provider (model match) > aws/backend (channel)
 	v1 := r.Group("/v1")
 	v1.Use(middleware.AuthMiddleware(keyStore))
 	{
 		v1.Any("/*path", func(c *gin.Context) {
 			ch, _ := c.Get("channel")
 			keyPrefix, _ := c.Get("raw_api_key")
+			path := "/v1" + c.Param("path")
 			logger.Infof("v1 request: path=%s key=%s channel=%v", c.Param("path"), keyPrefix, ch)
+
+			// For /models endpoint, return public models alongside channel models
+			if strings.HasSuffix(path, "/models") && c.Request.Method == "GET" {
+				publicModels := publicH.Models()
+				if len(publicModels) > 0 {
+					// Use a response writer wrapper to intercept and merge
+					serveModelsWithPublic(c, ch, awsProxyH, proxyH, publicModels)
+				} else {
+					if ch == "aws" && awsProxyH != nil {
+						awsProxyH.Passthrough(c)
+					} else if ch == "aws" {
+						c.JSON(503, gin.H{"error": "AWS channel not configured"})
+					} else {
+						proxyH.Passthrough(c)
+					}
+				}
+				return
+			}
+
+			// For mutation requests (POST), peek at the body to detect model
+			if c.Request.Method == "POST" {
+				body, err := io.ReadAll(c.Request.Body)
+				if err != nil {
+					c.JSON(400, gin.H{"error": "read request body failed"})
+					return
+				}
+
+				var reqJSON struct {
+					Model string `json:"model"`
+				}
+				if json.Unmarshal(body, &reqJSON) == nil && reqJSON.Model != "" {
+					if provider := publicH.MatchModel(reqJSON.Model); provider != nil {
+						logger.Infof("routing to public provider %s for model %s", provider.Name, reqJSON.Model)
+						publicH.Forward(c, path, body, reqJSON.Model, provider)
+						return
+					}
+				}
+
+				// Restore body for the downstream channel handler
+				c.Request.Body = io.NopCloser(bytes.NewReader(body))
+			}
+
+			// Fall through to original channel-based routing
 			if ch == "aws" && awsProxyH != nil {
 				awsProxyH.Passthrough(c)
 			} else if ch == "aws" {
@@ -289,7 +353,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP)
 	go handleReload(sigCh, cfgPath, collector, awsCollector, aggregator, awsAggregator,
-		lb, proxyH, awsProxyH, statsH, awsStatsH, database, keyStore, cfg)
+		lb, proxyH, awsProxyH, publicH, statsH, awsStatsH, database, keyStore, cfg)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Infof("Claude Gateway listening on %s", addr)
@@ -334,10 +398,27 @@ func sessionLoader() gin.HandlerFunc {
 	}
 }
 
+// serveModelsWithPublic handles GET /v1/models by injecting public models into context
+// before delegating to the channel's handler. Both AWS and backend handlers check for
+// "extra_models" in the gin context and append them to the response.
+func serveModelsWithPublic(c *gin.Context, ch interface{}, awsProxyH *awsproxy.Handler, proxyH *proxy.Handler, publicModels []gin.H) {
+	// Inject public models into context for handlers to pick up
+	c.Set("extra_models", publicModels)
+
+	if ch == "aws" && awsProxyH != nil {
+		awsProxyH.Passthrough(c)
+	} else if ch == "aws" {
+		c.JSON(503, gin.H{"error": "AWS channel not configured"})
+	} else {
+		proxyH.Passthrough(c)
+	}
+}
+
 func handleReload(sigCh <-chan os.Signal, cfgPath string,
 	collector *stats.Collector, awsCollector *stats.AWSCollector,
 	aggregator *stats.Aggregator, awsAggregator *stats.AWSAggregator,
 	lb *proxy.LoadBalancer, proxyH *proxy.Handler, awsProxyH *awsproxy.Handler,
+	publicH *publicproxy.Handler,
 	statsH *handler.StatsHandler, awsStatsH *handler.AWSStatsHandler,
 	database *db.DB, keyStore *auth.KeyStore, currentCfg *config.Config) {
 
@@ -370,6 +451,7 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 		lb.UpdateBackends(newCfg.Backends)
 		proxyH.UpdateModelReplacements(newCfg.ModelReplacements)
 		proxyH.UpdateConfig(newCfg)
+		publicH.UpdateConfig(newCfg)
 		statsH.UpdateConfig(newCfg)
 		awsStatsH.UpdateConfig(newCfg)
 		if awsProxyH != nil {
