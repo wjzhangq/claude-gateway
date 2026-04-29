@@ -64,6 +64,21 @@ func detectOpenClaw(userAgent string, body []byte) bool {
 	return i3 >= 0
 }
 
+// detectHermes checks if the request is from a Hermes client.
+// Criteria: User-Agent contains "OpenAI/Python" AND first 320 bytes of body
+// contain "hermes" (case-insensitive).
+func detectHermes(userAgent string, body []byte) bool {
+	if !strings.Contains(userAgent, "OpenAI/Python") {
+		return false
+	}
+	snippet := body
+	if len(snippet) > 320 {
+		snippet = snippet[:320]
+	}
+	s := strings.ToLower(string(snippet))
+	return strings.Contains(s, "hermes")
+}
+
 // isClaudeModel checks if the model name refers to a Claude model.
 func isClaudeModel(model string) bool {
 	m := strings.ToLower(model)
@@ -77,10 +92,14 @@ func isClaudeModel(model string) bool {
 // - Takes the part before "/" (if exists)
 // - Truncates to max 12 characters
 // - If isOpenClaw is true, returns "openclaw" directly
+// - If isHermes is true, returns "hermesclaw" directly
 // - Returns lowercase
-func parseUA(userAgent string, isOpenClaw bool) string {
+func parseUA(userAgent string, isOpenClaw, isHermes bool) string {
 	if isOpenClaw {
 		return "openclaw"
+	}
+	if isHermes {
+		return "hermesclaw"
 	}
 	if userAgent == "" {
 		return ""
@@ -144,6 +163,13 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			return
 		}
 		logger.Infof("OpenClaw client allowed on backend channel (non-claude model): model=%s", reqModel)
+	}
+
+	// Detect Hermes client (counts as lobster traffic, but no blocking)
+	isHermes := !isOpenClaw && detectHermes(c.GetHeader("User-Agent"), body)
+	if isHermes {
+		c.Set("is_hermes", true)
+		logger.Infof("Hermes client detected on backend channel: model=%s ua=%s", reqModel, c.GetHeader("User-Agent"))
 	}
 
 	// Get key info for auto-downgrade check
@@ -239,7 +265,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// If in downgraded period, skip original model and go directly to GPT
 	if inDowngradedPeriod {
 		logger.Infof("key is in downgraded period, using GPT directly")
-		resp, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw)
+		resp, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
 		if err == nil && resp != nil {
 			isDowngraded = true
 		}
@@ -251,8 +277,8 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 
 			// Try downgrade if enabled and this is the first attempt
 			if autoDowngrade {
-				logger.Infof("attempting auto-downgrade for model %s, isOpenClaw=%v", reqModel, isOpenClaw)
-				resp, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw)
+				logger.Infof("attempting auto-downgrade for model %s, isOpenClaw=%v, isHermes=%v", reqModel, isOpenClaw, isHermes)
+				resp, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
 				if err == nil && resp != nil {
 					isDowngraded = true
 				}
@@ -274,8 +300,8 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		resp.Body.Close()
 		backend.RecordStatusCode(resp.StatusCode) // record the failure first
 
-		logger.Infof("received error status %d, attempting auto-downgrade for model %s, isOpenClaw=%v", resp.StatusCode, reqModel, isOpenClaw)
-		respNew, err := h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw)
+		logger.Infof("received error status %d, attempting auto-downgrade for model %s, isOpenClaw=%v, isHermes=%v", resp.StatusCode, reqModel, isOpenClaw, isHermes)
+		respNew, err := h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
 		if err == nil && respNew != nil {
 			resp = respNew
 			isDowngraded = true
@@ -317,9 +343,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// Stream or buffer
 	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	if isStream {
-		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isDowngraded)
+		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded)
 	} else {
-		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isDowngraded)
+		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded)
 	}
 }
 
@@ -348,10 +374,10 @@ func (h *Handler) doRequest(c *gin.Context, backend *Backend, upstreamPath, targ
 }
 
 // doRequestWithDowngrade retries the request with a downgraded model
-func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstreamPath string, body []byte, originalModel string, isOpenClaw bool) (*http.Response, error) {
+func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstreamPath string, body []byte, originalModel string, isOpenClaw, isHermes bool) (*http.Response, error) {
 	// Determine fallback model
 	fallbackModel := "gpt-5.3-codex"
-	if isOpenClaw {
+	if isOpenClaw || isHermes {
 		fallbackModel = "gpt-5.4"
 	}
 
@@ -385,7 +411,7 @@ func (h *Handler) replaceModelInBody(body []byte, oldModel, newModel string) []b
 
 const streamTailSize = 2048
 
-func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isDowngraded bool) {
+func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -421,10 +447,10 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 
 	in, out := parseStreamTokens(tail)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isDowngraded, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
-func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isDowngraded bool) {
+func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("read response body: %v", err)
@@ -433,7 +459,7 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isDowngraded, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
 // parseBodyTokens extracts token counts from a non-streaming JSON response.
@@ -525,7 +551,7 @@ func costUSD(model string, inputTokens, outputTokens int) float64 {
 	return (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice) / 1_000_000
 }
 
-func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isDowngraded bool, userAgent string) {
+func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isHermes, isDowngraded bool, userAgent string) {
 	if h.collector == nil || keyInfo == nil {
 		return
 	}
@@ -536,7 +562,9 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 
 	total := inputTokens + outputTokens
 	cost := costUSD(model, inputTokens, outputTokens)
-	ua := parseUA(userAgent, isOpenClaw)
+	ua := parseUA(userAgent, isOpenClaw, isHermes)
+	// For DB is_openclaw field: both openclaw and hermes count as lobster traffic
+	isLobster := isOpenClaw || isHermes
 	h.collector.Emit(stats.Record{
 		UserID:       info.UserID,
 		GroupID:      info.GroupID,
@@ -550,7 +578,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 		CostUSD:      cost,
 		StatusCode:   statusCode,
 		Latency:      latency,
-		IsOpenClaw:   isOpenClaw,
+		IsOpenClaw:   isLobster,
 		IsDowngraded: isDowngraded,
 		UA:           ua,
 	})

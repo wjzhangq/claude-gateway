@@ -14,6 +14,7 @@ interface UsageLog {
   cost_usd: number
   status_code: number
   is_openclaw: boolean
+  ua: string
   created_at: string
 }
 
@@ -201,8 +202,8 @@ export default function DashboardPage() {
         ) : (
           <>
             <StatCard label="今日费用" value={`$${todayCost.toFixed(4)}`} accent="red" />
-            <StatCard label="今日 OpenClaw 费用" value={`$${todayOcCost.toFixed(4)}`} accent="purple" />
-            <StatCard label="OpenClaw 占比" value={`${ocRatio}%`} accent="blue" />
+            <StatCard label="今日龙虾费用" value={`$${todayOcCost.toFixed(4)}`} accent="purple" />
+            <StatCard label="龙虾占比" value={`${ocRatio}%`} accent="blue" />
           </>
         )}
       </div>
@@ -271,7 +272,8 @@ export default function DashboardPage() {
                 <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
                   <td className="px-4 py-3 font-mono text-xs text-gray-600">
                     {log.model}
-                    {log.is_openclaw && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
+                    {log.is_openclaw && log.ua === 'hermesclaw' && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-50 text-purple-600 ring-1 ring-purple-100">HC</span>}
+                    {log.is_openclaw && log.ua !== 'hermesclaw' && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
                   </td>
                   <td className="px-4 py-3 text-gray-600">{log.input_tokens.toLocaleString()}</td>
                   <td className="px-4 py-3 text-gray-600">{log.output_tokens.toLocaleString()}</td>

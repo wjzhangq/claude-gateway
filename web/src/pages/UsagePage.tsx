@@ -107,7 +107,8 @@ export default function UsagePage() {
                 <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
                   <td className="px-4 py-3.5 font-mono text-xs text-gray-600">
                     {log.model}
-                    {log.is_openclaw && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
+                    {log.is_openclaw && log.ua === 'hermesclaw' && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-50 text-purple-600 ring-1 ring-purple-100">HC</span>}
+                    {log.is_openclaw && log.ua !== 'hermesclaw' && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
                     {log.is_downgraded && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-600 ring-1 ring-blue-100">降级</span>}
                   </td>
                   <td className="px-4 py-3.5 text-gray-600">{log.input_tokens.toLocaleString()}</td>

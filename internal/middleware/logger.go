@@ -61,6 +61,9 @@ func RequestLogger() gin.HandlerFunc {
 			if _, ok := c.Get("is_openclaw"); ok {
 				fields["openclaw"] = true
 			}
+			if _, ok := c.Get("is_hermes"); ok {
+				fields["hermesclaw"] = true
+			}
 		} else {
 			fields["type"] = "api"
 		}

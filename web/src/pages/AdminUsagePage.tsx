@@ -255,11 +255,11 @@ export default function AdminUsagePage() {
           <p className="text-xl font-bold text-gray-900">${dayCost.toFixed(4)}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">OC 费用</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">龙虾费用</p>
           <p className="text-xl font-bold text-orange-600">${dayOcCost.toFixed(4)}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">OC 占比</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">龙虾占比</p>
           <p className="text-xl font-bold text-orange-600">{ocRatio}%</p>
         </div>
       </div>
@@ -309,7 +309,8 @@ export default function AdminUsagePage() {
                   </td>
                   <td className="px-4 py-3.5 font-mono text-xs text-gray-600">
                     {log.model}
-                    {log.is_openclaw && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
+                    {log.is_openclaw && log.ua === 'hermesclaw' && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-purple-50 text-purple-600 ring-1 ring-purple-100">HC</span>}
+                    {log.is_openclaw && log.ua !== 'hermesclaw' && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
                   </td>
                   <td className="px-4 py-3.5 text-xs text-gray-500">{log.backend}</td>
                   <td className="px-4 py-3.5 font-medium text-gray-800">{log.total_tokens.toLocaleString()}</td>
