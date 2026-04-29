@@ -28,6 +28,7 @@ type Handler struct {
 	config           *config.Config
 	mu                sync.RWMutex
 	modelReplacements map[string]string
+	fallbackClient    *http.Client
 }
 
 func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.KeyStore, cfg *config.Config, modelReplacements map[string]string) *Handler {
@@ -37,6 +38,7 @@ func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.Key
 		keyStore:          keyStore,
 		config:           cfg,
 		modelReplacements: modelReplacements,
+		fallbackClient:    &http.Client{Timeout: 5 * time.Minute},
 	}
 }
 
@@ -265,9 +267,11 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// If in downgraded period, skip original model and go directly to GPT
 	if inDowngradedPeriod {
 		logger.Infof("key is in downgraded period, using GPT directly")
-		resp, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
+		var fbModel string
+		resp, fbModel, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
 		if err == nil && resp != nil {
 			isDowngraded = true
+			reqModel = fbModel
 		}
 	} else {
 		resp, err = h.doRequest(c, backend, upstreamPath, targetURL, body)
@@ -278,9 +282,11 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			// Try downgrade if enabled and this is the first attempt
 			if autoDowngrade {
 				logger.Infof("attempting auto-downgrade for model %s, isOpenClaw=%v, isHermes=%v", reqModel, isOpenClaw, isHermes)
-				resp, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
+				var fbModel string
+				resp, fbModel, err = h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
 				if err == nil && resp != nil {
 					isDowngraded = true
+					reqModel = fbModel
 				}
 			}
 
@@ -301,11 +307,12 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		backend.RecordStatusCode(resp.StatusCode) // record the failure first
 
 		logger.Infof("received error status %d, attempting auto-downgrade for model %s, isOpenClaw=%v, isHermes=%v", resp.StatusCode, reqModel, isOpenClaw, isHermes)
-		respNew, err := h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
-		if err == nil && respNew != nil {
+		respNew, fbModel, errNew := h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
+		if errNew == nil && respNew != nil {
 			resp = respNew
 			isDowngraded = true
-		} else if err != nil {
+			reqModel = fbModel
+		} else if errNew != nil {
 			// Downgrade also failed, return original error
 			c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
 			return
@@ -373,9 +380,44 @@ func (h *Handler) doRequest(c *gin.Context, backend *Backend, upstreamPath, targ
 	return backend.Client().Do(req)
 }
 
-// doRequestWithDowngrade retries the request with a downgraded model
-func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstreamPath string, body []byte, originalModel string, isOpenClaw, isHermes bool) (*http.Response, error) {
-	// Determine fallback model
+// doRequestWithDowngrade retries the request with a downgraded model.
+// If a fallback model is configured in config and served by a public provider,
+// the request is forwarded to that provider. Otherwise falls back to same backend
+// with a hardcoded model swap.
+// Returns the response, the actual fallback model name used, and any error.
+func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstreamPath string, body []byte, originalModel string, isOpenClaw, isHermes bool) (*http.Response, string, error) {
+	h.mu.RLock()
+	cfg := h.config
+	h.mu.RUnlock()
+
+	// Try config-based fallback to public provider
+	if cfg != nil && cfg.Fallback != "" {
+		fallbackModel := cfg.Fallback
+		provider := cfg.LookupPublicProvider(fallbackModel)
+		if provider != nil {
+			newBody := h.replaceModelInBody(body, originalModel, fallbackModel)
+			if newBody == nil {
+				newBody = body // use original body if model replacement failed
+			}
+
+			// Determine target base URL based on request path (same logic as publicproxy)
+			var baseURL string
+			if strings.HasSuffix(upstreamPath, "/messages") {
+				baseURL = provider.AnthropicURL
+			} else {
+				baseURL = provider.OpenAIURL
+			}
+
+			if baseURL != "" {
+				targetURL := buildPublicTargetURL(baseURL, upstreamPath)
+				logger.Infof("fallback to public provider %s model=%s url=%s", provider.Name, fallbackModel, targetURL)
+				resp, err := h.doRequestToProvider(c, targetURL, newBody, provider.APIKey)
+				return resp, fallbackModel, err
+			}
+		}
+	}
+
+	// Fallback to same backend with hardcoded model swap
 	fallbackModel := "gpt-5.3-codex"
 	if isOpenClaw || isHermes {
 		fallbackModel = "gpt-5.4"
@@ -384,11 +426,46 @@ func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstr
 	// Replace model in body
 	newBody := h.replaceModelInBody(body, originalModel, fallbackModel)
 	if newBody == nil {
-		return nil, fmt.Errorf("failed to replace model in body")
+		return nil, "", fmt.Errorf("failed to replace model in body")
 	}
 
 	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
-	return h.doRequest(c, backend, upstreamPath, targetURL, newBody)
+	resp, err := h.doRequest(c, backend, upstreamPath, targetURL, newBody)
+	return resp, fallbackModel, err
+}
+
+// doRequestToProvider performs an HTTP request to a public provider with the given API key.
+func (h *Handler) doRequestToProvider(c *gin.Context, targetURL string, body []byte, apiKey string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	// Copy headers, replace Authorization
+	for k, vv := range c.Request.Header {
+		k = http.CanonicalHeaderKey(k)
+		if k == "Authorization" || k == "X-Api-Key" {
+			continue
+		}
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	return h.fallbackClient.Do(req)
+}
+
+// buildPublicTargetURL constructs the full upstream URL for a public provider.
+// Avoids double /v1 prefix when baseURL already ends with /v1.
+func buildPublicTargetURL(baseURL, path string) string {
+	base := strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(base, "/v1") && strings.HasPrefix(path, "/v1") {
+		path = strings.TrimPrefix(path, "/v1")
+	}
+	return base + path
 }
 
 // replaceModelInBody creates a new body with the model replaced

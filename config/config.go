@@ -28,6 +28,7 @@ type Config struct {
 	UsageSync         time.Duration     `yaml:"usage_sync_time"`
 	ModelReplacements map[string]string `yaml:"model_replacements"`
 	DowngradedTTL     time.Duration     `yaml:"downgraded_ttl"`    // how long to skip original model after downgrade
+	Fallback          string            `yaml:"fallback"`          // fallback model name from public_providers for auto-downgrade
 	BackendDailyMax   float64           `yaml:"backend_daily_max"` // max backend spend per user per day in USD (0 = unlimited)
 	UserDailyLimits   []UserDailyLimit  `yaml:"user_daily_limits"` // per-itcode daily spending overrides
 	AWS               AWSConfig         `yaml:"aws"`
