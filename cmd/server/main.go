@@ -192,6 +192,7 @@ func main() {
 	statsH := handler.NewStatsHandler(database, cfg, keyStore)
 	appH := handler.NewApplicationHandler(database, keyStore)
 	awsStatsH := handler.NewAWSStatsHandler(database, cfg)
+	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore)
 
 	apiAuth := r.Group("/api/auth")
 	apiAuth.Use(middleware.RateLimit(10, time.Minute))
@@ -340,6 +341,14 @@ func main() {
 		adminAWS.GET("/usage/daily", awsStatsH.GetDailyStats)
 		adminAWS.GET("/usage/user-daily", awsStatsH.GetUserDailyCostRanking)
 		adminAWS.GET("/bedrock/stats", awsStatsH.GetBedrockStats)
+	}
+
+	// DB Explorer API (admin API key auth)
+	dbAPI := r.Group("/admin/api/db")
+	dbAPI.Use(dbExplorerH.AdminAPIKeyAuth())
+	{
+		dbAPI.GET("/schema", dbExplorerH.GetSchema)
+		dbAPI.POST("/query", dbExplorerH.ExecuteQuery)
 	}
 
 	// Serve frontend static files

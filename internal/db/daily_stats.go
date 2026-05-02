@@ -89,9 +89,11 @@ func (d *DB) GetDailyStats(userID int64, startDate, endDate, modelFilter string)
 
 // GetUserDailyCostByDate returns a map of userID -> total backend cost_usd for a given date.
 // Used at startup to seed the in-memory daily cost tracking in KeyStore.
+// Reads directly from usage_logs (not daily_stats) to avoid the aggregation lag
+// that would cause backend_daily_used to drift from the real-time today cost.
 func (d *DB) GetUserDailyCostByDate(date string) (map[int64]float64, error) {
 	rows, err := d.Query(
-		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM daily_stats WHERE date = ? GROUP BY user_id`,
+		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM usage_logs WHERE SUBSTR(created_at, 1, 10) = ? GROUP BY user_id`,
 		date,
 	)
 	if err != nil {
@@ -113,9 +115,10 @@ func (d *DB) GetUserDailyCostByDate(date string) (map[int64]float64, error) {
 
 // GetUserAWSDailyCostByDate returns a map of userID -> total AWS cost_usd for a given date.
 // Used at startup to seed the in-memory AWS daily cost tracking in KeyStore.
+// Reads directly from aws_usage_logs (not aws_daily_stats) to avoid the aggregation lag.
 func (d *DB) GetUserAWSDailyCostByDate(date string) (map[int64]float64, error) {
 	rows, err := d.Query(
-		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM aws_daily_stats WHERE date = ? GROUP BY user_id`,
+		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM aws_usage_logs WHERE SUBSTR(created_at, 1, 10) = ? GROUP BY user_id`,
 		date,
 	)
 	if err != nil {
