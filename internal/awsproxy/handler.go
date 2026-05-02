@@ -701,7 +701,54 @@ func prepareAnthropicBody(body []byte) []byte {
 	delete(m, "model")
 	delete(m, "stream")            // Bedrock rejects this field: "Extra inputs are not permitted"
 	delete(m, "context_management") // Bedrock does not support context_management (added by Claude Code CLI)
+	delete(m, "metadata")          // Bedrock does not support metadata field
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
+
+	// Filter out non-standard tool types that Bedrock doesn't support
+	// (e.g. web_search_20250305, code_execution). Only keep tools with
+	// type "custom" or with an "input_schema" (standard function-call tools).
+	if toolsRaw, ok := m["tools"]; ok {
+		var tools []map[string]interface{}
+		if err := json.Unmarshal(toolsRaw, &tools); err == nil {
+			var filtered []map[string]interface{}
+			for _, tool := range tools {
+				toolType, _ := tool["type"].(string)
+				// Standard tools have type="" (omitted), "custom", or have input_schema
+				_, hasInputSchema := tool["input_schema"]
+				if toolType == "" || toolType == "custom" || hasInputSchema {
+					filtered = append(filtered, tool)
+				} else {
+					logger.Warnf("prepareAnthropicBody: stripping unsupported tool type %q (name=%v)", toolType, tool["name"])
+				}
+			}
+			if len(filtered) == 0 {
+				delete(m, "tools")
+			} else if len(filtered) != len(tools) {
+				if b, err := json.Marshal(filtered); err == nil {
+					m["tools"] = b
+				}
+			}
+		}
+	}
+
+	// Sanitize output_config.effort — Bedrock only accepts "low", "medium", "high", "max".
+	// If the value is invalid, default to "high".
+	if ocRaw, ok := m["output_config"]; ok {
+		var oc map[string]interface{}
+		if err := json.Unmarshal(ocRaw, &oc); err == nil {
+			if effort, exists := oc["effort"]; exists {
+				effortStr, _ := effort.(string)
+				validEfforts := map[string]bool{"low": true, "medium": true, "high": true, "max": true}
+				if !validEfforts[effortStr] {
+					logger.Warnf("prepareAnthropicBody: invalid output_config.effort %q, defaulting to \"high\"", effortStr)
+					oc["effort"] = "high"
+					if b, err := json.Marshal(oc); err == nil {
+						m["output_config"] = b
+					}
+				}
+			}
+		}
+	}
 
 	// Strip cache_control.scope from system/messages — Bedrock does not support it.
 	// Also strip empty text content blocks from messages — Bedrock rejects them.
