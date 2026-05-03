@@ -702,6 +702,7 @@ func prepareAnthropicBody(body []byte) []byte {
 	delete(m, "stream")            // Bedrock rejects this field: "Extra inputs are not permitted"
 	delete(m, "context_management") // Bedrock does not support context_management (added by Claude Code CLI)
 	delete(m, "metadata")          // Bedrock does not support metadata field
+	delete(m, "output_config")     // Bedrock does not support output_config (e.g. effort, format fields)
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
 
 	// Filter out non-standard tool types that Bedrock doesn't support
@@ -726,25 +727,6 @@ func prepareAnthropicBody(body []byte) []byte {
 			} else if len(filtered) != len(tools) {
 				if b, err := json.Marshal(filtered); err == nil {
 					m["tools"] = b
-				}
-			}
-		}
-	}
-
-	// Sanitize output_config.effort — Bedrock only accepts "low", "medium", "high", "max".
-	// If the value is invalid, default to "high".
-	if ocRaw, ok := m["output_config"]; ok {
-		var oc map[string]interface{}
-		if err := json.Unmarshal(ocRaw, &oc); err == nil {
-			if effort, exists := oc["effort"]; exists {
-				effortStr, _ := effort.(string)
-				validEfforts := map[string]bool{"low": true, "medium": true, "high": true, "max": true}
-				if !validEfforts[effortStr] {
-					logger.Warnf("prepareAnthropicBody: invalid output_config.effort %q, defaulting to \"high\"", effortStr)
-					oc["effort"] = "high"
-					if b, err := json.Marshal(oc); err == nil {
-						m["output_config"] = b
-					}
 				}
 			}
 		}
