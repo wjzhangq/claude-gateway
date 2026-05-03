@@ -195,7 +195,6 @@ func main() {
 	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore)
 
 	apiAuth := r.Group("/api/auth")
-	apiAuth.Use(middleware.RateLimit(10, time.Minute))
 	{
 		apiAuth.POST("/send-code", authH.SendCode)
 		apiAuth.POST("/login", authH.Login)

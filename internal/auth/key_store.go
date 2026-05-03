@@ -18,6 +18,7 @@ type KeyInfo struct {
 	DailyQuotaUSD    float64   // 0 = unlimited (backend channel daily quota in USD)
 	AWSDailyQuotaUSD float64   // 0 = unlimited (aws channel daily quota in USD)
 	UserStatus       string    // active | disabled
+	AWSEnabled       bool      // whether user has AWS Bedrock access
 	CreatedAt        time.Time // key creation time
 	AutoDowngrade    bool      // whether auto-downgrade is enabled
 	DowngradedUntil  time.Time // if set and in future, skip original model and use GPT directly
@@ -67,6 +68,7 @@ func (ks *KeyStore) Load(keys []model.APIKey, users map[int64]*model.User) {
 			DailyQuotaUSD:    u.DailyQuotaUSD,
 			AWSDailyQuotaUSD: u.AWSDailyQuotaUSD,
 			UserStatus:       u.Status,
+			AWSEnabled:       u.AWSEnabled,
 			CreatedAt:        k.CreatedAt,
 			AutoDowngrade:    k.AutoDowngrade,
 			Channel:          k.Channel,

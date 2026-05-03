@@ -83,9 +83,23 @@ func AdminRequired() gin.HandlerFunc {
 	}
 }
 
-// AWSEnabledRequired checks that the session user has aws_enabled = true.
+// AWSEnabledRequired checks that the user has aws_enabled = true.
+// For API key routes (AuthMiddleware already ran), reads from the in-memory KeyInfo.
+// For session routes (no KeyInfo in context), falls back to a DB query.
 func AWSEnabledRequired(database *db.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Fast path: API key route — KeyInfo already in context from AuthMiddleware
+		if info, exists := c.Get(CtxKeyInfo); exists {
+			if keyInfo, ok := info.(*auth.KeyInfo); ok && keyInfo != nil {
+				if !keyInfo.AWSEnabled {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "AWS channel not enabled for this user"})
+					return
+				}
+				c.Next()
+				return
+			}
+		}
+		// Slow path: session route — query DB
 		userID := c.GetInt64(CtxUserID)
 		user, err := database.GetUserByID(userID)
 		if err != nil || user == nil || !user.AWSEnabled {

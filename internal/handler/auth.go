@@ -2,9 +2,10 @@ package handler
 
 import (
 	"bytes"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net/http"
 	"strings"
 
@@ -47,7 +48,8 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 		return
 	}
 
-	code := fmt.Sprintf("%06d", rand.Intn(1000000))
+	n, _ := cryptorand.Int(cryptorand.Reader, big.NewInt(1000000))
+	code := fmt.Sprintf("%06d", n.Int64())
 	h.codeStore.Set(req.Itcode, code)
 
 	if h.cfg.SendCodeURL != "" {

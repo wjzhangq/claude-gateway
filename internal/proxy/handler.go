@@ -382,8 +382,7 @@ func (h *Handler) doRequest(c *gin.Context, backend *Backend, upstreamPath, targ
 
 // doRequestWithDowngrade retries the request with a downgraded model.
 // If a fallback model is configured in config and served by a public provider,
-// the request is forwarded to that provider. Otherwise falls back to same backend
-// with a hardcoded model swap.
+// the request is forwarded to that provider. Otherwise returns an error.
 // Returns the response, the actual fallback model name used, and any error.
 func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstreamPath string, body []byte, originalModel string, isOpenClaw, isHermes bool) (*http.Response, string, error) {
 	h.mu.RLock()
@@ -417,21 +416,7 @@ func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstr
 		}
 	}
 
-	// Fallback to same backend with hardcoded model swap
-	fallbackModel := "gpt-5.3-codex"
-	if isOpenClaw || isHermes {
-		fallbackModel = "gpt-5.4"
-	}
-
-	// Replace model in body
-	newBody := h.replaceModelInBody(body, originalModel, fallbackModel)
-	if newBody == nil {
-		return nil, "", fmt.Errorf("failed to replace model in body")
-	}
-
-	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
-	resp, err := h.doRequest(c, backend, upstreamPath, targetURL, newBody)
-	return resp, fallbackModel, err
+	return nil, "", fmt.Errorf("no fallback configured")
 }
 
 // doRequestToProvider performs an HTTP request to a public provider with the given API key.
@@ -486,7 +471,7 @@ func (h *Handler) replaceModelInBody(body []byte, oldModel, newModel string) []b
 	return newBody
 }
 
-const streamTailSize = 2048
+const streamReadBufSize = 4096
 
 func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool) {
 	c.Header("Content-Type", "text/event-stream")
@@ -495,9 +480,10 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 
 	flusher, canFlush := c.Writer.(http.Flusher)
 	ctx := c.Request.Context()
-	// tail keeps only the last streamTailSize bytes for token parsing
-	tail := make([]byte, 0, streamTailSize)
-	buf := make([]byte, 4096)
+	var lastIn, lastOut int
+	buf := make([]byte, streamReadBufSize)
+	// partial holds bytes of an incomplete SSE line across reads
+	var partial []byte
 	for {
 		select {
 		case <-ctx.Done():
@@ -510,12 +496,25 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 			if canFlush {
 				flusher.Flush()
 			}
-			// sliding window: keep only last streamTailSize bytes
-			combined := append(tail, buf[:n]...)
-			if len(combined) > streamTailSize {
-				tail = combined[len(combined)-streamTailSize:]
-			} else {
-				tail = combined
+			// Parse SSE lines incrementally for token counting
+			partial = append(partial, buf[:n]...)
+			for {
+				idx := bytes.IndexByte(partial, '\n')
+				if idx < 0 {
+					break
+				}
+				line := bytes.TrimSpace(partial[:idx])
+				partial = partial[idx+1:]
+				if !bytes.HasPrefix(line, []byte("data:")) {
+					continue
+				}
+				payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+				if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+					continue
+				}
+				if i, o := parseBodyTokens(payload); i > 0 || o > 0 {
+					lastIn, lastOut = i, o
+				}
 			}
 		}
 		if err != nil {
@@ -523,8 +522,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 	}
 
-	in, out := parseStreamTokens(tail)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, time.Since(start), isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
 func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool) {
@@ -558,37 +556,6 @@ func parseBodyTokens(body []byte) (input, output int) {
 	input = r.Usage.PromptTokens + r.Usage.InputTokens
 	output = r.Usage.CompletionTokens + r.Usage.OutputTokens
 	return
-}
-
-// parseStreamTokens scans SSE lines for usage data, keeping the last seen token counts.
-// Uses line-by-line scan to avoid allocating a large slice of all lines.
-func parseStreamTokens(data []byte) (input, output int) {
-	var in, out int
-	for len(data) > 0 {
-		// find next newline
-		idx := bytes.IndexByte(data, '\n')
-		var line []byte
-		if idx < 0 {
-			line = data
-			data = nil
-		} else {
-			line = data[:idx]
-			data = data[idx+1:]
-		}
-		line = bytes.TrimSpace(line)
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-			continue
-		}
-		i, o := parseBodyTokens(payload)
-		if i > 0 || o > 0 {
-			in, out = i, o
-		}
-	}
-	return in, out
 }
 
 // costUSD estimates cost based on token counts and model.

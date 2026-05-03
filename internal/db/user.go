@@ -155,9 +155,12 @@ func (d *DB) ListUsersWithStats(page, pageSize int, search, sortBy, sortOrder st
 		        COALESCE(SUM(l.cost_usd), 0) as cost_usd,
 		        COALESCE(SUM(CASE WHEN l.is_openclaw = 1 THEN l.cost_usd ELSE 0 END), 0) as oc_cost_usd,
 		        COALESCE(SUM(l.cost_usd), 0) as backend_cost_usd,
-		        COALESCE((SELECT SUM(a.cost_usd) FROM aws_usage_logs a WHERE a.user_id = u.id), 0) as aws_cost_usd
+		        COALESCE(aw.aws_cost_usd, 0) as aws_cost_usd
 		 FROM users u
-		 LEFT JOIN usage_logs l ON l.user_id = u.id`+
+		 LEFT JOIN usage_logs l ON l.user_id = u.id
+		 LEFT JOIN (
+		     SELECT user_id, SUM(cost_usd) as aws_cost_usd FROM aws_usage_logs GROUP BY user_id
+		 ) aw ON aw.user_id = u.id`+
 		whereClause+`
 		 GROUP BY u.id`+
 		orderClause+`

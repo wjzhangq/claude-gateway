@@ -6,11 +6,16 @@
 
 - **API 兼容**：同时支持 OpenAI 风格（`/v1/chat/completions`）和 Anthropic 原生风格（`/v1/messages`）
 - **多后端负载均衡**：加权随机分发，自动故障剔除与恢复，启动时健康检查
+- **AWS Bedrock 支持**：独立渠道接入 AWS Bedrock，支持流式和非流式，自动格式转换，独立配额管理
+- **第三方 Provider 支持**：配置 `public_providers` 接入任意兼容 OpenAI/Anthropic 协议的第三方服务
+- **自动降级**：请求失败时自动降级到配置的 fallback 模型（由 `fallback` 配置项指定，路由到 public provider）
 - **用户管理**：基于验证码 + 邀请码的注册登录，支持用户状态和配额管理
-- **API Key 管理**：用户自助创建和管理 API Key，支持过期时间设置
-- **使用统计**：记录每次请求的 Token 用量，支持按用户/模型/日期查询
+- **API Key 管理**：用户自助创建和管理 API Key，支持按渠道（backend/aws）分类
+- **USD 配额控制**：按用户每日 USD 花费限额，分 backend 和 AWS 独立控制
+- **使用统计**：记录每次请求的 Token 用量和费用，支持按用户/模型/日期查询
 - **热重载**：发送 SIGHUP 信号即可重载配置，自动刷写数据后更新后端和规则
 - **审批流程**：用户提交模型使用申请，管理员审批
+- **DB Explorer**：管理员在线执行只读 SQL 查询，实时查看数据库内容
 - **Web 管理后台**：React 前端，支持用户自助操作和管理员管理
 
 ## 快速开始
@@ -96,12 +101,33 @@ auth:
 
 usage_sync_time: 5m      # 用量聚合到 daily_stats 的间隔
 
+downgraded_ttl: 60s      # 降级窗口时长：触发降级后该 Key 在此时间内持续走 fallback 模型
+
+fallback: ""             # 自动降级目标模型名，需在 public_providers 中配置对应模型
+
 backends:
   - name: claude-primary
     url: https://api.anthropic.com
     api_key: "sk-ant-xxx"
     weight: 10           # 权重，越高分配流量越多
     enabled: true
+
+model_replacements:      # 模型名称替换规则（客户端请求的模型名 -> 实际转发的模型名）
+  claude-3-5-sonnet: claude-3-5-sonnet-20241022
+
+public_providers:        # 第三方兼容服务（可用于 fallback 或直接路由）
+  - name: openai
+    openai_url: https://api.openai.com/v1
+    api_key: "sk-xxx"
+    enabled: true
+    models:
+      - gpt-4o
+      - gpt-4o-mini
+
+aws:
+  region: us-east-1
+  access_key_id: ""
+  secret_access_key: ""
 ```
 
 ### send_code_url 接口规范
@@ -183,9 +209,42 @@ curl http://localhost:8080/v1/messages \
 
 ### 管理员功能
 
-- **用户管理**：创建用户、修改角色/状态/Token 配额
+- **用户管理**：创建用户、修改角色/状态/配额，启用/禁用 AWS 渠道权限
 - **申请审批**：审批或拒绝用户的模型使用申请
 - **全局统计**：查看所有用户的用量数据
+- **DB Explorer**：在线执行只读 SQL 查询（底层使用只读连接，无法执行写操作）
+
+---
+
+## 自动降级
+
+当请求后端失败（网络错误或 HTTP 4xx/5xx）且 API Key 开启了 `auto_downgrade` 时，网关会自动将请求转发到 `fallback` 配置的模型。
+
+```yaml
+fallback: gpt-4o-mini   # 降级目标，必须在 public_providers 的 models 中
+downgraded_ttl: 60s     # 触发一次降级后，该 Key 后续请求持续走 fallback 的时长
+```
+
+降级行为：
+
+1. 原始请求失败 → 替换模型名 → 转发到 fallback 模型所在的 public provider
+2. 降级成功后设置 TTL，TTL 期间内该 Key 的后续请求直接走 fallback，避免反复尝试失败的后端
+3. TTL 到期后恢复尝试原始后端
+
+---
+
+## AWS Bedrock
+
+为用户开启 `aws_enabled` 后，该用户可创建 `channel=aws` 的 API Key，请求自动路由到 AWS Bedrock。
+
+```yaml
+aws:
+  region: us-east-1
+  access_key_id: "AKIA..."
+  secret_access_key: "..."
+```
+
+支持的接口与普通代理相同（`/v1/chat/completions`、`/v1/messages`），网关负责协议转换。AWS 用量独立统计，可配置独立的每日 USD 配额（`aws_daily_quota_usd`）。
 
 ---
 
@@ -238,6 +297,8 @@ kill -HUP <pid>
 
 - `backends` — 后端列表（增删改、权重调整）
 - `model_replacements` — 模型名称替换规则
+- `public_providers` — 第三方 Provider 列表
+- `fallback` — 自动降级目标模型
 - `groups` — 用户分组
 
 **不可热更新的配置项（需重启）：**
@@ -317,7 +378,11 @@ go build -o bin/gateway ./cmd/server
 | 组件 | 技术 |
 |------|------|
 | 后端 | Go 1.23+, Gin |
-| 数据库 | SQLite (modernc.org/sqlite，无 CGO) |
+| 数据库 | SQLite (modernc.org/sqlite，无 CGO，WAL 模式) |
 | 日志 | Logrus |
 | 前端 | React 19 + TypeScript + Tailwind CSS v4 |
 | 构建 | Vite |
+
+## 数据库迁移
+
+采用内置版本化迁移，无需外部工具。启动时自动创建 `schema_migrations` 表，按版本号顺序执行未应用的迁移，已执行过的版本自动跳过，支持增量升级。

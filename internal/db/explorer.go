@@ -17,12 +17,12 @@ type TableSchema struct {
 
 // ColumnInfo describes a single column.
 type ColumnInfo struct {
-	CID        int    `json:"cid"`
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	NotNull    bool   `json:"not_null"`
+	CID        int     `json:"cid"`
+	Name       string  `json:"name"`
+	Type       string  `json:"type"`
+	NotNull    bool    `json:"not_null"`
 	Default    *string `json:"default"`
-	PrimaryKey bool   `json:"primary_key"`
+	PrimaryKey bool    `json:"primary_key"`
 }
 
 // QueryResult holds the result of a read-only SQL query.
@@ -87,33 +87,24 @@ func (d *DB) getTableColumns(table string) ([]ColumnInfo, error) {
 }
 
 const (
-	maxQueryLimit   = 10000
-	queryTimeout    = 30 * time.Second
+	maxQueryLimit = 10000
+	queryTimeout  = 30 * time.Second
 )
 
-var (
-	// Match SELECT or PRAGMA statements (case-insensitive, leading whitespace allowed)
-	readOnlyPattern = regexp.MustCompile(`(?i)^\s*(SELECT|PRAGMA)\s`)
-	// Match LIMIT clause at the end
-	limitPattern = regexp.MustCompile(`(?i)\bLIMIT\s+(\d+)\s*$`)
-)
+// limitPattern matches a LIMIT clause at the end of a SQL statement.
+var limitPattern = regexp.MustCompile(`(?i)\bLIMIT\s+(\d+)\s*$`)
 
-// ExecuteReadQuery runs a read-only SQL query with enforced LIMIT and timeout.
-func (d *DB) ExecuteReadQuery(sql string) (*QueryResult, error) {
-	// Validate: must be SELECT or PRAGMA
-	if !readOnlyPattern.MatchString(sql) {
-		return nil, fmt.Errorf("only SELECT and PRAGMA statements are allowed")
-	}
-
-	// Enforce LIMIT cap
-	sql = enforceLimit(sql, maxQueryLimit)
+// ExecuteReadQuery runs a SQL query using the read-only connection (enforced at driver level).
+// Write operations will be rejected by the SQLite driver itself.
+func (d *DB) ExecuteReadQuery(sqlStr string) (*QueryResult, error) {
+	sqlStr = enforceLimit(sqlStr, maxQueryLimit)
 
 	ctx, cancel := context.WithTimeout(context.Background(), queryTimeout)
 	defer cancel()
 
 	start := time.Now()
 
-	rows, err := d.QueryContext(ctx, sql)
+	rows, err := d.readonlyDB.QueryContext(ctx, sqlStr)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
@@ -151,13 +142,11 @@ func (d *DB) ExecuteReadQuery(sql string) (*QueryResult, error) {
 		return nil, fmt.Errorf("rows: %w", err)
 	}
 
-	duration := time.Since(start)
-
 	return &QueryResult{
 		Columns:  columns,
 		Rows:     result,
 		RowCount: len(result),
-		Duration: duration.String(),
+		Duration: time.Since(start).String(),
 	}, nil
 }
 
@@ -168,12 +157,10 @@ func enforceLimit(sql string, maxLimit int) string {
 	if matches := limitPattern.FindStringSubmatch(sql); len(matches) == 2 {
 		n, err := strconv.Atoi(matches[1])
 		if err == nil && n > maxLimit {
-			// Replace with maxLimit
 			sql = limitPattern.ReplaceAllString(sql, fmt.Sprintf("LIMIT %d", maxLimit))
 		}
 		return sql
 	}
 
-	// No LIMIT found, append one
 	return sql + fmt.Sprintf(" LIMIT %d", maxLimit)
 }

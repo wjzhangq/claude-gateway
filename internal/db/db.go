@@ -3,14 +3,15 @@ package db
 import (
 	"database/sql"
 	"fmt"
-	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-// DB wraps the sql.DB connection.
+// DB wraps the sql.DB connection and a separate read-only connection.
 type DB struct {
 	*sql.DB
+	readonlyDB *sql.DB
 }
 
 // Init opens (or creates) the SQLite database at path and runs migrations.
@@ -19,7 +20,6 @@ func Init(path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
-
 	sqlDB.SetMaxOpenConns(1) // SQLite write serialization
 	sqlDB.SetMaxIdleConns(1)
 
@@ -27,136 +27,94 @@ func Init(path string) (*DB, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	d := &DB{sqlDB}
-	if err := d.migrate(); err != nil {
+	// Separate read-only connection for DB Explorer queries — enforced at driver level.
+	roDB, err := sql.Open("sqlite", path+"?mode=ro&_journal_mode=WAL")
+	if err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("open sqlite (readonly): %w", err)
+	}
+	roDB.SetMaxOpenConns(4)
+	roDB.SetMaxIdleConns(2)
+
+	d := &DB{sqlDB, roDB}
+	if err := d.runMigrations(); err != nil {
+		d.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
 	return d, nil
 }
 
-func (d *DB) migrate() error {
-	_, err := d.Exec(schema)
-	if err != nil {
-		return err
+// Close closes both database connections.
+func (d *DB) Close() error {
+	if d.readonlyDB != nil {
+		d.readonlyDB.Close()
+	}
+	return d.DB.Close()
+}
+
+type migration struct {
+	version int
+	sql     string
+}
+
+var migrations = []migration{
+	{1, schema},
+	{2, awsSchema},
+	{3, `ALTER TABLE users ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`},
+	{4, `ALTER TABLE usage_logs ADD COLUMN is_openclaw INTEGER NOT NULL DEFAULT 0`},
+	{5, `ALTER TABLE users ADD COLUMN daily_quota_tokens INTEGER NOT NULL DEFAULT 0`},
+	{6, `ALTER TABLE usage_logs ADD COLUMN ua TEXT NOT NULL DEFAULT ''`},
+	{7, `ALTER TABLE api_keys ADD COLUMN auto_downgrade INTEGER NOT NULL DEFAULT 0`},
+	{8, `ALTER TABLE usage_logs ADD COLUMN is_downgraded INTEGER NOT NULL DEFAULT 0`},
+	{9, `ALTER TABLE api_keys ADD COLUMN last_used_at DATETIME`},
+	{10, `ALTER TABLE users ADD COLUMN aws_enabled INTEGER NOT NULL DEFAULT 0`},
+	{11, `ALTER TABLE api_keys ADD COLUMN channel TEXT NOT NULL DEFAULT 'backend'`},
+	{12, `ALTER TABLE users ADD COLUMN daily_quota_usd REAL NOT NULL DEFAULT 0`},
+	{13, `UPDATE users SET daily_quota_usd = daily_quota_tokens WHERE daily_quota_usd = 0 AND daily_quota_tokens != 0`},
+	{14, `ALTER TABLE users ADD COLUMN aws_daily_quota_usd REAL NOT NULL DEFAULT 0`},
+	{15, `ALTER TABLE api_keys ADD COLUMN total_cost_usd REAL NOT NULL DEFAULT 0`},
+	{16, `ALTER TABLE api_keys ADD COLUMN backend_cost_usd REAL NOT NULL DEFAULT 0`},
+	{17, `ALTER TABLE api_keys ADD COLUMN aws_cost_usd REAL NOT NULL DEFAULT 0`},
+	{18, `UPDATE api_keys SET backend_cost_usd = COALESCE((SELECT SUM(cost_usd) FROM usage_logs WHERE api_key_id = api_keys.id), 0) WHERE backend_cost_usd = 0`},
+	{19, `UPDATE api_keys SET aws_cost_usd = COALESCE((SELECT SUM(cost_usd) FROM aws_usage_logs WHERE api_key_id = api_keys.id), 0) WHERE aws_cost_usd = 0`},
+	{20, `UPDATE api_keys SET total_cost_usd = backend_cost_usd + aws_cost_usd WHERE total_cost_usd = 0`},
+	{21, `ALTER TABLE usage_logs ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`},
+	{22, `UPDATE usage_logs SET group_id = (SELECT group_id FROM users WHERE id = usage_logs.user_id) WHERE group_id = 0`},
+	{23, `ALTER TABLE aws_usage_logs ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`},
+	{24, `UPDATE aws_usage_logs SET group_id = (SELECT group_id FROM users WHERE id = aws_usage_logs.user_id) WHERE group_id = 0`},
+	{25, `CREATE INDEX IF NOT EXISTS idx_usage_logs_user_created ON usage_logs(user_id, created_at)`},
+	{26, `CREATE INDEX IF NOT EXISTS idx_usage_logs_group_created ON usage_logs(group_id, created_at)`},
+	{27, `CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_user_created ON aws_usage_logs(user_id, created_at)`},
+	{28, `CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_group_created ON aws_usage_logs(group_id, created_at)`},
+	{29, `CREATE INDEX IF NOT EXISTS idx_daily_stats_user_date ON daily_stats(user_id, date)`},
+	{30, `CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_user_date ON aws_daily_stats(user_id, date)`},
+}
+
+func (d *DB) runMigrations() error {
+	if _, err := d.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create schema_migrations: %w", err)
 	}
 
-	// Add group_id column if it doesn't exist (for existing databases)
-	_, err = d.Exec(`ALTER TABLE users ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		// Ignore error if column already exists
-		return err
+	for _, m := range migrations {
+		var exists int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&exists); err != nil {
+			return fmt.Errorf("check migration %d: %w", m.version, err)
+		}
+		if exists > 0 {
+			continue
+		}
+		if _, err := d.Exec(m.sql); err != nil {
+			return fmt.Errorf("migration %d: %w", m.version, err)
+		}
+		if _, err := d.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+			m.version, time.Now().UTC().Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("record migration %d: %w", m.version, err)
+		}
 	}
-
-	// Add is_openclaw column if it doesn't exist (for existing databases)
-	_, err = d.Exec(`ALTER TABLE usage_logs ADD COLUMN is_openclaw INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Add daily_quota_tokens column if it doesn't exist (rename from quota_tokens)
-	_, err = d.Exec(`ALTER TABLE users ADD COLUMN daily_quota_tokens INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Add ua column if it doesn't exist (for existing databases)
-	_, err = d.Exec(`ALTER TABLE usage_logs ADD COLUMN ua TEXT NOT NULL DEFAULT ''`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Add auto_downgrade column to api_keys if it doesn't exist
-	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN auto_downgrade INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Add is_downgraded column to usage_logs if it doesn't exist
-	_, err = d.Exec(`ALTER TABLE usage_logs ADD COLUMN is_downgraded INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Add last_used_at column to api_keys if it doesn't exist
-	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN last_used_at DATETIME`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Add aws_enabled column to users if it doesn't exist
-	_, err = d.Exec(`ALTER TABLE users ADD COLUMN aws_enabled INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Add channel column to api_keys if it doesn't exist
-	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN channel TEXT NOT NULL DEFAULT 'backend'`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Create AWS usage tables
-	_, err = d.Exec(awsSchema)
-	if err != nil {
-		return fmt.Errorf("aws schema: %w", err)
-	}
-
-	// Add daily_quota_usd column to users (replaces daily_quota_tokens semantics)
-	_, err = d.Exec(`ALTER TABLE users ADD COLUMN daily_quota_usd REAL NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-	// Migrate existing data: copy daily_quota_tokens -> daily_quota_usd (treated as USD values)
-	_, _ = d.Exec(`UPDATE users SET daily_quota_usd = daily_quota_tokens WHERE daily_quota_usd = 0 AND daily_quota_tokens != 0`)
-
-	// Add aws_daily_quota_usd column to users
-	_, err = d.Exec(`ALTER TABLE users ADD COLUMN aws_daily_quota_usd REAL NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-
-	// Add cost tracking columns to api_keys (write-back pattern like last_used_at)
-	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN total_cost_usd REAL NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN backend_cost_usd REAL NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-	_, err = d.Exec(`ALTER TABLE api_keys ADD COLUMN aws_cost_usd REAL NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-	// Back-fill cost data from usage logs (one-time migration)
-	_, _ = d.Exec(`UPDATE api_keys SET backend_cost_usd = COALESCE((SELECT SUM(cost_usd) FROM usage_logs WHERE api_key_id = api_keys.id), 0) WHERE backend_cost_usd = 0`)
-	_, _ = d.Exec(`UPDATE api_keys SET aws_cost_usd = COALESCE((SELECT SUM(cost_usd) FROM aws_usage_logs WHERE api_key_id = api_keys.id), 0) WHERE aws_cost_usd = 0`)
-	_, _ = d.Exec(`UPDATE api_keys SET total_cost_usd = backend_cost_usd + aws_cost_usd WHERE total_cost_usd = 0`)
-
-	// Add group_id to usage_logs for stable historical group stats
-	_, err = d.Exec(`ALTER TABLE usage_logs ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-	// Back-fill group_id from users table
-	_, _ = d.Exec(`UPDATE usage_logs SET group_id = (SELECT group_id FROM users WHERE id = usage_logs.user_id) WHERE group_id = 0`)
-
-	// Add group_id to aws_usage_logs
-	_, err = d.Exec(`ALTER TABLE aws_usage_logs ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`)
-	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return err
-	}
-	_, _ = d.Exec(`UPDATE aws_usage_logs SET group_id = (SELECT group_id FROM users WHERE id = aws_usage_logs.user_id) WHERE group_id = 0`)
-
-	// Additional performance indexes
-	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_usage_logs_user_created ON usage_logs(user_id, created_at)`)
-	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_usage_logs_group_created ON usage_logs(group_id, created_at)`)
-	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_user_created ON aws_usage_logs(user_id, created_at)`)
-	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_group_created ON aws_usage_logs(group_id, created_at)`)
-	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_daily_stats_user_date ON daily_stats(user_id, date)`)
-	_, _ = d.Exec(`CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_user_date ON aws_daily_stats(user_id, date)`)
-
 	return nil
 }
 

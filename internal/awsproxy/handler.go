@@ -419,7 +419,7 @@ func (h *Handler) streamChatCompletions(c *gin.Context, body []byte, bedrockMode
 				inputTokens = in2
 			}
 			if out2 > 0 {
-				outputTokens += out2
+				outputTokens = out2
 			}
 			if cr2 > 0 {
 				cacheRead = cr2
