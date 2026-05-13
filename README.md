@@ -233,6 +233,33 @@ downgraded_ttl: 60s     # 触发一次降级后，该 Key 后续请求持续走 
 
 ---
 
+## 龙虾流量自动转发
+
+对于被识别为龙虾客户端（OpenClaw / Hermes）的请求，当其请求 Claude 模型时，可以配置自动转发到 fallback 模型，而非直接阻断。
+
+```yaml
+# 开关：true 时龙虾请求 Claude 模型自动转发到 fallback
+lobster_auto_forward: true
+
+# 白名单用户（itcode）：白名单中的用户不做转发，正常走 backend 路由
+lobster_forward_whitelist:
+  - "zhangsan"
+  - "lisi"
+```
+
+行为规则：
+
+| 条件 | 行为 |
+|------|------|
+| 龙虾 + Claude 模型 + 开关开 + 非白名单 | 自动转发到 fallback 模型（如 MiniMax-M2.7） |
+| 龙虾 + Claude 模型 + 开关关 + 非白名单 | 返回 403 阻断 |
+| 龙虾 + Claude 模型 + 白名单用户 | 正常走 backend（不拦截、不转发） |
+| 龙虾 + 非 Claude 模型 | 正常放行 |
+
+转发后的请求会被标记为 `is_downgraded`，统计中可区分正常请求和转发请求。
+
+---
+
 ## AWS Bedrock
 
 为用户开启 `aws_enabled` 后，该用户可创建 `channel=aws` 的 API Key，请求自动路由到 AWS Bedrock。
@@ -299,6 +326,8 @@ kill -HUP <pid>
 - `model_replacements` — 模型名称替换规则
 - `public_providers` — 第三方 Provider 列表
 - `fallback` — 自动降级目标模型
+- `lobster_auto_forward` — 龙虾自动转发开关
+- `lobster_forward_whitelist` — 龙虾转发白名单
 - `groups` — 用户分组
 
 **不可热更新的配置项（需重启）：**

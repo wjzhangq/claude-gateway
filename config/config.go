@@ -29,10 +29,12 @@ type Config struct {
 	ModelReplacements map[string]string `yaml:"model_replacements"`
 	DowngradedTTL     time.Duration     `yaml:"downgraded_ttl"`    // how long to skip original model after downgrade
 	Fallback          string            `yaml:"fallback"`          // fallback model name from public_providers for auto-downgrade
-	BackendDailyMax   float64           `yaml:"backend_daily_max"` // max backend spend per user per day in USD (0 = unlimited)
-	UserDailyLimits   []UserDailyLimit  `yaml:"user_daily_limits"` // per-itcode daily spending overrides
-	AWS               AWSConfig         `yaml:"aws"`
-	PublicProviders   []PublicProvider  `yaml:"public_providers"`  // third-party model providers accessible from all channels
+	BackendDailyMax         float64           `yaml:"backend_daily_max"`          // max backend spend per user per day in USD (0 = unlimited)
+	UserDailyLimits         []UserDailyLimit  `yaml:"user_daily_limits"`          // per-itcode daily spending overrides
+	LobsterAutoForward      bool              `yaml:"lobster_auto_forward"`       // auto-forward lobster (openclaw/hermes) Claude requests to fallback
+	LobsterForwardWhitelist []string          `yaml:"lobster_forward_whitelist"` // itcodes exempt from lobster forwarding
+	AWS                     AWSConfig         `yaml:"aws"`
+	PublicProviders         []PublicProvider  `yaml:"public_providers"`           // third-party model providers accessible from all channels
 }
 
 // PublicProvider represents a third-party model provider (e.g. Kimi, MiniMax)
@@ -160,6 +162,16 @@ func (c *Config) LookupUserDailyLimit(itcode string) *UserDailyLimit {
 		}
 	}
 	return nil
+}
+
+// IsLobsterWhitelisted returns true if the itcode is exempt from lobster auto-forwarding.
+func (c *Config) IsLobsterWhitelisted(itcode string) bool {
+	for _, w := range c.LobsterForwardWhitelist {
+		if w == itcode {
+			return true
+		}
+	}
+	return false
 }
 
 // LookupPublicProvider returns the PublicProvider that serves the given model, or nil.

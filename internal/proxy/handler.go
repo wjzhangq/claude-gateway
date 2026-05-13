@@ -143,31 +143,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	isOpenClaw := detectOpenClaw(c.GetHeader("User-Agent"), body)
 	if isOpenClaw {
 		c.Set("is_openclaw", true)
-		// Only block OpenClaw clients when requesting Claude models
-		if isClaudeModel(reqModel) {
-			logger.Warnf("OpenClaw client blocked on backend channel (claude model): user_id=%v model=%s ua=%s",
-				func() interface{} {
-					if info, ok := c.Get(middleware.CtxKeyInfo); ok {
-						if ki, ok := info.(*auth.KeyInfo); ok {
-							return ki.UserID
-						}
-					}
-					return "?"
-				}(),
-				reqModel, c.GetHeader("User-Agent"))
-			c.JSON(http.StatusForbidden, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "forbidden",
-					"message": "OpenClaw client is not allowed to use Claude models on backend channel",
-				},
-			})
-			return
-		}
-		logger.Infof("OpenClaw client allowed on backend channel (non-claude model): model=%s", reqModel)
 	}
 
-	// Detect Hermes client (counts as lobster traffic, but no blocking)
+	// Detect Hermes client (counts as lobster traffic)
 	isHermes := !isOpenClaw && detectHermes(c.GetHeader("User-Agent"), body)
 	if isHermes {
 		c.Set("is_hermes", true)
@@ -184,6 +162,77 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		if strings.HasPrefix(keyStr, "Bearer ") {
 			keyStr = strings.TrimPrefix(keyStr, "Bearer ")
 		}
+	}
+
+	// Lobster (openclaw/hermes) handling for Claude models
+	if (isOpenClaw || isHermes) && isClaudeModel(reqModel) {
+		h.mu.RLock()
+		cfg := h.config
+		h.mu.RUnlock()
+
+		whitelisted := false
+		if cfg != nil {
+			if info, ok := keyInfo.(*auth.KeyInfo); ok {
+				whitelisted = cfg.IsLobsterWhitelisted(info.Itcode)
+			}
+		}
+
+		if !whitelisted {
+			if cfg != nil && cfg.LobsterAutoForward {
+				// Auto-forward to fallback model
+				logger.Infof("lobster auto-forward: user=%v model=%s -> fallback", func() interface{} {
+					if info, ok := keyInfo.(*auth.KeyInfo); ok {
+						return info.Itcode
+					}
+					return "?"
+				}(), reqModel)
+
+				start := time.Now()
+				resp, fbModel, fwdErr := h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
+				if fwdErr != nil || resp == nil {
+					c.JSON(http.StatusBadGateway, gin.H{"error": "fallback request failed"})
+					return
+				}
+				defer resp.Body.Close()
+
+				for k, vv := range resp.Header {
+					for _, v := range vv {
+						c.Header(k, v)
+					}
+				}
+				c.Header("X-Gateway-Model", fbModel)
+				c.Status(resp.StatusCode)
+
+				isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
+				if isStream {
+					h.streamResponse(c, resp, backend.Name, fbModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, true)
+				} else {
+					h.bufferResponse(c, resp, backend.Name, fbModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, true)
+				}
+				return
+			}
+			// lobster_auto_forward is off — block as before
+			logger.Warnf("OpenClaw/Hermes client blocked on backend channel (claude model): user_id=%v model=%s ua=%s",
+				func() interface{} {
+					if ki, ok := keyInfo.(*auth.KeyInfo); ok {
+						return ki.UserID
+					}
+					return "?"
+				}(),
+				reqModel, c.GetHeader("User-Agent"))
+			c.JSON(http.StatusForbidden, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "forbidden",
+					"message": "OpenClaw client is not allowed to use Claude models on backend channel",
+				},
+			})
+			return
+		}
+		// whitelisted — fall through to normal routing
+		logger.Infof("lobster whitelisted user on backend channel: model=%s", reqModel)
+	} else if isOpenClaw {
+		logger.Infof("OpenClaw client allowed on backend channel (non-claude model): model=%s", reqModel)
 	}
 
 	// Check if we're in the downgraded period (skip original model and go directly to GPT)
