@@ -2,18 +2,22 @@
 //
 // 用法：
 //
-//	./bin/fix [--db <path>] [--all] [--schema] [--itcode] [--last-used] [--purge] [--purge-days N]
+//	./bin/fix [--db <path>] [--all] [--schema] [--itcode] [--last-used] [--purge] [--purge-days N] [--user-status] [--check-keys] [--delete-user <itcode>]
 //
 // 各修复项：
 //
-//	--schema     修复表结构：补全缺失列，使其与代码定义一致
-//	--itcode     修复用户 itcode：去掉 @domain 后缀（如 yanght5@lenovo.com → yanght5）
-//	--last-used  根据 usage_logs 更新 api_keys.last_used_at
-//	--purge      清理超过 N 天的 usage_logs（默认 30 天）
-//	--all        执行以上全部修复
+//	--schema       修复表结构：补全缺失列，使其与代码定义一致
+//	--itcode       修复用户 itcode：去掉 @domain 后缀（如 yanght5@lenovo.com → yanght5）
+//	--last-used    根据 usage_logs 更新 api_keys.last_used_at
+//	--purge        清理超过 N 天的 usage_logs（默认 30 天）
+//	--user-status  修复用户与 api_keys 状态一致性：禁用用户的 key 同步为 disabled，孤立 key 打印报告
+//	--check-keys   只读检查：列出所有没有对应用户的孤立 api_keys
+//	--all          执行以上全部修复（不含 --check-keys 和 --delete-user）
+//	--delete-user  删除指定 itcode 的用户及其全部 api_keys、usage_logs（不可撤销）
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -33,9 +37,12 @@ func main() {
 	doLastUsed := flag.Bool("last-used", false, "根据 usage_logs 更新 api_keys.last_used_at")
 	doPurge := flag.Bool("purge", false, "清理超过 N 天的 usage_logs")
 	purgeDays := flag.Int("purge-days", 30, "清理多少天前的数据（配合 --purge 使用）")
+	doUserStatus := flag.Bool("user-status", false, "修复用户与 api_keys 状态一致性")
+	doCheckKeys := flag.Bool("check-keys", false, "只读检查：列出没有对应用户的孤立 api_keys")
+	deleteUser := flag.String("delete-user", "", "删除指定 itcode 的用户及其 api_keys、usage_logs（不可撤销，需二次确认）")
 	flag.Parse()
 
-	if !*all && !*doSchema && !*doItcode && !*doLastUsed && !*doPurge {
+	if !*all && !*doSchema && !*doItcode && !*doLastUsed && !*doPurge && !*doUserStatus && !*doCheckKeys && *deleteUser == "" {
 		fmt.Fprintln(os.Stderr, "请指定至少一个修复项，或使用 --all 执行全部。")
 		fmt.Fprintln(os.Stderr, "")
 		flag.Usage()
@@ -49,7 +56,7 @@ func main() {
 	defer db.Close()
 
 	if *all || *doSchema {
-		log.Println("==> [1/4] 修复表结构...")
+		log.Println("==> [1/5] 修复表结构...")
 		n, err := fixSchema(db)
 		if err != nil {
 			log.Fatalf("修复表结构失败: %v", err)
@@ -58,7 +65,7 @@ func main() {
 	}
 
 	if *all || *doItcode {
-		log.Println("==> [2/4] 修复用户 itcode（去掉 @domain）...")
+		log.Println("==> [2/5] 修复用户 itcode（去掉 @domain）...")
 		n, err := fixItcode(db)
 		if err != nil {
 			log.Fatalf("修复 itcode 失败: %v", err)
@@ -67,7 +74,7 @@ func main() {
 	}
 
 	if *all || *doLastUsed {
-		log.Println("==> [3/4] 根据 usage_logs 更新 api_keys.last_used_at...")
+		log.Println("==> [3/5] 根据 usage_logs 更新 api_keys.last_used_at...")
 		n, err := fixLastUsed(db)
 		if err != nil {
 			log.Fatalf("更新 last_used_at 失败: %v", err)
@@ -76,12 +83,53 @@ func main() {
 	}
 
 	if *all || *doPurge {
-		log.Printf("==> [4/4] 清理 %d 天前的 usage_logs...", *purgeDays)
+		log.Printf("==> [4/5] 清理 %d 天前的 usage_logs...", *purgeDays)
 		n, err := purgeOldLogs(db, *purgeDays)
 		if err != nil {
 			log.Fatalf("清理数据失败: %v", err)
 		}
 		log.Printf("    删除记录数: %d", n)
+	}
+
+	if *all || *doUserStatus {
+		log.Println("==> [5/5] 修复用户与 api_keys 状态一致性...")
+		disabled, orphaned, err := fixUserStatus(db)
+		if err != nil {
+			log.Fatalf("修复用户状态一致性失败: %v", err)
+		}
+		log.Printf("    同步 disabled 用户的 key 数: %d", disabled)
+		log.Printf("    孤立 key 数（user 不存在）: %d", orphaned)
+	}
+
+	if *doCheckKeys {
+		log.Println("==> [check] 检查 api_keys 与用户的对应关系...")
+		n, err := checkOrphanedKeys(db)
+		if err != nil {
+			log.Fatalf("检查孤立 key 失败: %v", err)
+		}
+		if n == 0 {
+			log.Println("    所有 api_keys 均有对应用户，无异常。")
+		} else {
+			log.Printf("    共发现 %d 个孤立 key（详见上方日志）", n)
+		}
+	}
+
+	if *deleteUser != "" {
+		log.Printf("==> [delete-user] 查询用户 itcode=%s ...", *deleteUser)
+		confirmed, result, err := deleteUserByItcode(db, *deleteUser)
+		if err != nil {
+			log.Fatalf("删除用户失败: %v", err)
+		}
+		if result.userID == 0 {
+			log.Printf("    用户 itcode=%s 不存在，无需操作", *deleteUser)
+		} else if !confirmed {
+			log.Println("    已取消，未执行任何删除。")
+		} else {
+			log.Printf("    已删除用户 id=%d itcode=%s", result.userID, *deleteUser)
+			log.Printf("    删除 api_keys: %d 条", result.keys)
+			log.Printf("    删除 usage_logs: %d 条", result.logs)
+			log.Printf("    删除 applications: %d 条", result.apps)
+		}
 	}
 
 	log.Println("==> 修复完成")
@@ -453,4 +501,212 @@ func purgeOldLogs(db *sql.DB, days int) (int64, error) {
 		return 0, fmt.Errorf("删除旧记录: %w", err)
 	}
 	return res.RowsAffected()
+}
+
+// fixUserStatus 修复用户与 api_keys 之间的状态不一致问题。
+//
+// 规则：
+//  1. 用户状态为 disabled/pending，但 api_keys 中仍有 active key → 将这些 key 同步为 disabled。
+//  2. api_keys.user_id 指向不存在的用户（孤立 key）→ 打印报告，不自动删除。
+//
+// 返回：(同步 disabled 的 key 数, 孤立 key 数, error)
+func fixUserStatus(db *sql.DB) (int, int, error) {
+	// 1. 将非 active 用户下的 active key 同步为 disabled
+	res, err := db.Exec(`
+		UPDATE api_keys
+		SET    status = 'disabled', updated_at = ?
+		WHERE  status = 'active'
+		  AND  user_id IN (
+		           SELECT id FROM users WHERE status != 'active'
+		       )
+	`, time.Now())
+	if err != nil {
+		return 0, 0, fmt.Errorf("同步 disabled 用户的 key: %w", err)
+	}
+	disabledKeys, _ := res.RowsAffected()
+
+	// 2. 找出孤立 key（user_id 不在 users 表中）
+	rows, err := db.Query(`
+		SELECT k.id, k.user_id, k.key, k.status
+		FROM   api_keys k
+		WHERE  NOT EXISTS (SELECT 1 FROM users u WHERE u.id = k.user_id)
+	`)
+	if err != nil {
+		return int(disabledKeys), 0, fmt.Errorf("查询孤立 key: %w", err)
+	}
+	defer rows.Close()
+
+	orphaned := 0
+	for rows.Next() {
+		var id, userID int64
+		var key, status string
+		if err := rows.Scan(&id, &userID, &key, &status); err != nil {
+			return int(disabledKeys), orphaned, err
+		}
+		log.Printf("    [孤立key] id=%d user_id=%d status=%s key=%s", id, userID, status, key[:min(16, len(key))]+"...")
+		orphaned++
+	}
+	if err := rows.Err(); err != nil {
+		return int(disabledKeys), orphaned, err
+	}
+
+	return int(disabledKeys), orphaned, nil
+}
+
+// checkOrphanedKeys 只读检查：列出所有 user_id 在 users 表中不存在的 api_keys。
+func checkOrphanedKeys(db *sql.DB) (int, error) {
+	rows, err := db.Query(`
+		SELECT k.id, k.user_id, k.key, k.name, k.status, k.channel,
+		       COALESCE(k.last_used_at, '') as last_used_at
+		FROM   api_keys k
+		WHERE  NOT EXISTS (SELECT 1 FROM users u WHERE u.id = k.user_id)
+		ORDER  BY k.user_id, k.id
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("查询孤立 key: %w", err)
+	}
+	defer rows.Close()
+
+	count := 0
+	for rows.Next() {
+		var id, userID int64
+		var key, name, status, channel, lastUsed string
+		if err := rows.Scan(&id, &userID, &key, &name, &status, &channel, &lastUsed); err != nil {
+			return count, err
+		}
+		shortKey := key[:min(16, len(key))] + "..."
+		log.Printf("    [孤立] key_id=%-5d user_id=%-5d status=%-8s channel=%-8s last_used=%s name=%q key=%s",
+			id, userID, status, channel, lastUsed, name, shortKey)
+		count++
+	}
+	return count, rows.Err()
+}
+
+type deleteUserResult struct {
+	userID int64
+	keys   int64
+	logs   int64
+	apps   int64
+}
+
+// deleteUserByItcode 先展示用户及关联数据，交互确认后再执行删除。
+// 返回 (confirmed, result, error)；confirmed=false 表示用户取消。
+func deleteUserByItcode(db *sql.DB, itcode string) (bool, deleteUserResult, error) {
+	var res deleteUserResult
+
+	// 1. 查找用户基本信息
+	var name, role, status, createdAt string
+	err := db.QueryRow(
+		`SELECT id, name, role, status, created_at FROM users WHERE itcode = ?`, itcode,
+	).Scan(&res.userID, &name, &role, &status, &createdAt)
+	if err == sql.ErrNoRows {
+		return false, res, nil
+	}
+	if err != nil {
+		return false, res, fmt.Errorf("查找用户 %s: %w", itcode, err)
+	}
+
+	// 2. 统计关联数据
+	var keyCount, logCount, appCount int64
+	_ = db.QueryRow(`SELECT COUNT(*) FROM api_keys   WHERE user_id = ?`, res.userID).Scan(&keyCount)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM usage_logs WHERE user_id = ?`, res.userID).Scan(&logCount)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM applications WHERE user_id = ?`, res.userID).Scan(&appCount)
+
+	// 3. 列出所有 key 详情
+	keyRows, err := db.Query(
+		`SELECT id, name, key, status, channel, COALESCE(last_used_at,'') FROM api_keys WHERE user_id = ? ORDER BY id`,
+		res.userID,
+	)
+	if err != nil {
+		return false, res, fmt.Errorf("查询 api_keys: %w", err)
+	}
+	type keyInfo struct {
+		id, status, channel, lastUsed, name, key string
+	}
+	var keys []keyInfo
+	for keyRows.Next() {
+		var kid int64
+		var kname, key, kstatus, channel, lastUsed string
+		if err := keyRows.Scan(&kid, &kname, &key, &kstatus, &channel, &lastUsed); err != nil {
+			keyRows.Close()
+			return false, res, err
+		}
+		keys = append(keys, keyInfo{
+			id:      fmt.Sprintf("%d", kid),
+			name:    kname,
+			key:     key[:min(20, len(key))] + "...",
+			status:  kstatus,
+			channel: channel,
+			lastUsed: lastUsed,
+		})
+	}
+	keyRows.Close()
+	if err := keyRows.Err(); err != nil {
+		return false, res, err
+	}
+
+	// 4. 打印摘要，等待确认
+	fmt.Println()
+	fmt.Println("┌─────────────────────────────────────────────────────────")
+	fmt.Printf("│  用户信息\n")
+	fmt.Printf("│  id       : %d\n", res.userID)
+	fmt.Printf("│  itcode   : %s\n", itcode)
+	fmt.Printf("│  name     : %s\n", name)
+	fmt.Printf("│  role     : %s\n", role)
+	fmt.Printf("│  status   : %s\n", status)
+	fmt.Printf("│  created  : %s\n", createdAt)
+	fmt.Println("│")
+	fmt.Printf("│  关联数据\n")
+	fmt.Printf("│  api_keys    : %d 条\n", keyCount)
+	fmt.Printf("│  usage_logs  : %d 条\n", logCount)
+	fmt.Printf("│  applications: %d 条\n", appCount)
+	if len(keys) > 0 {
+		fmt.Println("│")
+		fmt.Println("│  API Keys 明细：")
+		for _, k := range keys {
+			fmt.Printf("│    [%s] %-8s %-8s last=%s  %s  %q\n",
+				k.id, k.status, k.channel, k.lastUsed, k.key, k.name)
+		}
+	}
+	fmt.Println("└─────────────────────────────────────────────────────────")
+	fmt.Println()
+	fmt.Print("确认删除以上用户及全部关联数据？[输入 yes 确认，其他取消]: ")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Scan()
+	input := strings.TrimSpace(scanner.Text())
+	if input != "yes" {
+		return false, res, nil
+	}
+
+	// 5. 执行删除
+	tx, err := db.Begin()
+	if err != nil {
+		return true, res, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	r, err := tx.Exec(`DELETE FROM usage_logs WHERE user_id = ?`, res.userID)
+	if err != nil {
+		return true, res, fmt.Errorf("删除 usage_logs: %w", err)
+	}
+	res.logs, _ = r.RowsAffected()
+
+	r, err = tx.Exec(`DELETE FROM api_keys WHERE user_id = ?`, res.userID)
+	if err != nil {
+		return true, res, fmt.Errorf("删除 api_keys: %w", err)
+	}
+	res.keys, _ = r.RowsAffected()
+
+	r, err = tx.Exec(`DELETE FROM applications WHERE user_id = ?`, res.userID)
+	if err != nil {
+		return true, res, fmt.Errorf("删除 applications: %w", err)
+	}
+	res.apps, _ = r.RowsAffected()
+
+	if _, err := tx.Exec(`DELETE FROM users WHERE id = ?`, res.userID); err != nil {
+		return true, res, fmt.Errorf("删除用户: %w", err)
+	}
+
+	return true, res, tx.Commit()
 }
