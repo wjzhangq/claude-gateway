@@ -180,9 +180,9 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 	flusher, canFlush := c.Writer.(http.Flusher)
 	ctx := c.Request.Context()
 
-	// tail keeps last 2KB for token parsing
-	const tailSize = 2048
-	tail := make([]byte, 0, tailSize)
+	var totalIn, totalOut int
+	// linesBuf accumulates bytes until a complete SSE line is formed
+	var linesBuf []byte
 	buf := make([]byte, 4096)
 
 	for {
@@ -197,20 +197,48 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 			if canFlush {
 				flusher.Flush()
 			}
-			combined := append(tail, buf[:n]...)
-			if len(combined) > tailSize {
-				tail = combined[len(combined)-tailSize:]
-			} else {
-				tail = combined
-			}
+			linesBuf = append(linesBuf, buf[:n]...)
+			// parse complete lines from linesBuf, keep remainder
+			linesBuf = consumeSSELines(linesBuf, &totalIn, &totalOut)
 		}
 		if err != nil {
 			break
 		}
 	}
+	// parse any remaining bytes
+	consumeSSELines(linesBuf, &totalIn, &totalOut)
 
-	in, out := parseStreamTokens(tail)
-	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, in, out, time.Since(start))
+	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, totalIn, totalOut, time.Since(start))
+}
+
+// consumeSSELines parses complete newline-terminated SSE lines from data,
+// updating in/out token counters on every data: event that contains usage.
+// Returns the unconsumed remainder (partial last line).
+func consumeSSELines(data []byte, in, out *int) []byte {
+	for {
+		idx := bytes.IndexByte(data, '\n')
+		if idx < 0 {
+			break
+		}
+		line := bytes.TrimSpace(data[:idx])
+		data = data[idx+1:]
+
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
+		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
+			continue
+		}
+		i, o := parseBodyTokens(payload)
+		if i > 0 {
+			*in = i
+		}
+		if o > 0 {
+			*out = o
+		}
+	}
+	return data
 }
 
 func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *config.PublicProvider,
@@ -246,35 +274,6 @@ func parseBodyTokens(body []byte) (input, output int) {
 	input = r.Usage.PromptTokens + r.Usage.InputTokens
 	output = r.Usage.CompletionTokens + r.Usage.OutputTokens
 	return
-}
-
-// parseStreamTokens scans SSE lines for usage data.
-func parseStreamTokens(data []byte) (input, output int) {
-	var in, out int
-	for len(data) > 0 {
-		idx := bytes.IndexByte(data, '\n')
-		var line []byte
-		if idx < 0 {
-			line = data
-			data = nil
-		} else {
-			line = data[:idx]
-			data = data[idx+1:]
-		}
-		line = bytes.TrimSpace(line)
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		payload := bytes.TrimSpace(bytes.TrimPrefix(line, []byte("data:")))
-		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
-			continue
-		}
-		i, o := parseBodyTokens(payload)
-		if i > 0 || o > 0 {
-			in, out = i, o
-		}
-	}
-	return in, out
 }
 
 // costUSD estimates cost based on the provider's model_pricing config.
