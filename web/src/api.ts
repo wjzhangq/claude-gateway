@@ -10,7 +10,8 @@ const api = axios.create({
 api.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    const url: string = err.config?.url || ''
+    if (err.response?.status === 401 && !url.startsWith('/v1/')) {
       window.location.href = '/login'
     } else if (err.response) {
       const msg = err.response.data?.error || `请求失败 (HTTP ${err.response.status})`
@@ -56,6 +57,8 @@ export const getMyUsage = (params?: Record<string, string | number>) =>
   api.get('/api/usage', { params })
 export const getMyDailyStats = (params?: Record<string, string | number>) =>
   api.get('/api/usage/daily', { params })
+export const exportMyUsage = (params: Record<string, string | number>) =>
+  api.get('/api/usage/export', { params, responseType: 'blob' })
 
 // Applications
 export const submitApplication = (reason: string) =>
@@ -93,6 +96,8 @@ export const adminGetUsage = (params?: Record<string, string | number>) =>
   api.get('/admin/api/usage', { params })
 export const adminGetDailyStats = (params?: Record<string, string | number>) =>
   api.get('/admin/api/usage/daily', { params })
+export const adminExportUsage = (params: Record<string, string | number>) =>
+  api.get('/admin/api/usage/export', { params, responseType: 'blob' })
 
 export const adminGetUserDailyCost = (params?: Record<string, string | number>) =>
   api.get('/admin/api/usage/user-daily', { params })

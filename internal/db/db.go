@@ -61,27 +61,27 @@ type migration struct {
 var migrations = []migration{
 	{1, schema},
 	{2, awsSchema},
-	{3, `ALTER TABLE users ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`},
-	{4, `ALTER TABLE usage_logs ADD COLUMN is_openclaw INTEGER NOT NULL DEFAULT 0`},
-	{5, `ALTER TABLE users ADD COLUMN daily_quota_tokens INTEGER NOT NULL DEFAULT 0`},
-	{6, `ALTER TABLE usage_logs ADD COLUMN ua TEXT NOT NULL DEFAULT ''`},
-	{7, `ALTER TABLE api_keys ADD COLUMN auto_downgrade INTEGER NOT NULL DEFAULT 0`},
-	{8, `ALTER TABLE usage_logs ADD COLUMN is_downgraded INTEGER NOT NULL DEFAULT 0`},
-	{9, `ALTER TABLE api_keys ADD COLUMN last_used_at DATETIME`},
-	{10, `ALTER TABLE users ADD COLUMN aws_enabled INTEGER NOT NULL DEFAULT 0`},
-	{11, `ALTER TABLE api_keys ADD COLUMN channel TEXT NOT NULL DEFAULT 'backend'`},
-	{12, `ALTER TABLE users ADD COLUMN daily_quota_usd REAL NOT NULL DEFAULT 0`},
+	{3, `SELECT 1`}, // group_id already in initial schema; was duplicate ALTER
+	{4, `SELECT 1`}, // is_openclaw already in initial schema
+	{5, `SELECT 1`}, // daily_quota_tokens already in initial schema
+	{6, `SELECT 1`}, // ua already in initial schema
+	{7, `SELECT 1`},  // auto_downgrade already in initial schema
+	{8, `SELECT 1`},  // is_downgraded already in initial schema
+	{9, `SELECT 1`},  // last_used_at already in initial schema
+	{10, `SELECT 1`}, // aws_enabled already in initial schema
+	{11, `SELECT 1`}, // channel already in initial schema
+	{12, `SELECT 1`}, // daily_quota_usd already in initial schema
 	{13, `UPDATE users SET daily_quota_usd = daily_quota_tokens WHERE daily_quota_usd = 0 AND daily_quota_tokens != 0`},
-	{14, `ALTER TABLE users ADD COLUMN aws_daily_quota_usd REAL NOT NULL DEFAULT 0`},
-	{15, `ALTER TABLE api_keys ADD COLUMN total_cost_usd REAL NOT NULL DEFAULT 0`},
-	{16, `ALTER TABLE api_keys ADD COLUMN backend_cost_usd REAL NOT NULL DEFAULT 0`},
-	{17, `ALTER TABLE api_keys ADD COLUMN aws_cost_usd REAL NOT NULL DEFAULT 0`},
+	{14, `SELECT 1`}, // aws_daily_quota_usd already in initial schema
+	{15, `SELECT 1`}, // total_cost_usd already in initial schema
+	{16, `SELECT 1`}, // backend_cost_usd already in initial schema
+	{17, `SELECT 1`}, // aws_cost_usd already in initial schema
 	{18, `UPDATE api_keys SET backend_cost_usd = COALESCE((SELECT SUM(cost_usd) FROM usage_logs WHERE api_key_id = api_keys.id), 0) WHERE backend_cost_usd = 0`},
 	{19, `UPDATE api_keys SET aws_cost_usd = COALESCE((SELECT SUM(cost_usd) FROM aws_usage_logs WHERE api_key_id = api_keys.id), 0) WHERE aws_cost_usd = 0`},
 	{20, `UPDATE api_keys SET total_cost_usd = backend_cost_usd + aws_cost_usd WHERE total_cost_usd = 0`},
-	{21, `ALTER TABLE usage_logs ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`},
+	{21, `SELECT 1`}, // group_id already in initial schema for usage_logs
 	{22, `UPDATE usage_logs SET group_id = (SELECT group_id FROM users WHERE id = usage_logs.user_id) WHERE group_id = 0`},
-	{23, `ALTER TABLE aws_usage_logs ADD COLUMN group_id INTEGER NOT NULL DEFAULT 0`},
+	{23, `SELECT 1`}, // group_id already in initial schema for aws_usage_logs
 	{24, `UPDATE aws_usage_logs SET group_id = (SELECT group_id FROM users WHERE id = aws_usage_logs.user_id) WHERE group_id = 0`},
 	{25, `CREATE INDEX IF NOT EXISTS idx_usage_logs_user_created ON usage_logs(user_id, created_at)`},
 	{26, `CREATE INDEX IF NOT EXISTS idx_usage_logs_group_created ON usage_logs(group_id, created_at)`},
@@ -120,26 +120,34 @@ func (d *DB) runMigrations() error {
 
 const schema = `
 CREATE TABLE IF NOT EXISTS users (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    itcode       TEXT    NOT NULL UNIQUE,
-    name         TEXT    NOT NULL DEFAULT '',
-    role         TEXT    NOT NULL DEFAULT 'user',
-    status       TEXT    NOT NULL DEFAULT 'pending',
-    group_id     INTEGER NOT NULL DEFAULT 0,
-    daily_quota_tokens INTEGER NOT NULL DEFAULT 0,
-    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    itcode              TEXT    NOT NULL UNIQUE,
+    name                TEXT    NOT NULL DEFAULT '',
+    role                TEXT    NOT NULL DEFAULT 'user',
+    status              TEXT    NOT NULL DEFAULT 'pending',
+    group_id            INTEGER NOT NULL DEFAULT 0,
+    daily_quota_tokens  INTEGER NOT NULL DEFAULT 0,
+    daily_quota_usd     REAL    NOT NULL DEFAULT 0,
+    aws_daily_quota_usd REAL    NOT NULL DEFAULT 0,
+    aws_enabled         INTEGER NOT NULL DEFAULT 0,
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id      INTEGER NOT NULL REFERENCES users(id),
-    key          TEXT    NOT NULL UNIQUE,
-    name         TEXT    NOT NULL DEFAULT '',
-    status       TEXT    NOT NULL DEFAULT 'active',
-    last_used_at DATETIME,
-    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id          INTEGER NOT NULL REFERENCES users(id),
+    key              TEXT    NOT NULL UNIQUE,
+    name             TEXT    NOT NULL DEFAULT '',
+    status           TEXT    NOT NULL DEFAULT 'active',
+    last_used_at     DATETIME,
+    auto_downgrade   INTEGER NOT NULL DEFAULT 0,
+    channel          TEXT    NOT NULL DEFAULT 'backend',
+    total_cost_usd   REAL    NOT NULL DEFAULT 0,
+    backend_cost_usd REAL    NOT NULL DEFAULT 0,
+    aws_cost_usd     REAL    NOT NULL DEFAULT 0,
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_api_keys_user_id ON api_keys(user_id);
 
@@ -156,7 +164,9 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     status_code   INTEGER NOT NULL DEFAULT 200,
     latency_ms    INTEGER NOT NULL DEFAULT 0,
     is_openclaw   INTEGER NOT NULL DEFAULT 0,
+    is_downgraded INTEGER NOT NULL DEFAULT 0,
     ua            TEXT    NOT NULL DEFAULT '',
+    group_id      INTEGER NOT NULL DEFAULT 0,
     created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_usage_logs_user_id    ON usage_logs(user_id);
@@ -208,6 +218,7 @@ CREATE TABLE IF NOT EXISTS aws_usage_logs (
     status_code       INTEGER NOT NULL DEFAULT 200,
     latency_ms        INTEGER NOT NULL DEFAULT 0,
     ua                TEXT    NOT NULL DEFAULT '',
+    group_id          INTEGER NOT NULL DEFAULT 0,
     created_at        DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_user_id    ON aws_usage_logs(user_id);

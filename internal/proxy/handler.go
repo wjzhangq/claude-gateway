@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -608,40 +609,51 @@ func parseBodyTokens(body []byte) (input, output int) {
 }
 
 // costUSD estimates cost based on token counts and model.
-// Pricing reference: https://www.anthropic.com/pricing & https://openai.com/api-pricing/
-func costUSD(model string, inputTokens, outputTokens int) float64 {
-	// Default fallback
-	inputPrice := 3.0   // per 1M tokens
-	outputPrice := 15.0 // per 1M tokens
+// If pricing map is provided, it uses glob-pattern matching (same as AWS channel).
+// Falls back to built-in prices when no pattern matches.
+func costUSD(model string, inputTokens, outputTokens int, pricing map[string]config.ModelPricingEntry) float64 {
+	if len(pricing) > 0 {
+		p := resolvePricing(model, pricing)
+		return (float64(inputTokens)*p.Input + float64(outputTokens)*p.Output) / 1_000_000
+	}
+
+	// Built-in fallback prices (per 1M tokens)
+	inputPrice := 3.0
+	outputPrice := 15.0
 
 	m := strings.ToLower(model)
 	switch {
-	// Claude Haiku
 	case strings.Contains(m, "claude-haiku"):
 		inputPrice, outputPrice = 1.0, 5.0
-	// Claude Opus (4.5/4.6)
 	case strings.Contains(m, "claude-opus"):
 		inputPrice, outputPrice = 5.0, 25.0
-	// Claude Sonnet (4.5/4.6)
 	case strings.Contains(m, "claude-sonnet"):
 		inputPrice, outputPrice = 3.0, 15.0
-	// GPT-5
 	case strings.Contains(m, "gpt-5.3-codex"):
 		inputPrice, outputPrice = 1.75, 14.0
 	case strings.Contains(m, "gpt-5.4"):
 		inputPrice, outputPrice = 2.5, 15.0
-	// GPT-4o
 	case strings.Contains(m, "gpt-4o"):
 		inputPrice, outputPrice = 2.5, 10.0
-	// GPT-4
 	case strings.Contains(m, "gpt-4"):
 		inputPrice, outputPrice = 30.0, 60.0
-	// GPT-3.5
 	case strings.Contains(m, "gpt-3.5"):
 		inputPrice, outputPrice = 0.5, 1.5
 	}
 
 	return (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice) / 1_000_000
+}
+
+// resolvePricing matches a model name against glob patterns in the pricing map.
+func resolvePricing(model string, pricing map[string]config.ModelPricingEntry) config.ModelPricingEntry {
+	m := strings.ToLower(model)
+	for pattern, entry := range pricing {
+		if matched, _ := filepath.Match(pattern, m); matched {
+			return entry
+		}
+	}
+	// default fallback
+	return config.ModelPricingEntry{Input: 3.0, Output: 15.0}
 }
 
 func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isHermes, isDowngraded bool, userAgent string) {
@@ -654,7 +666,13 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	}
 
 	total := inputTokens + outputTokens
-	cost := costUSD(model, inputTokens, outputTokens)
+	h.mu.RLock()
+	pricing := map[string]config.ModelPricingEntry{}
+	if h.config != nil {
+		pricing = h.config.BackendModelPricing
+	}
+	h.mu.RUnlock()
+	cost := costUSD(model, inputTokens, outputTokens, pricing)
 	ua := parseUA(userAgent, isOpenClaw, isHermes)
 	// For DB is_openclaw field: both openclaw and hermes count as lobster traffic
 	isLobster := isOpenClaw || isHermes

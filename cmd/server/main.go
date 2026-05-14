@@ -283,6 +283,7 @@ func main() {
 		apiUser.DELETE("/keys/:id", keyH.DeleteKey)
 		apiUser.GET("/usage", statsH.GetMyUsage)
 		apiUser.GET("/usage/daily", statsH.GetMyDailyStats)
+		apiUser.GET("/usage/export", statsH.ExportMyUsage)
 		apiUser.POST("/applications", appH.Submit)
 		apiUser.GET("/applications", appH.ListMine)
 	}
@@ -315,6 +316,7 @@ func main() {
 		adminAPI.PUT("/keys/:id/channel", keyH.AdminSwitchChannel)
 		adminAPI.PUT("/keys/:id/transfer", keyH.TransferKey)
 		adminAPI.GET("/usage", statsH.GetUsage)
+		adminAPI.GET("/usage/export", statsH.ExportUsage)
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
 		adminAPI.GET("/usage/user-daily", statsH.GetUserDailyCostRanking)
 		adminAPI.GET("/backends/stats", statsH.GetBackendStats)

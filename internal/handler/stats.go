@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/csv"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -192,6 +194,62 @@ func (h *StatsHandler) GetMyDashboard(c *gin.Context) {
 	})
 }
 
+// ExportMyUsage godoc: GET /api/usage/export
+// Query params: date (YYYY-MM-DD), model, backend
+// Returns a CSV of the current user's usage logs for the given day.
+func (h *StatsHandler) ExportMyUsage(c *gin.Context) {
+	userID := c.GetInt64(middleware.CtxUserID)
+	date := c.Query("date")
+	if date == "" {
+		date = time.Now().Format("2006-01-02")
+	}
+	model := c.Query("model")
+	backend := c.Query("backend")
+
+	logs, err := h.db.ListUsageLogsAll(userID, date, date, model, backend)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	filename := fmt.Sprintf("usage_%s.csv", date)
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+
+	w := csv.NewWriter(c.Writer)
+	_ = w.Write([]string{
+		"id", "model", "backend",
+		"input_tokens", "output_tokens", "total_tokens", "cost_usd",
+		"status_code", "latency_ms", "is_openclaw", "is_downgraded", "ua", "created_at",
+	})
+	for _, l := range logs {
+		isOC := "0"
+		if l.IsOpenClaw {
+			isOC = "1"
+		}
+		isDG := "0"
+		if l.IsDowngraded {
+			isDG = "1"
+		}
+		_ = w.Write([]string{
+			strconv.FormatInt(l.ID, 10),
+			l.Model,
+			l.Backend,
+			strconv.Itoa(l.InputTokens),
+			strconv.Itoa(l.OutputTokens),
+			strconv.Itoa(l.TotalTokens),
+			strconv.FormatFloat(l.CostUSD, 'f', 8, 64),
+			strconv.Itoa(l.StatusCode),
+			strconv.FormatInt(l.Latency, 10),
+			isOC,
+			isDG,
+			l.UA,
+			l.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+	w.Flush()
+}
+
 // GetGroupStats godoc: GET /admin/api/groups/stats
 func (h *StatsHandler) GetGroupStats(c *gin.Context) {
 	start := c.Query("start_date")
@@ -233,6 +291,65 @@ func (h *StatsHandler) GetUserDailyCostRanking(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, result)
+}
+
+// ExportUsage godoc: GET /admin/api/usage/export
+// Query params: user_id, date (YYYY-MM-DD), model, backend
+// Returns a CSV file with all usage logs for the given day.
+func (h *StatsHandler) ExportUsage(c *gin.Context) {
+	userID, _ := strconv.ParseInt(c.Query("user_id"), 10, 64)
+	date := c.Query("date")
+	if date == "" {
+		date = time.Now().Format("2006-01-02")
+	}
+	model := c.Query("model")
+	backend := c.Query("backend")
+
+	logs, err := h.db.ListUsageLogsAll(userID, date, date, model, backend)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	filename := fmt.Sprintf("usage_%s.csv", date)
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename="+filename)
+
+	w := csv.NewWriter(c.Writer)
+	_ = w.Write([]string{
+		"id", "user_id", "itcode", "api_key_id", "model", "backend",
+		"input_tokens", "output_tokens", "total_tokens", "cost_usd",
+		"status_code", "latency_ms", "is_openclaw", "is_downgraded", "ua", "created_at",
+	})
+	for _, l := range logs {
+		isOC := "0"
+		if l.IsOpenClaw {
+			isOC = "1"
+		}
+		isDG := "0"
+		if l.IsDowngraded {
+			isDG = "1"
+		}
+		_ = w.Write([]string{
+			strconv.FormatInt(l.ID, 10),
+			strconv.FormatInt(l.UserID, 10),
+			l.Itcode,
+			strconv.FormatInt(l.APIKeyID, 10),
+			l.Model,
+			l.Backend,
+			strconv.Itoa(l.InputTokens),
+			strconv.Itoa(l.OutputTokens),
+			strconv.Itoa(l.TotalTokens),
+			strconv.FormatFloat(l.CostUSD, 'f', 8, 64),
+			strconv.Itoa(l.StatusCode),
+			strconv.FormatInt(l.Latency, 10),
+			isOC,
+			isDG,
+			l.UA,
+			l.CreatedAt.Format("2006-01-02 15:04:05"),
+		})
+	}
+	w.Flush()
 }
 
 // GetGroups godoc: GET /admin/api/groups

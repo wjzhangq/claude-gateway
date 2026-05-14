@@ -189,6 +189,53 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backen
 	return logs, total, rows.Err()
 }
 
+// ListUsageLogsAll returns all matching usage logs without pagination (for CSV export).
+func (d *DB) ListUsageLogsAll(userID int64, startDate, endDate, modelFilter, backendFilter string) ([]*model.UsageLog, error) {
+	where := "WHERE 1=1"
+	args := []interface{}{}
+
+	if userID > 0 {
+		where += " AND l.user_id = ?"
+		args = append(args, userID)
+	}
+	if startDate != "" {
+		where += " AND l.created_at >= ?"
+		args = append(args, startDate)
+	}
+	if endDate != "" {
+		where += " AND l.created_at <= ?"
+		args = append(args, endDate+" 23:59:59")
+	}
+	if modelFilter != "" {
+		where += " AND l.model = ?"
+		args = append(args, modelFilter)
+	}
+	if backendFilter != "" {
+		where += " AND l.backend LIKE ?"
+		args = append(args, backendFilter+"%")
+	}
+
+	rows, err := d.Query(
+		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.created_at
+		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+where+` ORDER BY l.created_at ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []*model.UsageLog
+	for rows.Next() {
+		l := &model.UsageLog{}
+		if err := rows.Scan(&l.ID, &l.UserID, &l.Itcode, &l.APIKeyID, &l.Model, &l.Backend,
+			&l.InputTokens, &l.OutputTokens, &l.TotalTokens, &l.CostUSD,
+			&l.StatusCode, &l.Latency, &l.IsOpenClaw, &l.IsDowngraded, &l.UA, &l.CreatedAt); err != nil {
+			return nil, err
+		}
+		logs = append(logs, l)
+	}
+	return logs, rows.Err()
+}
+
 // UserDailyCost holds per-user cost for a single day.
 type UserDailyCost struct {
 	UserID      int64   `json:"user_id"`

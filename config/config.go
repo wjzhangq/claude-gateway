@@ -31,10 +31,11 @@ type Config struct {
 	Fallback          string            `yaml:"fallback"`          // fallback model name from public_providers for auto-downgrade
 	BackendDailyMax         float64           `yaml:"backend_daily_max"`          // max backend spend per user per day in USD (0 = unlimited)
 	UserDailyLimits         []UserDailyLimit  `yaml:"user_daily_limits"`          // per-itcode daily spending overrides
-	LobsterAutoForward      bool              `yaml:"lobster_auto_forward"`       // auto-forward lobster (openclaw/hermes) Claude requests to fallback
-	LobsterForwardWhitelist []string          `yaml:"lobster_forward_whitelist"` // itcodes exempt from lobster forwarding
-	AWS                     AWSConfig         `yaml:"aws"`
-	PublicProviders         []PublicProvider  `yaml:"public_providers"`           // third-party model providers accessible from all channels
+	LobsterAutoForward      bool                         `yaml:"lobster_auto_forward"`       // auto-forward lobster (openclaw/hermes) Claude requests to fallback
+	LobsterForwardWhitelist []string                     `yaml:"lobster_forward_whitelist"` // itcodes exempt from lobster forwarding
+	AWS                     AWSConfig                    `yaml:"aws"`
+	PublicProviders         []PublicProvider             `yaml:"public_providers"`           // third-party model providers accessible from all channels
+	BackendModelPricing     map[string]ModelPricingEntry `yaml:"backend_model_pricing"`      // glob pattern -> pricing for backend channel
 }
 
 // PublicProvider represents a third-party model provider (e.g. Kimi, MiniMax)

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getMyUsage } from '../api'
+import { getMyUsage, exportMyUsage } from '../api'
 import { formatTime } from '../utils/time'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -36,6 +36,7 @@ export default function UsagePage() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
+  const [exporting, setExporting] = useState(false)
   const pageSize = 20
 
   const load = (p: number) => {
@@ -49,6 +50,22 @@ export default function UsagePage() {
       .finally(() => setLoading(false))
   }
 
+  const handleExport = () => {
+    const date = new Date().toISOString().slice(0, 10)
+    setExporting(true)
+    exportMyUsage({ date })
+      .then((res) => {
+        const url = URL.createObjectURL(new Blob([res.data]))
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `usage_${date}.csv`
+        a.click()
+        URL.revokeObjectURL(url)
+      })
+      .catch(() => {})
+      .finally(() => setExporting(false))
+  }
+
   useEffect(() => { load(page) }, [page])
 
   const chartData = [...logs].reverse().map((l, i) => ({
@@ -60,9 +77,18 @@ export default function UsagePage() {
 
   return (
     <div className="p-8">
-      <div className="mb-7">
-        <h2 className="text-xl font-bold text-gray-900">使用统计</h2>
-        <p className="text-sm text-gray-400 mt-0.5">查看你的 API 调用记录</p>
+      <div className="mb-7 flex items-start justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-gray-900">使用统计</h2>
+          <p className="text-sm text-gray-400 mt-0.5">查看你的 API 调用记录</p>
+        </div>
+        <button
+          onClick={handleExport}
+          disabled={exporting}
+          className="px-3.5 py-1.5 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 disabled:opacity-40 transition-colors"
+        >
+          {exporting ? '导出中…' : '导出今日 CSV'}
+        </button>
       </div>
 
       {logs.length > 0 && (

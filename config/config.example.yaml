@@ -59,6 +59,19 @@ backends:
   #   weight: 5
   #   enabled: true
 
+# backend 渠道模型计费（glob 匹配，单位 USD/1M tokens）
+# 无匹配时使用内置默认价格（input: 3.0, output: 15.0）
+# backend_model_pricing:
+#   "*haiku*":
+#     input: 1.00
+#     output: 5.00
+#   "*sonnet*":
+#     input: 3.00
+#     output: 15.00
+#   "*opus*":
+#     input: 5.00
+#     output: 25.00
+
 # AWS Bedrock 渠道（可选）
 # aws:
 #   region: us-west-2
