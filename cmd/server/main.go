@@ -215,18 +215,7 @@ func main() {
 			// For /models endpoint, return public models alongside channel models
 			if strings.HasSuffix(path, "/models") && c.Request.Method == "GET" {
 				publicModels := publicH.Models()
-				if len(publicModels) > 0 {
-					// Use a response writer wrapper to intercept and merge
-					serveModelsWithPublic(c, ch, awsProxyH, proxyH, publicModels)
-				} else {
-					if ch == "aws" && awsProxyH != nil {
-						awsProxyH.Passthrough(c)
-					} else if ch == "aws" {
-						c.JSON(503, gin.H{"error": "AWS channel not configured"})
-					} else {
-						proxyH.Passthrough(c)
-					}
-				}
+				serveModelsWithPublic(c, ch, awsProxyH, proxyH, publicModels)
 				return
 			}
 
@@ -416,11 +405,11 @@ func serveModelsWithPublic(c *gin.Context, ch interface{}, awsProxyH *awsproxy.H
 	c.Set("extra_models", publicModels)
 
 	if ch == "aws" && awsProxyH != nil {
-		awsProxyH.Passthrough(c)
+		awsProxyH.Models(c)
 	} else if ch == "aws" {
 		c.JSON(503, gin.H{"error": "AWS channel not configured"})
 	} else {
-		proxyH.Passthrough(c)
+		proxyH.Models(c)
 	}
 }
 

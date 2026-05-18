@@ -710,9 +710,60 @@ func (h *Handler) Messages(c *gin.Context) {
 	h.forward(c, "/v1/messages")
 }
 
-// Models handles GET /v1/models.
+// Models handles GET /v1/models — fetches from upstream backend, filters to Claude models only,
+// then appends public models (via extra_models context).
 func (h *Handler) Models(c *gin.Context) {
-	h.forward(c, "/v1/models")
+	backend := h.lb.Pick()
+	if backend == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available backend"})
+		return
+	}
+
+	url := strings.TrimRight(backend.URL, "/") + "/v1/models"
+	req, err := http.NewRequestWithContext(c.Request.Context(), "GET", url, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create request failed"})
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+backend.APIKey)
+
+	resp, err := backend.Client().Do(req)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
+		return
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "read upstream response failed"})
+		return
+	}
+
+	var result struct {
+		Data []gin.H `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "parse upstream response failed"})
+		return
+	}
+
+	// Filter: keep only models whose id contains "claude"
+	var filtered []gin.H
+	for _, m := range result.Data {
+		id, _ := m["id"].(string)
+		if strings.Contains(strings.ToLower(id), "claude") {
+			filtered = append(filtered, m)
+		}
+	}
+
+	if extra, ok := c.Get("extra_models"); ok {
+		if extraModels, ok := extra.([]gin.H); ok {
+			filtered = append(filtered, extraModels...)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"object": "list", "data": filtered})
 }
 
 // Passthrough forwards any other /v1/* path to the upstream backend.
