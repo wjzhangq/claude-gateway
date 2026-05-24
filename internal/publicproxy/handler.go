@@ -173,6 +173,10 @@ func (h *Handler) Models() []gin.H {
 func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *config.PublicProvider,
 	model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time) {
 
+	// Set log context for the request logger middleware
+	c.Set("log_provider", provider.Name)
+	c.Set("log_model", model)
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -208,6 +212,8 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 	// parse any remaining bytes
 	consumeSSELines(linesBuf, &totalIn, &totalOut)
 
+	c.Set("log_input_tokens", totalIn)
+	c.Set("log_output_tokens", totalOut)
 	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, totalIn, totalOut, time.Since(start))
 }
 
@@ -244,6 +250,10 @@ func consumeSSELines(data []byte, in, out *int) []byte {
 func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *config.PublicProvider,
 	model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time) {
 
+	// Set log context for the request logger middleware
+	c.Set("log_provider", provider.Name)
+	c.Set("log_model", model)
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("read public provider response: %v", err)
@@ -252,6 +262,8 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
+	c.Set("log_input_tokens", in)
+	c.Set("log_output_tokens", out)
 	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, in, out, time.Since(start))
 }
 
@@ -307,8 +319,9 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config
 		GroupID:      info.GroupID,
 		APIKeyID:     info.KeyID,
 		KeyStr:       keyStr,
+		Provider:     provider.Name,
 		Model:        model,
-		Backend:      "public:" + provider.Name,
+		BackendName:  "",
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 		TotalTokens:  total,

@@ -26,6 +26,13 @@ const adminNav = [
   { to: '/admin/public/usage', label: 'Public 日志' },
 ]
 
+const providerStatsNav = [
+  { to: '/admin/provider/backend', label: 'Backend' },
+  { to: '/admin/provider/aws', label: 'AWS' },
+  { to: '/admin/provider/kimi', label: 'Kimi' },
+  { to: '/admin/provider/minimax', label: 'MiniMax' },
+]
+
 const awsAdminNav = [
   { to: '/admin/aws/users', label: 'AWS 用户' },
   { to: '/admin/aws/usage', label: 'AWS 使用统计' },
@@ -93,6 +100,14 @@ export default function Layout() {
               <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">管理员</p>
               <div className="space-y-0.5">
                 {adminNav.map((item) => (
+                  <NavLink key={item.to} to={item.to} className={navLinkClass}>
+                    {item.label}
+                  </NavLink>
+                ))}
+              </div>
+              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">渠道统计</p>
+              <div className="space-y-0.5">
+                {providerStatsNav.map((item) => (
                   <NavLink key={item.to} to={item.to} className={navLinkClass}>
                     {item.label}
                   </NavLink>

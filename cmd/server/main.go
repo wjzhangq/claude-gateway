@@ -47,9 +47,19 @@ func main() {
 		logger.Fatalf("create data dir: %v", err)
 	}
 
-	database, err := db.Init(cfg.Database.Path)
-	if err != nil {
-		logger.Fatalf("failed to init database: %v", err)
+	var database *db.DB
+	if cfg.Database.Driver == "postgres" {
+		database, err = db.InitPostgres(cfg.Database.Postgres)
+		if err != nil {
+			logger.Fatalf("failed to init postgres: %v", err)
+		}
+		logger.Infof("Database: PostgreSQL (%s:%d/%s)", cfg.Database.Postgres.Host, cfg.Database.Postgres.Port, cfg.Database.Postgres.DBName)
+	} else {
+		database, err = db.Init(cfg.Database.Path)
+		if err != nil {
+			logger.Fatalf("failed to init database: %v", err)
+		}
+		logger.Infof("Database: SQLite (%s)", cfg.Database.Path)
 	}
 	defer database.Close()
 
@@ -148,8 +158,6 @@ func main() {
 
 	// ─── AWS Bedrock initialization ───────────────────────────────────
 	var awsProxyH *awsproxy.Handler
-	var awsCollector *stats.AWSCollector
-	var awsAggregator *stats.AWSAggregator
 
 	if cfg.AWS.Region != "" && cfg.AWS.AccessKeyID != "" {
 		bedrockClient, err := awsproxy.NewBedrockClient(
@@ -158,11 +166,8 @@ func main() {
 		if err != nil {
 			logger.Fatalf("init bedrock client: %v", err)
 		}
-		awsCollector = stats.NewAWSCollector(database, keyStore, 1024)
-		awsProxyH = awsproxy.NewHandler(bedrockClient, awsCollector, keyStore, &cfg.AWS)
+		awsProxyH = awsproxy.NewHandler(bedrockClient, collector, keyStore, &cfg.AWS)
 		awsProxyH.SetRootConfig(cfg)
-		awsAggregator = stats.NewAWSAggregator(database, cfg.UsageSync)
-		awsAggregator.Start()
 		if cfg.AWS.Socks5Proxy != "" {
 			logger.Infof("AWS Bedrock channel initialized (region: %s, proxy: %s)", cfg.AWS.Region, cfg.AWS.Socks5Proxy)
 		} else {
@@ -309,6 +314,8 @@ func main() {
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
 		adminAPI.GET("/usage/user-daily", statsH.GetUserDailyCostRanking)
 		adminAPI.GET("/backends/stats", statsH.GetBackendStats)
+		adminAPI.GET("/provider/stats", statsH.GetProviderStats)
+		adminAPI.GET("/provider/model-stats", statsH.GetProviderModelStats)
 		adminAPI.GET("/backends/status", func(c *gin.Context) {
 			c.JSON(200, lb.GetBackends())
 		})
@@ -351,7 +358,7 @@ func main() {
 	// Register SIGHUP before starting server to avoid race
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP)
-	go handleReload(sigCh, cfgPath, collector, awsCollector, aggregator, awsAggregator,
+	go handleReload(sigCh, cfgPath, collector, aggregator,
 		lb, proxyH, awsProxyH, publicH, statsH, awsStatsH, database, keyStore, cfg)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
@@ -414,8 +421,8 @@ func serveModelsWithPublic(c *gin.Context, ch interface{}, awsProxyH *awsproxy.H
 }
 
 func handleReload(sigCh <-chan os.Signal, cfgPath string,
-	collector *stats.Collector, awsCollector *stats.AWSCollector,
-	aggregator *stats.Aggregator, awsAggregator *stats.AWSAggregator,
+	collector *stats.Collector,
+	aggregator *stats.Aggregator,
 	lb *proxy.LoadBalancer, proxyH *proxy.Handler, awsProxyH *awsproxy.Handler,
 	publicH *publicproxy.Handler,
 	statsH *handler.StatsHandler, awsStatsH *handler.AWSStatsHandler,
@@ -427,16 +434,10 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 		// Step 1: flush pending usage records
 		logger.Infof("reload: flushing collector...")
 		collector.Flush()
-		if awsCollector != nil {
-			awsCollector.Flush()
-		}
 
 		// Step 2: aggregate daily stats
 		logger.Infof("reload: aggregating daily stats...")
 		aggregator.RunNow()
-		if awsAggregator != nil {
-			awsAggregator.RunNow()
-		}
 
 		// Step 3: reload config file
 		logger.Infof("reload: loading config from %s", cfgPath)

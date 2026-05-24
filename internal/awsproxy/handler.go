@@ -23,7 +23,7 @@ import (
 // Handler forwards requests to AWS Bedrock.
 type Handler struct {
 	client     *BedrockClient
-	collector  *stats.AWSCollector
+	collector  *stats.Collector
 	keyStore   *auth.KeyStore
 	mu         sync.RWMutex
 	config     *config.AWSConfig
@@ -31,7 +31,7 @@ type Handler struct {
 }
 
 // NewHandler creates a new AWS proxy handler.
-func NewHandler(client *BedrockClient, collector *stats.AWSCollector, ks *auth.KeyStore, cfg *config.AWSConfig) *Handler {
+func NewHandler(client *BedrockClient, collector *stats.Collector, ks *auth.KeyStore, cfg *config.AWSConfig) *Handler {
 	return &Handler{
 		client:    client,
 		collector: collector,
@@ -214,6 +214,11 @@ func (h *Handler) Messages(c *gin.Context) {
 	keyInfo, keyStr := extractKeyInfo(c)
 	start := time.Now()
 
+	// Set log context for the request logger middleware
+	c.Set("log_provider", "aws")
+	c.Set("log_backend_name", bedrockModel)
+	c.Set("log_model", req.Model)
+
 	if req.Stream {
 		h.streamMessages(c, bedrockBody, bedrockModel, req.Model, keyInfo, keyStr, start)
 	} else {
@@ -345,6 +350,11 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 	keyInfo, keyStr := extractKeyInfo(c)
 	start := time.Now()
+
+	// Set log context for the request logger middleware
+	c.Set("log_provider", "aws")
+	c.Set("log_backend_name", bedrockModel)
+	c.Set("log_model", oaiReq.Model)
 
 	if oaiReq.Stream {
 		h.streamChatCompletions(c, bedrockBody, bedrockModel, oaiReq.Model, keyInfo, keyStr, start)
@@ -887,13 +897,14 @@ func (h *Handler) emitUsage(keyInfo *auth.KeyInfo, keyStr, reqModel, bedrockMode
 	cost := AWSCostUSD(reqModel, inputTokens, outputTokens, cacheRead, cacheWrite, cfg.ModelPricing)
 	ua := parseUA(userAgent)
 
-	h.collector.Emit(stats.AWSRecord{
+	h.collector.Emit(stats.Record{
 		UserID:           keyInfo.UserID,
 		GroupID:          keyInfo.GroupID,
 		APIKeyID:         keyInfo.KeyID,
 		KeyStr:           keyStr,
+		Provider:         "aws",
 		Model:            reqModel,
-		BedrockModel:     bedrockModel,
+		BackendName:      bedrockModel,
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,
 		TotalTokens:      inputTokens + outputTokens,

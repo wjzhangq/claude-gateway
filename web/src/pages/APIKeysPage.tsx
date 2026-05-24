@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
 import { listKeys, createKey, disableKey, enableKey, deleteKey, setAutoDowngrade, renameKey, switchKeyChannel } from '../api'
 import { useAuth } from '../context/AuthContext'
-import { formatTime, formatDate } from '../utils/time'
+import { formatTime } from '../utils/time'
 
 interface APIKey {
   id: number
   name: string
   key: string
   status: string
+  channel: string
   auto_downgrade: boolean
   created_at: string
   last_used_at: string | null
@@ -182,7 +183,7 @@ export default function APIKeysPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['名称', 'Key', '状态', '自动降级', '请求数', 'Backend费用', 'AWS费用', '总费用', '创建时间', '最后使用', '操作'].map((h) => (
+              {['名称', '渠道', 'Key', '状态', '自动降级', '总费用', '最后使用', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -194,7 +195,7 @@ export default function APIKeysPage() {
               Array.from({ length: 3 }).map((_, i) => <SkeletonRow key={i} />)
             ) : keys.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-10 text-center text-sm text-gray-400">暂无 API Key</td>
+                <td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">暂无 API Key</td>
               </tr>
             ) : (
               keys.map((k) => (
@@ -215,6 +216,15 @@ export default function APIKeysPage() {
                     ) : (
                       k.name
                     )}
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ring-1 ${
+                      k.channel === 'aws'
+                        ? 'bg-green-50 text-green-700 ring-green-100'
+                        : 'bg-blue-50 text-blue-700 ring-blue-100'
+                    }`}>
+                      {k.channel === 'aws' ? 'AWS' : 'Backend'}
+                    </span>
                   </td>
                   <td className="px-4 py-3.5 font-mono text-xs text-gray-500">
                     {revealedId === k.id ? (
@@ -248,15 +258,9 @@ export default function APIKeysPage() {
                       />
                     </button>
                   </td>
-                  <td className="px-4 py-3.5 text-gray-600 text-xs">{(k.requests || 0).toLocaleString()}</td>
-                  <td className="px-4 py-3.5 text-gray-800 text-xs font-medium">${(k.backend_cost_usd || 0).toFixed(4)}</td>
-                  <td className="px-4 py-3.5 text-amber-700 text-xs font-medium">${(k.aws_cost_usd || 0).toFixed(4)}</td>
-                  <td className="px-4 py-3.5 text-gray-600 text-xs">${(k.total_cost_usd ?? k.cost_usd ?? 0).toFixed(4)}</td>
+                  <td className="px-4 py-3.5 text-gray-800 text-xs font-medium">${(k.total_cost_usd ?? k.cost_usd ?? 0).toFixed(4)}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {formatDate(k.created_at)}
-                  </td>
-                  <td className="px-4 py-3.5 text-gray-400 text-xs">
-                    {formatTime(k.last_used_at)}
+                    {k.last_used_at ? formatTime(k.last_used_at) : <span className="text-gray-300">未使用</span>}
                   </td>
                   <td className="px-4 py-3.5">
                     <div className="flex items-center gap-3">
@@ -292,12 +296,12 @@ export default function APIKeysPage() {
                       >
                         删除
                       </button>
-                      {isAWSEnabled && (
+                      {isAWSEnabled && k.channel !== 'aws' && (
                         <button
                           onClick={() => handleSwitchChannel(k.id)}
                           className="text-xs text-orange-400 hover:text-orange-600 transition-colors"
                         >
-                          切换 AWS
+                          切换AWS
                         </button>
                       )}
                     </div>

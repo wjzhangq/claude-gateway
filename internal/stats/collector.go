@@ -10,28 +10,31 @@ import (
 )
 
 const (
-	batchSize    = 100          // flush when this many records accumulate
-	batchTimeout = 5 * time.Second // or after this duration
+	batchSize    = 100
+	batchTimeout = 5 * time.Second
 )
 
-// Record holds the data for a single API call to be persisted.
+// Record holds the data for a single API call to be persisted (all providers).
 type Record struct {
-	UserID       int64
-	GroupID      int
-	APIKeyID     int64
-	KeyStr       string // raw key string, used to update KeyStore.LastUsedAt
-	Model        string
-	Backend      string
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	CostUSD      float64
-	StatusCode   int
-	Latency      time.Duration
-	IsOpenClaw   bool
-	IsDowngraded bool
-	UA           string
-	CreatedAt    time.Time
+	UserID           int64
+	GroupID          int
+	APIKeyID         int64
+	KeyStr           string // raw key string, used to update KeyStore.LastUsedAt
+	Provider         string // "backend" | "aws" | "kimi" | "minimax"
+	Model            string
+	BackendName      string // lb name for backend, bedrock_model for aws, empty for public
+	InputTokens      int
+	OutputTokens     int
+	TotalTokens      int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	CostUSD          float64
+	StatusCode       int
+	Latency          time.Duration
+	IsOpenClaw       bool
+	IsDowngraded     bool
+	UA               string
+	CreatedAt        time.Time
 }
 
 // Collector receives usage records asynchronously and batch-writes them to the DB.
@@ -53,15 +56,19 @@ func NewCollector(database *db.DB, ks *auth.KeyStore, bufSize int) *Collector {
 }
 
 // Emit sends a record to the collector (non-blocking) and immediately updates
-// the in-memory LastUsedAt and cost accumulators on the KeyStore — no DB write on the hot path.
+// the in-memory LastUsedAt and cost accumulators on the KeyStore.
 func (c *Collector) Emit(r Record) {
 	r.CreatedAt = time.Now()
 	if r.KeyStr != "" && c.keyStore != nil {
-		// Update last_used_at in memory immediately — O(1), no lock contention on writes
 		c.keyStore.MarkUsed(r.KeyStr, r.CreatedAt)
-		// Accumulate cost in memory; flushed to DB every minute
 		if r.CostUSD > 0 {
-			c.keyStore.AddCost(r.KeyStr, "backend", r.CostUSD)
+			// Determine cost channel for KeyStore accumulation
+			switch r.Provider {
+			case "aws":
+				c.keyStore.AddCost(r.KeyStr, "aws", r.CostUSD)
+			default:
+				c.keyStore.AddCost(r.KeyStr, "backend", r.CostUSD)
+			}
 		}
 	}
 	select {
@@ -124,20 +131,23 @@ func (c *Collector) worker() {
 
 func recordToLog(r Record) *model.UsageLog {
 	return &model.UsageLog{
-		UserID:       r.UserID,
-		GroupID:      r.GroupID,
-		APIKeyID:     r.APIKeyID,
-		Model:        r.Model,
-		Backend:      r.Backend,
-		InputTokens:  r.InputTokens,
-		OutputTokens: r.OutputTokens,
-		TotalTokens:  r.TotalTokens,
-		CostUSD:      r.CostUSD,
-		StatusCode:   r.StatusCode,
-		Latency:      r.Latency.Milliseconds(),
-		IsOpenClaw:   r.IsOpenClaw,
-		IsDowngraded: r.IsDowngraded,
-		UA:           r.UA,
-		CreatedAt:    r.CreatedAt,
+		UserID:           r.UserID,
+		GroupID:          r.GroupID,
+		APIKeyID:         r.APIKeyID,
+		Provider:         r.Provider,
+		Model:            r.Model,
+		BackendName:      r.BackendName,
+		InputTokens:      r.InputTokens,
+		OutputTokens:     r.OutputTokens,
+		TotalTokens:      r.TotalTokens,
+		CacheReadTokens:  r.CacheReadTokens,
+		CacheWriteTokens: r.CacheWriteTokens,
+		CostUSD:          r.CostUSD,
+		StatusCode:       r.StatusCode,
+		Latency:          r.Latency.Milliseconds(),
+		IsOpenClaw:       r.IsOpenClaw,
+		IsDowngraded:     r.IsDowngraded,
+		UA:               r.UA,
+		CreatedAt:        r.CreatedAt,
 	}
 }

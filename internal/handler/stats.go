@@ -218,7 +218,7 @@ func (h *StatsHandler) ExportMyUsage(c *gin.Context) {
 
 	w := csv.NewWriter(c.Writer)
 	_ = w.Write([]string{
-		"id", "model", "backend",
+		"id", "model", "provider",
 		"input_tokens", "output_tokens", "total_tokens", "cost_usd",
 		"status_code", "latency_ms", "is_openclaw", "is_downgraded", "ua", "created_at",
 	})
@@ -234,7 +234,7 @@ func (h *StatsHandler) ExportMyUsage(c *gin.Context) {
 		_ = w.Write([]string{
 			strconv.FormatInt(l.ID, 10),
 			l.Model,
-			l.Backend,
+			l.Provider,
 			strconv.Itoa(l.InputTokens),
 			strconv.Itoa(l.OutputTokens),
 			strconv.Itoa(l.TotalTokens),
@@ -317,7 +317,7 @@ func (h *StatsHandler) ExportUsage(c *gin.Context) {
 
 	w := csv.NewWriter(c.Writer)
 	_ = w.Write([]string{
-		"id", "user_id", "itcode", "api_key_id", "model", "backend",
+		"id", "user_id", "itcode", "api_key_id", "model", "provider",
 		"input_tokens", "output_tokens", "total_tokens", "cost_usd",
 		"status_code", "latency_ms", "is_openclaw", "is_downgraded", "ua", "created_at",
 	})
@@ -336,7 +336,7 @@ func (h *StatsHandler) ExportUsage(c *gin.Context) {
 			l.Itcode,
 			strconv.FormatInt(l.APIKeyID, 10),
 			l.Model,
-			l.Backend,
+			l.Provider,
 			strconv.Itoa(l.InputTokens),
 			strconv.Itoa(l.OutputTokens),
 			strconv.Itoa(l.TotalTokens),
@@ -355,6 +355,49 @@ func (h *StatsHandler) ExportUsage(c *gin.Context) {
 // GetGroups godoc: GET /admin/api/groups
 func (h *StatsHandler) GetGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"groups": h.config.Groups})
+}
+
+// GetProviderStats godoc: GET /admin/api/provider/stats?provider=backend&period=today
+func (h *StatsHandler) GetProviderStats(c *gin.Context) {
+	provider := c.Query("provider")
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
+		return
+	}
+	period := c.DefaultQuery("period", "today")
+
+	requests, costUSD, err := h.db.GetProviderStats(provider, period)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"provider": provider,
+		"period":   period,
+		"requests": requests,
+		"cost_usd": costUSD,
+	})
+}
+
+// GetProviderModelStats godoc: GET /admin/api/provider/model-stats?provider=backend&date=2026-01-01
+func (h *StatsHandler) GetProviderModelStats(c *gin.Context) {
+	provider := c.Query("provider")
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
+		return
+	}
+	date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
+
+	stats, err := h.db.GetProviderModelStats(provider, date)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"provider": provider,
+		"date":     date,
+		"stats":    stats,
+	})
 }
 
 // UpdateConfig replaces the config reference (used during reload).

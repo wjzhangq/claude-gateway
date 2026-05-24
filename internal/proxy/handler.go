@@ -524,6 +524,10 @@ func (h *Handler) replaceModelInBody(body []byte, oldModel, newModel string) []b
 const streamReadBufSize = 4096
 
 func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool) {
+	// Set log context for the request logger middleware
+	c.Set("log_provider", "backend")
+	c.Set("log_backend_name", backendName)
+	c.Set("log_model", model)
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -572,10 +576,16 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 	}
 
+	c.Set("log_input_tokens", lastIn)
+	c.Set("log_output_tokens", lastOut)
 	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, time.Since(start), isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
 func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool) {
+	// Set log context for the request logger middleware
+	c.Set("log_provider", "backend")
+	c.Set("log_backend_name", backendName)
+	c.Set("log_model", model)
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("read response body: %v", err)
@@ -584,6 +594,8 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
+	c.Set("log_input_tokens", in)
+	c.Set("log_output_tokens", out)
 	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
 }
 
@@ -681,8 +693,9 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 		GroupID:      info.GroupID,
 		APIKeyID:     info.KeyID,
 		KeyStr:       keyStr,
+		Provider:     "backend",
 		Model:        model,
-		Backend:      backendName,
+		BackendName:  backendName,
 		InputTokens:  inputTokens,
 		OutputTokens: outputTokens,
 		TotalTokens:  total,

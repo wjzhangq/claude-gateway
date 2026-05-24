@@ -23,7 +23,9 @@ import AdminAWSUserDailyPage from './pages/AdminAWSUserDailyPage'
 import AdminAWSBedrockPage from './pages/AdminAWSBedrockPage'
 import AdminPublicStatsPage from './pages/AdminPublicStatsPage'
 import AdminPublicUsagePage from './pages/AdminPublicUsagePage'
+import AdminProviderStatsPage from './pages/AdminProviderStatsPage'
 import PlaygroundPage from './pages/PlaygroundPage'
+import ApplicationsPage from './pages/ApplicationsPage'
 
 export default function App() {
   return (
@@ -39,6 +41,7 @@ export default function App() {
               <Route path="/keys" element={<APIKeysPage />} />
               <Route path="/usage" element={<UsagePage />} />
               <Route path="/playground" element={<PlaygroundPage />} />
+              <Route path="/applications" element={<ApplicationsPage />} />
               <Route path="/aws" element={<AWSPage />} />
               <Route path="/aws/keys" element={<AWSKeysPage />} />
               <Route path="/aws/usage" element={<AWSUsagePage />} />
@@ -55,6 +58,10 @@ export default function App() {
                 <Route path="/admin/aws/usage" element={<AdminAWSUsagePage />} />
                 <Route path="/admin/aws/user-daily" element={<AdminAWSUserDailyPage />} />
                 <Route path="/admin/aws/bedrock" element={<AdminAWSBedrockPage />} />
+                <Route path="/admin/provider/backend" element={<AdminProviderStatsPage provider="backend" />} />
+                <Route path="/admin/provider/aws" element={<AdminProviderStatsPage provider="aws" />} />
+                <Route path="/admin/provider/kimi" element={<AdminProviderStatsPage provider="kimi" />} />
+                <Route path="/admin/provider/minimax" element={<AdminProviderStatsPage provider="minimax" />} />
               </Route>
             </Route>
           </Route>

@@ -1,9 +1,10 @@
-// cmd/sync 将旧数据库（database.db）中的用户、API Key 和用量同步到本项目数据库（gateway.db）。
-// 支持多次重入：已存在的记录会被更新，用户和 Key 一定保留，统计数据尽量保留。
+// cmd/sync 将 SQLite 数据库 (gateway.db) 增量同步到 PostgreSQL。
+// 支持多次运行（幂等），使用 sync_state 表追踪同步进度。
 //
 // 用法：
 //
-//	./bin/sync --fromdb ./data/database.db --todb ./data/gateway.db
+//	./bin/sync --config ./config/config.yaml
+//	./bin/sync --fromdb ./data/gateway.db --config ./config/config.yaml
 package main
 
 import (
@@ -12,29 +13,50 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
+	"time"
 
+	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
+
+	"github.com/wjzhangq/claude-gateway/config"
 )
 
+const batchSize = 500
+
 func main() {
-	fromPath := flag.String("fromdb", "./data/database.db", "源数据库路径（旧 database.db）")
-	toPath := flag.String("todb", "./data/gateway.db", "目标数据库路径（本项目 gateway.db）")
+	cfgPath := flag.String("config", "config/config.yaml", "配置文件路径")
+	fromPath := flag.String("fromdb", "", "SQLite 源数据库路径（默认取配置中的 database.path）")
 	flag.Parse()
 
-	if *fromPath == "" || *toPath == "" {
-		fmt.Fprintln(os.Stderr, "用法: sync --fromdb <源DB> --todb <目标DB>")
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		log.Fatalf("加载配置失败: %v", err)
+	}
+
+	sqlitePath := *fromPath
+	if sqlitePath == "" {
+		sqlitePath = cfg.Database.Path
+	}
+	if sqlitePath == "" {
+		fmt.Fprintln(os.Stderr, "错误: 未指定 SQLite 源数据库路径 (--fromdb 或 config 中 database.path)")
 		os.Exit(1)
 	}
 
-	fromDB, err := openDB(*fromPath)
+	if cfg.Database.Postgres.Host == "" {
+		fmt.Fprintln(os.Stderr, "错误: 配置中未找到 PostgreSQL 配置")
+		os.Exit(1)
+	}
+
+	fromDB, err := openSQLite(sqlitePath)
 	if err != nil {
-		log.Fatalf("打开源数据库失败: %v", err)
+		log.Fatalf("打开 SQLite 失败: %v", err)
 	}
 	defer fromDB.Close()
 
-	toDB, err := openDB(*toPath)
+	toDB, err := openPostgres(cfg.Database.Postgres)
 	if err != nil {
-		log.Fatalf("打开目标数据库失败: %v", err)
+		log.Fatalf("连接 PostgreSQL 失败: %v", err)
 	}
 	defer toDB.Close()
 
@@ -54,22 +76,76 @@ func main() {
 	}
 	log.Printf("    新增: %d, 更新: %d", inserted, updated)
 
-	log.Println("==> 同步用量（daily_stats）...")
-	inserted, updated, err = s.syncUsage()
+	log.Println("==> 同步 usage_logs (backend/kimi/minimax)...")
+	count, err := s.syncUsageLogs()
 	if err != nil {
-		log.Fatalf("同步用量失败: %v", err)
+		log.Fatalf("同步 usage_logs 失败: %v", err)
 	}
-	log.Printf("    新增: %d, 更新: %d", inserted, updated)
+	log.Printf("    同步: %d 条", count)
+
+	log.Println("==> 同步 aws_usage_logs...")
+	count, err = s.syncAWSUsageLogs()
+	if err != nil {
+		log.Fatalf("同步 aws_usage_logs 失败: %v", err)
+	}
+	log.Printf("    同步: %d 条", count)
+
+	log.Println("==> 同步 daily_stats...")
+	count, err = s.syncDailyStats()
+	if err != nil {
+		log.Fatalf("同步 daily_stats 失败: %v", err)
+	}
+	log.Printf("    同步: %d 条", count)
+
+	log.Println("==> 同步 aws_daily_stats...")
+	count, err = s.syncAWSDailyStats()
+	if err != nil {
+		log.Fatalf("同步 aws_daily_stats 失败: %v", err)
+	}
+	log.Printf("    同步: %d 条", count)
+
+	log.Println("==> 同步 applications...")
+	count, err = s.syncApplications()
+	if err != nil {
+		log.Fatalf("同步 applications 失败: %v", err)
+	}
+	log.Printf("    同步: %d 条", count)
 
 	log.Println("==> 同步完成")
 }
 
-func openDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on")
+func openSQLite(path string) (*sql.DB, error) {
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on&mode=ro")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func openPostgres(cfg config.PostgresConfig) (*sql.DB, error) {
+	sslmode := cfg.SSLMode
+	if sslmode == "" {
+		sslmode = "disable"
+	}
+	tz := cfg.Timezone
+	if tz == "" {
+		tz = "Asia/Shanghai"
+	}
+	dsn := fmt.Sprintf(
+		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s TimeZone=%s",
+		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, sslmode, tz,
+	)
+	db, err := sql.Open("postgres", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
 	if err := db.Ping(); err != nil {
 		db.Close()
 		return nil, err
@@ -82,279 +158,690 @@ type syncer struct {
 	to   *sql.DB
 }
 
-// syncUsers 同步用户，返回 (新增, 更新) 数量。
-// UPSERT: 已存在的用户更新 role/status/quota_tokens；name 仅在目标为空时才写入。
+// getLastSyncedID reads sync progress from PG sync_state table.
+func (s *syncer) getLastSyncedID(tableName string) (int64, error) {
+	var id int64
+	err := s.to.QueryRow(`SELECT last_synced_id FROM sync_state WHERE table_name = $1`, tableName).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
+}
+
+// updateLastSyncedID updates sync progress in PG sync_state table.
+func (s *syncer) updateLastSyncedID(tableName string, lastID int64) error {
+	_, err := s.to.Exec(
+		`INSERT INTO sync_state (table_name, last_synced_id, last_synced_at)
+		 VALUES ($1, $2, NOW())
+		 ON CONFLICT (table_name) DO UPDATE SET last_synced_id = $2, last_synced_at = NOW()`,
+		tableName, lastID,
+	)
+	return err
+}
+
+// syncUsers UPSERT users from SQLite to PG on itcode.
 func (s *syncer) syncUsers() (int, int, error) {
 	rows, err := s.from.Query(
-		`SELECT user_id, itcode, is_admin, is_active, max_token, add_date, update_date FROM user`)
+		`SELECT id, itcode, name, role, status, group_id, daily_quota_tokens, daily_quota_usd,
+		        aws_daily_quota_usd, aws_enabled, created_at, updated_at
+		 FROM users ORDER BY id`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("查询源用户: %w", err)
 	}
 	defer rows.Close()
 
-	type fromUser struct {
-		UserID     string
-		Itcode     string
-		IsAdmin    int
-		IsActive   int
-		MaxToken   int64
-		AddDate    string
-		UpdateDate string
-	}
-
-	var users []fromUser
-	for rows.Next() {
-		var u fromUser
-		if err := rows.Scan(&u.UserID, &u.Itcode, &u.IsAdmin, &u.IsActive, &u.MaxToken, &u.AddDate, &u.UpdateDate); err != nil {
-			return 0, 0, fmt.Errorf("读取源用户行: %w", err)
-		}
-		users = append(users, u)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
-	}
-
 	inserted, updated := 0, 0
-	for _, u := range users {
-		role := "user"
-		if u.IsAdmin == 1 {
-			role = "admin"
-		}
-		status := "disabled"
-		if u.IsActive == 1 {
-			status = "active"
+	for rows.Next() {
+		var (
+			id              int64
+			itcode, name    string
+			role, status    string
+			groupID         int
+			quotaTokens     int
+			quotaUSD        float64
+			awsQuotaUSD     float64
+			awsEnabled      int
+			createdAt       string
+			updatedAt       string
+		)
+		if err := rows.Scan(&id, &itcode, &name, &role, &status, &groupID,
+			&quotaTokens, &quotaUSD, &awsQuotaUSD, &awsEnabled, &createdAt, &updatedAt); err != nil {
+			return 0, 0, fmt.Errorf("读取用户行: %w", err)
 		}
 
-		// 先检查是否已存在
-		var existID int64
-		err := s.to.QueryRow(`SELECT id FROM users WHERE itcode = ?`, u.Itcode).Scan(&existID)
-		if err == sql.ErrNoRows {
-			// 新增
-			_, err = s.to.Exec(
-				`INSERT INTO users (itcode, name, role, status, quota_tokens, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				u.Itcode, u.Itcode, role, status, u.MaxToken, u.AddDate, u.UpdateDate,
-			)
-			if err != nil {
-				log.Printf("    [警告] 插入用户 %s 失败: %v", u.Itcode, err)
-				continue
-			}
+		awsBool := awsEnabled != 0
+		res, err := s.to.Exec(
+			`INSERT INTO users (itcode, name, role, status, group_id, daily_quota_tokens, daily_quota_usd,
+			                    aws_daily_quota_usd, aws_enabled, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			 ON CONFLICT (itcode) DO UPDATE SET
+			   name = EXCLUDED.name,
+			   role = EXCLUDED.role,
+			   status = EXCLUDED.status,
+			   group_id = EXCLUDED.group_id,
+			   daily_quota_tokens = EXCLUDED.daily_quota_tokens,
+			   daily_quota_usd = EXCLUDED.daily_quota_usd,
+			   aws_daily_quota_usd = EXCLUDED.aws_daily_quota_usd,
+			   aws_enabled = EXCLUDED.aws_enabled,
+			   updated_at = EXCLUDED.updated_at`,
+			itcode, name, role, status, groupID, quotaTokens, quotaUSD,
+			awsQuotaUSD, awsBool, parseTime(createdAt), parseTime(updatedAt),
+		)
+		if err != nil {
+			log.Printf("    [警告] UPSERT 用户 %s 失败: %v", itcode, err)
+			continue
+		}
+		n, _ := res.RowsAffected()
+		if n > 0 {
 			inserted++
-		} else if err == nil {
-			// 更新：保留目标库中已有的 name（如果非空），更新其他字段
-			_, err = s.to.Exec(
-				`UPDATE users SET role=?, status=?, quota_tokens=?, updated_at=?
-				 WHERE id=?`,
-				role, status, u.MaxToken, u.UpdateDate, existID,
-			)
-			if err != nil {
-				log.Printf("    [警告] 更新用户 %s 失败: %v", u.Itcode, err)
-				continue
-			}
-			updated++
-		} else {
-			log.Printf("    [警告] 查询用户 %s 失败: %v", u.Itcode, err)
 		}
 	}
-	return inserted, updated, nil
+	// RowsAffected for ON CONFLICT DO UPDATE always returns 1, so we can't distinguish
+	return inserted, updated, rows.Err()
 }
 
-// syncAPIKeys 同步 API Key，返回 (新增, 更新) 数量。
+// syncAPIKeys UPSERT api_keys from SQLite to PG on key.
 func (s *syncer) syncAPIKeys() (int, int, error) {
-	itcodeToToID, err := s.buildItcodeMap()
+	// Build itcode->PG user_id mapping
+	pgUserMap, err := s.buildPGUserMap()
 	if err != nil {
 		return 0, 0, err
 	}
-	fromUserMap, err := s.buildFromUserMap()
+	// Build SQLite user_id -> itcode mapping
+	sqliteUserMap, err := s.buildSQLiteUserMap()
 	if err != nil {
 		return 0, 0, err
 	}
 
 	rows, err := s.from.Query(
-		`SELECT id, user_id, apikey, alias, expire_date, add_time, is_active FROM api_key`)
+		`SELECT id, user_id, key, name, status, last_used_at, auto_downgrade, channel,
+		        total_cost_usd, backend_cost_usd, aws_cost_usd, created_at, updated_at
+		 FROM api_keys ORDER BY id`)
 	if err != nil {
 		return 0, 0, fmt.Errorf("查询源 API Key: %w", err)
 	}
 	defer rows.Close()
 
-	type fromAPIKey struct {
-		ID         string
-		UserID     string
-		Apikey     string
-		Alias      sql.NullString
-		ExpireDate sql.NullString
-		AddTime    string
-		IsActive   int
-	}
-
-	var keys []fromAPIKey
-	for rows.Next() {
-		var k fromAPIKey
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Apikey, &k.Alias, &k.ExpireDate, &k.AddTime, &k.IsActive); err != nil {
-			return 0, 0, fmt.Errorf("读取源 API Key 行: %w", err)
-		}
-		keys = append(keys, k)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
-	}
-
 	inserted, updated := 0, 0
-	for _, k := range keys {
-		itcode, ok := fromUserMap[k.UserID]
+	for rows.Next() {
+		var (
+			id           int64
+			userID       int64
+			key, name    string
+			status       string
+			lastUsedAt   sql.NullString
+			autoDowngrade int
+			channel      string
+			totalCost    float64
+			backendCost  float64
+			awsCost      float64
+			createdAt    string
+			updatedAt    string
+		)
+		if err := rows.Scan(&id, &userID, &key, &name, &status, &lastUsedAt, &autoDowngrade,
+			&channel, &totalCost, &backendCost, &awsCost, &createdAt, &updatedAt); err != nil {
+			return 0, 0, fmt.Errorf("读取 API Key 行: %w", err)
+		}
+
+		// Map SQLite user_id -> itcode -> PG user_id
+		itcode, ok := sqliteUserMap[userID]
 		if !ok {
-			log.Printf("    [警告] API Key %s 的 user_id %s 在源库中找不到对应用户，跳过", k.Apikey[:16]+"...", k.UserID)
+			log.Printf("    [警告] API Key %s... 的 user_id %d 无对应用户，跳过", key[:min(8, len(key))], userID)
 			continue
 		}
-		toUserID, ok := itcodeToToID[itcode]
+		pgUserID, ok := pgUserMap[itcode]
 		if !ok {
-			log.Printf("    [警告] API Key 的用户 %s 在目标库中不存在，跳过", itcode)
+			log.Printf("    [警告] API Key 用户 %s 在 PG 中不存在，跳过", itcode)
 			continue
 		}
 
-		status := "disabled"
-		if k.IsActive == 1 {
-			status = "active"
-		}
-		name := ""
-		if k.Alias.Valid {
-			name = k.Alias.String
-		}
-		var expiresAt interface{}
-		if k.ExpireDate.Valid && k.ExpireDate.String != "" {
-			expiresAt = k.ExpireDate.String
+		autoBool := autoDowngrade != 0
+		var lastUsed interface{}
+		if lastUsedAt.Valid && lastUsedAt.String != "" {
+			lastUsed = parseTime(lastUsedAt.String)
 		}
 
-		// 先检查是否已存在
-		var existID int64
-		err := s.to.QueryRow(`SELECT id FROM api_keys WHERE key = ?`, k.Apikey).Scan(&existID)
-		if err == sql.ErrNoRows {
-			// 新增
-			_, err = s.to.Exec(
-				`INSERT INTO api_keys (user_id, key, name, status, expires_at, created_at, updated_at)
-				 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				toUserID, k.Apikey, name, status, expiresAt, k.AddTime, k.AddTime,
-			)
-			if err != nil {
-				log.Printf("    [警告] 插入 API Key 失败: %v", err)
-				continue
-			}
-			inserted++
-		} else if err == nil {
-			// 更新：同步 status，保留目标库中已有的 name
-			_, err = s.to.Exec(
-				`UPDATE api_keys SET user_id=?, status=?, expires_at=?, updated_at=?
-				 WHERE id=?`,
-				toUserID, status, expiresAt, k.AddTime, existID,
-			)
-			if err != nil {
-				log.Printf("    [警告] 更新 API Key 失败: %v", err)
-				continue
-			}
-			updated++
-		} else {
-			log.Printf("    [警告] 查询 API Key 失败: %v", err)
+		_, err := s.to.Exec(
+			`INSERT INTO api_keys (user_id, key, name, status, last_used_at, auto_downgrade, channel,
+			                       total_cost_usd, backend_cost_usd, aws_cost_usd, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			 ON CONFLICT (key) DO UPDATE SET
+			   user_id = EXCLUDED.user_id,
+			   name = EXCLUDED.name,
+			   status = EXCLUDED.status,
+			   last_used_at = EXCLUDED.last_used_at,
+			   auto_downgrade = EXCLUDED.auto_downgrade,
+			   channel = EXCLUDED.channel,
+			   total_cost_usd = EXCLUDED.total_cost_usd,
+			   backend_cost_usd = EXCLUDED.backend_cost_usd,
+			   aws_cost_usd = EXCLUDED.aws_cost_usd,
+			   updated_at = EXCLUDED.updated_at`,
+			pgUserID, key, name, status, lastUsed, autoBool, channel,
+			totalCost, backendCost, awsCost, parseTime(createdAt), parseTime(updatedAt),
+		)
+		if err != nil {
+			log.Printf("    [警告] UPSERT API Key 失败: %v", err)
+			continue
 		}
+		inserted++
 	}
-	return inserted, updated, nil
+	return inserted, updated, rows.Err()
 }
 
-// syncUsage 将 fromdb.usage 同步到 todb.daily_stats，返回 (新增, 更新) 数量。
-// UPSERT: 已存在的记录会被更新。
-func (s *syncer) syncUsage() (int, int, error) {
-	itcodeToToID, err := s.buildItcodeMap()
+// syncUsageLogs incrementally syncs usage_logs from SQLite to PG.
+// Infers provider from the "backend" column:
+//   - "public:kimi" prefix → provider='kimi'
+//   - "public:minimax" prefix → provider='minimax'
+//   - otherwise → provider='backend'
+func (s *syncer) syncUsageLogs() (int, error) {
+	lastID, err := s.getLastSyncedID("usage_logs")
 	if err != nil {
-		return 0, 0, err
+		return 0, fmt.Errorf("获取同步进度: %w", err)
 	}
-	fromUserMap, err := s.buildFromUserMap()
+
+	// Build user_id mapping: SQLite user_id -> PG user_id
+	sqliteUserMap, err := s.buildSQLiteUserMap()
 	if err != nil {
-		return 0, 0, err
+		return 0, err
+	}
+	pgUserMap, err := s.buildPGUserMap()
+	if err != nil {
+		return 0, err
+	}
+	// Build api_key mapping: SQLite key string -> PG api_key_id
+	pgKeyMap, err := s.buildPGKeyMap()
+	if err != nil {
+		return 0, err
+	}
+
+	total := 0
+	for {
+		rows, err := s.from.Query(
+			`SELECT id, user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens,
+			        cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, group_id, created_at
+			 FROM usage_logs WHERE id > ? ORDER BY id LIMIT ?`, lastID, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("查询 usage_logs: %w", err)
+		}
+
+		batchCount := 0
+		var maxID int64
+
+		tx, err := s.to.Begin()
+		if err != nil {
+			rows.Close()
+			return total, fmt.Errorf("begin tx: %w", err)
+		}
+
+		stmt, err := tx.Prepare(
+			`INSERT INTO usage_logs
+			 (user_id, group_id, api_key_id, provider, model, backend_name, input_tokens, output_tokens, total_tokens,
+			  cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`)
+		if err != nil {
+			tx.Rollback()
+			rows.Close()
+			return total, fmt.Errorf("prepare: %w", err)
+		}
+
+		for rows.Next() {
+			var (
+				id         int64
+				userID     int64
+				apiKeyID   int64
+				model      string
+				backend    string
+				inTok      int
+				outTok     int
+				totalTok   int
+				costUSD    float64
+				statusCode int
+				latencyMs  int64
+				isOC       int
+				isDG       int
+				ua         string
+				groupID    int
+				createdAt  string
+			)
+			if err := rows.Scan(&id, &userID, &apiKeyID, &model, &backend, &inTok, &outTok, &totalTok,
+				&costUSD, &statusCode, &latencyMs, &isOC, &isDG, &ua, &groupID, &createdAt); err != nil {
+				stmt.Close()
+				tx.Rollback()
+				rows.Close()
+				return total, fmt.Errorf("scan: %w", err)
+			}
+
+			// Map user_id
+			itcode, ok := sqliteUserMap[userID]
+			if !ok {
+				if id > maxID {
+					maxID = id
+				}
+				continue
+			}
+			pgUID, ok := pgUserMap[itcode]
+			if !ok {
+				if id > maxID {
+					maxID = id
+				}
+				continue
+			}
+
+			// Map api_key_id: get the key string from SQLite, then find PG id
+			pgKeyID := mapKeyID(s.from, apiKeyID, pgKeyMap)
+
+			// Infer provider from backend field
+			provider, backendName := inferProvider(backend)
+
+			_, err := stmt.Exec(
+				pgUID, groupID, pgKeyID, provider, model, backendName,
+				inTok, outTok, totalTok, 0, 0,
+				costUSD, statusCode, latencyMs,
+				isOC != 0, isDG != 0, ua, parseTime(createdAt),
+			)
+			if err != nil {
+				log.Printf("    [警告] 插入 usage_log id=%d 失败: %v", id, err)
+			}
+
+			if id > maxID {
+				maxID = id
+			}
+			batchCount++
+		}
+		rows.Close()
+		stmt.Close()
+
+		if batchCount == 0 {
+			tx.Rollback()
+			break
+		}
+
+		if err := tx.Commit(); err != nil {
+			return total, fmt.Errorf("commit: %w", err)
+		}
+
+		total += batchCount
+		lastID = maxID
+		if err := s.updateLastSyncedID("usage_logs", lastID); err != nil {
+			return total, fmt.Errorf("更新同步进度: %w", err)
+		}
+		log.Printf("    已同步 usage_logs 至 id=%d (本批 %d 条)", lastID, batchCount)
+
+		if batchCount < batchSize {
+			break
+		}
+	}
+	return total, nil
+}
+
+// syncAWSUsageLogs incrementally syncs aws_usage_logs from SQLite to PG usage_logs with provider='aws'.
+func (s *syncer) syncAWSUsageLogs() (int, error) {
+	lastID, err := s.getLastSyncedID("aws_usage_logs")
+	if err != nil {
+		return 0, fmt.Errorf("获取同步进度: %w", err)
+	}
+
+	sqliteUserMap, err := s.buildSQLiteUserMap()
+	if err != nil {
+		return 0, err
+	}
+	pgUserMap, err := s.buildPGUserMap()
+	if err != nil {
+		return 0, err
+	}
+	pgKeyMap, err := s.buildPGKeyMap()
+	if err != nil {
+		return 0, err
+	}
+
+	total := 0
+	for {
+		rows, err := s.from.Query(
+			`SELECT id, user_id, api_key_id, model, bedrock_model, input_tokens, output_tokens, total_tokens,
+			        cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, ua, group_id, created_at
+			 FROM aws_usage_logs WHERE id > ? ORDER BY id LIMIT ?`, lastID, batchSize)
+		if err != nil {
+			return total, fmt.Errorf("查询 aws_usage_logs: %w", err)
+		}
+
+		batchCount := 0
+		var maxID int64
+
+		tx, err := s.to.Begin()
+		if err != nil {
+			rows.Close()
+			return total, fmt.Errorf("begin tx: %w", err)
+		}
+
+		stmt, err := tx.Prepare(
+			`INSERT INTO usage_logs
+			 (user_id, group_id, api_key_id, provider, model, backend_name, input_tokens, output_tokens, total_tokens,
+			  cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`)
+		if err != nil {
+			tx.Rollback()
+			rows.Close()
+			return total, fmt.Errorf("prepare: %w", err)
+		}
+
+		for rows.Next() {
+			var (
+				id           int64
+				userID       int64
+				apiKeyID     int64
+				model        string
+				bedrockModel string
+				inTok        int
+				outTok       int
+				totalTok     int
+				cacheRead    int
+				cacheWrite   int
+				costUSD      float64
+				statusCode   int
+				latencyMs    int64
+				ua           string
+				groupID      int
+				createdAt    string
+			)
+			if err := rows.Scan(&id, &userID, &apiKeyID, &model, &bedrockModel, &inTok, &outTok, &totalTok,
+				&cacheRead, &cacheWrite, &costUSD, &statusCode, &latencyMs, &ua, &groupID, &createdAt); err != nil {
+				stmt.Close()
+				tx.Rollback()
+				rows.Close()
+				return total, fmt.Errorf("scan: %w", err)
+			}
+
+			itcode, ok := sqliteUserMap[userID]
+			if !ok {
+				if id > maxID {
+					maxID = id
+				}
+				continue
+			}
+			pgUID, ok := pgUserMap[itcode]
+			if !ok {
+				if id > maxID {
+					maxID = id
+				}
+				continue
+			}
+
+			pgKeyID := mapKeyID(s.from, apiKeyID, pgKeyMap)
+
+			_, err := stmt.Exec(
+				pgUID, groupID, pgKeyID, "aws", model, bedrockModel,
+				inTok, outTok, totalTok, cacheRead, cacheWrite,
+				costUSD, statusCode, latencyMs,
+				false, false, ua, parseTime(createdAt),
+			)
+			if err != nil {
+				log.Printf("    [警告] 插入 aws_usage_log id=%d 失败: %v", id, err)
+			}
+
+			if id > maxID {
+				maxID = id
+			}
+			batchCount++
+		}
+		rows.Close()
+		stmt.Close()
+
+		if batchCount == 0 {
+			tx.Rollback()
+			break
+		}
+
+		if err := tx.Commit(); err != nil {
+			return total, fmt.Errorf("commit: %w", err)
+		}
+
+		total += batchCount
+		lastID = maxID
+		if err := s.updateLastSyncedID("aws_usage_logs", lastID); err != nil {
+			return total, fmt.Errorf("更新同步进度: %w", err)
+		}
+		log.Printf("    已同步 aws_usage_logs 至 id=%d (本批 %d 条)", lastID, batchCount)
+
+		if batchCount < batchSize {
+			break
+		}
+	}
+	return total, nil
+}
+
+// syncDailyStats UPSERT daily_stats from SQLite to PG with provider='backend'.
+func (s *syncer) syncDailyStats() (int, error) {
+	sqliteUserMap, err := s.buildSQLiteUserMap()
+	if err != nil {
+		return 0, err
+	}
+	pgUserMap, err := s.buildPGUserMap()
+	if err != nil {
+		return 0, err
 	}
 
 	rows, err := s.from.Query(
-		`SELECT user_id, day, use_token, use_cost FROM usage`)
+		`SELECT id, date, user_id, model, requests, input_tokens, output_tokens, total_tokens, cost_usd
+		 FROM daily_stats ORDER BY id`)
 	if err != nil {
-		return 0, 0, fmt.Errorf("查询源用量: %w", err)
+		return 0, fmt.Errorf("查询 daily_stats: %w", err)
 	}
 	defer rows.Close()
 
-	type fromUsage struct {
-		UserID   string
-		Day      string
-		UseToken int64
-		UseCost  float64
-	}
-
-	var usages []fromUsage
+	total := 0
 	for rows.Next() {
-		var u fromUsage
-		if err := rows.Scan(&u.UserID, &u.Day, &u.UseToken, &u.UseCost); err != nil {
-			return 0, 0, fmt.Errorf("读取源用量行: %w", err)
+		var (
+			id       int64
+			date     string
+			userID   int64
+			model    string
+			requests int
+			inTok    int64
+			outTok   int64
+			totalTok int64
+			costUSD  float64
+		)
+		if err := rows.Scan(&id, &date, &userID, &model, &requests, &inTok, &outTok, &totalTok, &costUSD); err != nil {
+			return total, fmt.Errorf("scan daily_stats: %w", err)
 		}
-		usages = append(usages, u)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, 0, err
-	}
 
-	inserted, updated := 0, 0
-	for _, u := range usages {
-		itcode, ok := fromUserMap[u.UserID]
+		itcode, ok := sqliteUserMap[userID]
 		if !ok {
 			continue
 		}
-		toUserID, ok := itcodeToToID[itcode]
+		pgUID, ok := pgUserMap[itcode]
 		if !ok {
 			continue
 		}
 
-		// UPSERT: model 用 'synced' 标识来源于旧系统
-		res, err := s.to.Exec(
-			`INSERT INTO daily_stats (date, user_id, model, requests, input_tokens, output_tokens, total_tokens, cost_usd)
-			 VALUES (?, ?, 'synced', 0, 0, 0, ?, ?)
-			 ON CONFLICT(date, user_id, model) DO UPDATE SET
-			   total_tokens = excluded.total_tokens,
-			   cost_usd     = excluded.cost_usd`,
-			u.Day, toUserID, u.UseToken, u.UseCost,
+		_, err := s.to.Exec(
+			`INSERT INTO daily_stats (date, user_id, provider, model, requests, input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 0, 0, $9)
+			 ON CONFLICT (date, user_id, provider, model) DO UPDATE SET
+			   requests = EXCLUDED.requests,
+			   input_tokens = EXCLUDED.input_tokens,
+			   output_tokens = EXCLUDED.output_tokens,
+			   total_tokens = EXCLUDED.total_tokens,
+			   cost_usd = EXCLUDED.cost_usd`,
+			date, pgUID, "backend", model, requests, inTok, outTok, totalTok, costUSD,
 		)
 		if err != nil {
-			log.Printf("    [警告] 插入/更新用量 %s/%s 失败: %v", itcode, u.Day, err)
+			log.Printf("    [警告] UPSERT daily_stats id=%d 失败: %v", id, err)
 			continue
 		}
-		n, _ := res.RowsAffected()
-		if n > 0 {
-			// SQLite ON CONFLICT DO UPDATE 总是返回 1，无法区分 insert/update
-			// 简单计数
-			inserted++
-		}
+		total++
 	}
-	// 由于 SQLite upsert 无法精确区分 insert/update，这里 inserted 实际是总处理数
-	return inserted, updated, nil
+	return total, rows.Err()
 }
 
-// buildFromUserMap 返回 fromdb user_id (TEXT) -> itcode 的映射
-func (s *syncer) buildFromUserMap() (map[string]string, error) {
-	rows, err := s.from.Query(`SELECT user_id, itcode FROM user`)
+// syncAWSDailyStats UPSERT aws_daily_stats from SQLite to PG daily_stats with provider='aws'.
+func (s *syncer) syncAWSDailyStats() (int, error) {
+	sqliteUserMap, err := s.buildSQLiteUserMap()
 	if err != nil {
-		return nil, fmt.Errorf("查询源用户映射: %w", err)
+		return 0, err
+	}
+	pgUserMap, err := s.buildPGUserMap()
+	if err != nil {
+		return 0, err
+	}
+
+	rows, err := s.from.Query(
+		`SELECT id, date, user_id, model, requests, input_tokens, output_tokens, total_tokens,
+		        cache_read_tokens, cache_write_tokens, cost_usd
+		 FROM aws_daily_stats ORDER BY id`)
+	if err != nil {
+		return 0, fmt.Errorf("查询 aws_daily_stats: %w", err)
 	}
 	defer rows.Close()
-	m := make(map[string]string)
+
+	total := 0
 	for rows.Next() {
-		var uid, itcode string
-		if err := rows.Scan(&uid, &itcode); err != nil {
+		var (
+			id         int64
+			date       string
+			userID     int64
+			model      string
+			requests   int
+			inTok      int64
+			outTok     int64
+			totalTok   int64
+			cacheRead  int64
+			cacheWrite int64
+			costUSD    float64
+		)
+		if err := rows.Scan(&id, &date, &userID, &model, &requests, &inTok, &outTok, &totalTok,
+			&cacheRead, &cacheWrite, &costUSD); err != nil {
+			return total, fmt.Errorf("scan aws_daily_stats: %w", err)
+		}
+
+		itcode, ok := sqliteUserMap[userID]
+		if !ok {
+			continue
+		}
+		pgUID, ok := pgUserMap[itcode]
+		if !ok {
+			continue
+		}
+
+		_, err := s.to.Exec(
+			`INSERT INTO daily_stats (date, user_id, provider, model, requests, input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			 ON CONFLICT (date, user_id, provider, model) DO UPDATE SET
+			   requests = EXCLUDED.requests,
+			   input_tokens = EXCLUDED.input_tokens,
+			   output_tokens = EXCLUDED.output_tokens,
+			   total_tokens = EXCLUDED.total_tokens,
+			   cache_read_tokens = EXCLUDED.cache_read_tokens,
+			   cache_write_tokens = EXCLUDED.cache_write_tokens,
+			   cost_usd = EXCLUDED.cost_usd`,
+			date, pgUID, "aws", model, requests, inTok, outTok, totalTok, cacheRead, cacheWrite, costUSD,
+		)
+		if err != nil {
+			log.Printf("    [警告] UPSERT aws_daily_stats id=%d 失败: %v", id, err)
+			continue
+		}
+		total++
+	}
+	return total, rows.Err()
+}
+
+// syncApplications UPSERT applications from SQLite to PG.
+func (s *syncer) syncApplications() (int, error) {
+	sqliteUserMap, err := s.buildSQLiteUserMap()
+	if err != nil {
+		return 0, err
+	}
+	pgUserMap, err := s.buildPGUserMap()
+	if err != nil {
+		return 0, err
+	}
+
+	rows, err := s.from.Query(
+		`SELECT id, user_id, model, reason, status, reviewer_id, review_note, created_at, updated_at
+		 FROM applications ORDER BY id`)
+	if err != nil {
+		return 0, fmt.Errorf("查询 applications: %w", err)
+	}
+	defer rows.Close()
+
+	total := 0
+	for rows.Next() {
+		var (
+			id         int64
+			userID     int64
+			model      string
+			reason     string
+			status     string
+			reviewerID sql.NullInt64
+			reviewNote string
+			createdAt  string
+			updatedAt  string
+		)
+		if err := rows.Scan(&id, &userID, &model, &reason, &status, &reviewerID, &reviewNote, &createdAt, &updatedAt); err != nil {
+			return total, fmt.Errorf("scan applications: %w", err)
+		}
+
+		itcode, ok := sqliteUserMap[userID]
+		if !ok {
+			continue
+		}
+		pgUID, ok := pgUserMap[itcode]
+		if !ok {
+			continue
+		}
+
+		// Map reviewer_id if present
+		var pgReviewerID interface{}
+		if reviewerID.Valid {
+			rItcode, ok := sqliteUserMap[reviewerID.Int64]
+			if ok {
+				if rPgID, ok := pgUserMap[rItcode]; ok {
+					pgReviewerID = rPgID
+				}
+			}
+		}
+
+		_, err := s.to.Exec(
+			`INSERT INTO applications (user_id, model, reason, status, reviewer_id, review_note, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			 ON CONFLICT DO NOTHING`,
+			pgUID, model, reason, status, pgReviewerID, reviewNote, parseTime(createdAt), parseTime(updatedAt),
+		)
+		if err != nil {
+			log.Printf("    [警告] 插入 application id=%d 失败: %v", id, err)
+			continue
+		}
+		total++
+	}
+	return total, rows.Err()
+}
+
+// --- Helper functions ---
+
+// buildSQLiteUserMap returns SQLite user id -> itcode.
+func (s *syncer) buildSQLiteUserMap() (map[int64]string, error) {
+	rows, err := s.from.Query(`SELECT id, itcode FROM users`)
+	if err != nil {
+		return nil, fmt.Errorf("查询 SQLite 用户映射: %w", err)
+	}
+	defer rows.Close()
+	m := make(map[int64]string)
+	for rows.Next() {
+		var id int64
+		var itcode string
+		if err := rows.Scan(&id, &itcode); err != nil {
 			return nil, err
 		}
-		m[uid] = itcode
+		m[id] = itcode
 	}
 	return m, rows.Err()
 }
 
-// buildItcodeMap 返回 itcode -> todb users.id (int64) 的映射
-func (s *syncer) buildItcodeMap() (map[string]int64, error) {
+// buildPGUserMap returns itcode -> PG users.id.
+func (s *syncer) buildPGUserMap() (map[string]int64, error) {
 	rows, err := s.to.Query(`SELECT id, itcode FROM users`)
 	if err != nil {
-		return nil, fmt.Errorf("查询目标用户映射: %w", err)
+		return nil, fmt.Errorf("查询 PG 用户映射: %w", err)
 	}
 	defer rows.Close()
 	m := make(map[string]int64)
@@ -368,3 +855,72 @@ func (s *syncer) buildItcodeMap() (map[string]int64, error) {
 	}
 	return m, rows.Err()
 }
+
+// buildPGKeyMap returns key string -> PG api_keys.id.
+func (s *syncer) buildPGKeyMap() (map[string]int64, error) {
+	rows, err := s.to.Query(`SELECT id, key FROM api_keys`)
+	if err != nil {
+		return nil, fmt.Errorf("查询 PG Key 映射: %w", err)
+	}
+	defer rows.Close()
+	m := make(map[string]int64)
+	for rows.Next() {
+		var id int64
+		var key string
+		if err := rows.Scan(&id, &key); err != nil {
+			return nil, err
+		}
+		m[key] = id
+	}
+	return m, rows.Err()
+}
+
+// sqliteKeyCache caches SQLite api_key_id -> key string lookups.
+var sqliteKeyCache = make(map[int64]string)
+
+// mapKeyID maps a SQLite api_key_id to the corresponding PG api_keys.id.
+func mapKeyID(fromDB *sql.DB, sqliteKeyID int64, pgKeyMap map[string]int64) int64 {
+	keyStr, ok := sqliteKeyCache[sqliteKeyID]
+	if !ok {
+		err := fromDB.QueryRow(`SELECT key FROM api_keys WHERE id = ?`, sqliteKeyID).Scan(&keyStr)
+		if err != nil {
+			return 0
+		}
+		sqliteKeyCache[sqliteKeyID] = keyStr
+	}
+	pgID, ok := pgKeyMap[keyStr]
+	if !ok {
+		return 0
+	}
+	return pgID
+}
+
+// inferProvider determines provider and backend_name from the SQLite backend field.
+func inferProvider(backend string) (provider, backendName string) {
+	if strings.HasPrefix(backend, "public:kimi") {
+		return "kimi", ""
+	}
+	if strings.HasPrefix(backend, "public:minimax") {
+		return "minimax", ""
+	}
+	return "backend", backend
+}
+
+// parseTime attempts to parse various time formats from SQLite.
+func parseTime(s string) time.Time {
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05.000Z",
+		"2006-01-02 15:04:05.000",
+		"2006-01-02",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return t
+		}
+	}
+	return time.Now()
+}
+

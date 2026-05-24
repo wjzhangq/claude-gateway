@@ -1,18 +1,20 @@
 package middleware
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 
 	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 )
 
-// RequestLogger logs each HTTP request with method, path, status, and latency.
-// For proxy endpoints it also logs itcode and backend name.
+// RequestLogger logs each HTTP request.
+// For /v1/* proxy requests, outputs a concise text line:
+//   /v1/messages 200 claude-code/1.0 sk-abc1 wjzhang backend:lb-1 claude-sonnet-4 1234 5678
+// For other requests, uses structured JSON logging.
 func RequestLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
@@ -20,54 +22,97 @@ func RequestLogger() gin.HandlerFunc {
 
 		c.Next()
 
-		fields := logrus.Fields{
-			"method":  c.Request.Method,
-			"path":    path,
-			"status":  c.Writer.Status(),
-			"latency": time.Since(start).Milliseconds(),
-			"ip":      c.ClientIP(),
-		}
-
-		// Distinguish proxy (forward) requests from management API requests
 		isProxy := strings.HasPrefix(path, "/v1/")
 		if isProxy {
-			fields["type"] = "forward"
-			if backend, ok := c.Get("proxy_backend"); ok {
-				fields["backend"] = backend
-			}
-			// Extract User-Agent product name (before /), max 12 chars
-			if ua := c.GetHeader("User-Agent"); ua != "" {
-				product := ua
-				if idx := strings.Index(product, "/"); idx > 0 {
-					product = product[:idx]
-				}
-				if len(product) > 12 {
-					product = product[:12]
-				}
-				fields["ua"] = product
-			}
-			// First try to get itcode from authenticated KeyInfo
-			if info, ok := c.Get(CtxKeyInfo); ok {
-				if ki, ok := info.(*auth.KeyInfo); ok && ki.Itcode != "" {
-					fields["itcode"] = ki.Itcode
-				}
-			}
-			// If auth failed, at least show the key prefix for debugging
-			if _, ok := c.Get(CtxKeyInfo); !ok {
-				if keyPrefix, ok := c.Get("raw_api_key"); ok {
-					fields["key"] = keyPrefix
-				}
-			}
-			if _, ok := c.Get("is_openclaw"); ok {
-				fields["openclaw"] = true
-			}
-			if _, ok := c.Get("is_hermes"); ok {
-				fields["hermesclaw"] = true
-			}
+			logProxyRequest(c, path, start)
 		} else {
-			fields["type"] = "api"
+			logAPIRequest(c, path, start)
 		}
-
-		logger.WithFields(fields).Info("request")
 	}
+}
+
+func logProxyRequest(c *gin.Context, path string, start time.Time) {
+	status := c.Writer.Status()
+
+	// UA: product/version or product (max 20 chars)
+	ua := c.GetHeader("User-Agent")
+	if ua == "" {
+		ua = "unknown"
+	} else {
+		if idx := strings.Index(ua, " "); idx > 0 {
+			ua = ua[:idx]
+		}
+		if len(ua) > 20 {
+			ua = ua[:20]
+		}
+	}
+
+	// Key prefix (first 8 chars)
+	keyPrefix := "-"
+	if rawKey, ok := c.Get("raw_api_key"); ok {
+		if s, ok := rawKey.(string); ok && len(s) > 0 {
+			if len(s) > 8 {
+				keyPrefix = s[:8]
+			} else {
+				keyPrefix = s
+			}
+		}
+	}
+
+	// Itcode
+	itcode := "-"
+	if info, ok := c.Get(CtxKeyInfo); ok {
+		if ki, ok := info.(*auth.KeyInfo); ok && ki.Itcode != "" {
+			itcode = ki.Itcode
+		}
+	}
+
+	// Provider:BackendName
+	providerStr := "-"
+	if provider, ok := c.Get("log_provider"); ok {
+		if p, ok := provider.(string); ok && p != "" {
+			providerStr = p
+			if backendName, ok := c.Get("log_backend_name"); ok {
+				if bn, ok := backendName.(string); ok && bn != "" {
+					providerStr = p + ":" + bn
+				}
+			}
+		}
+	} else if backend, ok := c.Get("proxy_backend"); ok {
+		if b, ok := backend.(string); ok && b != "" {
+			providerStr = "backend:" + b
+		}
+	}
+
+	// Model
+	model := "-"
+	if m, ok := c.Get("log_model"); ok {
+		if s, ok := m.(string); ok && s != "" {
+			model = s
+		}
+	}
+
+	// Tokens
+	inputTokens := 0
+	outputTokens := 0
+	if v, ok := c.Get("log_input_tokens"); ok {
+		if n, ok := v.(int); ok {
+			inputTokens = n
+		}
+	}
+	if v, ok := c.Get("log_output_tokens"); ok {
+		if n, ok := v.(int); ok {
+			outputTokens = n
+		}
+	}
+
+	line := fmt.Sprintf("%s %d %s %s %s %s %s %d %d",
+		path, status, ua, keyPrefix, itcode, providerStr, model, inputTokens, outputTokens)
+	logger.Info(line)
+}
+
+func logAPIRequest(c *gin.Context, path string, start time.Time) {
+	_ = start
+	// Non-proxy requests: minimal structured log
+	logger.Infof("%s %s %d %dms", c.Request.Method, path, c.Writer.Status(), time.Since(start).Milliseconds())
 }

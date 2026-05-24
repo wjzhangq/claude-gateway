@@ -65,7 +65,19 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Path string `yaml:"path"`
+	Path     string         `yaml:"path"`
+	Driver   string         `yaml:"driver"`   // "sqlite" | "postgres", default "sqlite"
+	Postgres PostgresConfig `yaml:"postgres"`
+}
+
+type PostgresConfig struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"`
+	User     string `yaml:"user"`
+	Password string `yaml:"password"`
+	DBName   string `yaml:"dbname"`
+	SSLMode  string `yaml:"sslmode"`
+	Timezone string `yaml:"timezone"`
 }
 
 type LogConfig struct {

@@ -117,6 +117,12 @@ export const adminGetBackendStats = (params?: Record<string, string>) =>
   api.get('/admin/api/backends/stats', { params })
 export const adminGetBackendStatus = () => api.get('/admin/api/backends/status')
 
+// Admin - Provider Stats (unified)
+export const adminGetProviderStats = (provider: string, period: string) =>
+  api.get('/admin/api/provider/stats', { params: { provider, period } })
+export const adminGetProviderModelStats = (provider: string, date: string) =>
+  api.get('/admin/api/provider/model-stats', { params: { provider, date } })
+
 // Admin - Groups
 export const adminGetGroups = () => api.get('/admin/api/groups')
 export const adminGetGroupStats = (params?: Record<string, string>) =>

@@ -34,38 +34,44 @@ type APIKey struct {
 	AWSCostUSD     float64    `db:"aws_cost_usd"     json:"aws_cost_usd"`
 }
 
-// UsageLog records a single API call.
+// UsageLog records a single API call (all providers: backend/aws/kimi/minimax).
 type UsageLog struct {
-	ID           int64     `db:"id"            json:"id"`
-	UserID       int64     `db:"user_id"       json:"user_id"`
-	GroupID      int       `db:"group_id"      json:"group_id"`
-	Itcode       string    `db:"-"             json:"itcode"`
-	APIKeyID     int64     `db:"api_key_id"    json:"api_key_id"`
-	Model        string    `db:"model"         json:"model"`
-	Backend      string    `db:"backend"       json:"backend"`
-	InputTokens  int       `db:"input_tokens"  json:"input_tokens"`
-	OutputTokens int       `db:"output_tokens" json:"output_tokens"`
-	TotalTokens  int       `db:"total_tokens"  json:"total_tokens"`
-	CostUSD      float64   `db:"cost_usd"      json:"cost_usd"`
-	StatusCode   int       `db:"status_code"   json:"status_code"`
-	Latency      int64     `db:"latency_ms"    json:"latency_ms"`
-	IsOpenClaw   bool      `db:"is_openclaw"   json:"is_openclaw"`
-	IsDowngraded bool      `db:"is_downgraded" json:"is_downgraded"`
-	UA           string    `db:"ua"            json:"ua"`
-	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
+	ID               int64     `db:"id"                 json:"id"`
+	UserID           int64     `db:"user_id"            json:"user_id"`
+	GroupID          int       `db:"group_id"           json:"group_id"`
+	Itcode           string    `db:"-"                  json:"itcode"`
+	APIKeyID         int64     `db:"api_key_id"         json:"api_key_id"`
+	Provider         string    `db:"provider"           json:"provider"`
+	Model            string    `db:"model"              json:"model"`
+	BackendName      string    `db:"backend_name"       json:"backend_name"`
+	InputTokens      int       `db:"input_tokens"       json:"input_tokens"`
+	OutputTokens     int       `db:"output_tokens"      json:"output_tokens"`
+	TotalTokens      int       `db:"total_tokens"       json:"total_tokens"`
+	CacheReadTokens  int       `db:"cache_read_tokens"  json:"cache_read_tokens"`
+	CacheWriteTokens int       `db:"cache_write_tokens" json:"cache_write_tokens"`
+	CostUSD          float64   `db:"cost_usd"           json:"cost_usd"`
+	StatusCode       int       `db:"status_code"        json:"status_code"`
+	Latency          int64     `db:"latency_ms"         json:"latency_ms"`
+	IsOpenClaw       bool      `db:"is_openclaw"        json:"is_openclaw"`
+	IsDowngraded     bool      `db:"is_downgraded"      json:"is_downgraded"`
+	UA               string    `db:"ua"                 json:"ua"`
+	CreatedAt        time.Time `db:"created_at"         json:"created_at"`
 }
 
-// DailyStats aggregates usage per user per model per day.
+// DailyStats aggregates usage per user per provider per model per day.
 type DailyStats struct {
-	ID           int64   `db:"id"            json:"id"`
-	Date         string  `db:"date"          json:"date"`
-	UserID       int64   `db:"user_id"       json:"user_id"`
-	Model        string  `db:"model"         json:"model"`
-	Requests     int     `db:"requests"      json:"requests"`
-	InputTokens  int64   `db:"input_tokens"  json:"input_tokens"`
-	OutputTokens int64   `db:"output_tokens" json:"output_tokens"`
-	TotalTokens  int64   `db:"total_tokens"  json:"total_tokens"`
-	CostUSD      float64 `db:"cost_usd"      json:"cost_usd"`
+	ID               int64   `db:"id"                 json:"id"`
+	Date             string  `db:"date"               json:"date"`
+	UserID           int64   `db:"user_id"            json:"user_id"`
+	Provider         string  `db:"provider"           json:"provider"`
+	Model            string  `db:"model"              json:"model"`
+	Requests         int     `db:"requests"           json:"requests"`
+	InputTokens      int64   `db:"input_tokens"       json:"input_tokens"`
+	OutputTokens     int64   `db:"output_tokens"      json:"output_tokens"`
+	TotalTokens      int64   `db:"total_tokens"       json:"total_tokens"`
+	CacheReadTokens  int64   `db:"cache_read_tokens"  json:"cache_read_tokens"`
+	CacheWriteTokens int64   `db:"cache_write_tokens" json:"cache_write_tokens"`
+	CostUSD          float64 `db:"cost_usd"           json:"cost_usd"`
 }
 
 // Application is a user's request to activate their account.
@@ -96,6 +102,7 @@ type GroupStats struct {
 }
 
 // AWSUsageLog records a single AWS Bedrock API call.
+// Kept for SQLite backward compatibility (sync tool reads from this table).
 type AWSUsageLog struct {
 	ID               int64     `db:"id"                json:"id"`
 	UserID           int64     `db:"user_id"           json:"user_id"`
@@ -117,6 +124,7 @@ type AWSUsageLog struct {
 }
 
 // AWSDailyStats aggregates AWS usage per user per model per day.
+// Kept for SQLite backward compatibility.
 type AWSDailyStats struct {
 	ID               int64   `db:"id"                json:"id"`
 	Date             string  `db:"date"              json:"date"`
