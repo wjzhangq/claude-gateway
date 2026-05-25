@@ -33,15 +33,26 @@ func parseNullableTime(s *string) *time.Time {
 
 func (d *DB) CreateUser(u *model.User) error {
 	now := time.Now()
-	res, err := d.Exec(
-		`INSERT INTO users (itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.Itcode, u.Name, u.Role, u.Status, u.GroupID, u.DailyQuotaUSD, u.AWSDailyQuotaUSD, now, now,
-	)
-	if err != nil {
-		return fmt.Errorf("create user: %w", err)
+	if d.isPostgres() {
+		err := d.QueryRow(
+			`INSERT INTO users (itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+			u.Itcode, u.Name, u.Role, u.Status, u.GroupID, u.DailyQuotaUSD, u.AWSDailyQuotaUSD, now, now,
+		).Scan(&u.ID)
+		if err != nil {
+			return fmt.Errorf("create user: %w", err)
+		}
+	} else {
+		res, err := d.Exec(
+			`INSERT INTO users (itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			u.Itcode, u.Name, u.Role, u.Status, u.GroupID, u.DailyQuotaUSD, u.AWSDailyQuotaUSD, now, now,
+		)
+		if err != nil {
+			return fmt.Errorf("create user: %w", err)
+		}
+		u.ID, _ = res.LastInsertId()
 	}
-	u.ID, _ = res.LastInsertId()
 	u.CreatedAt = now
 	u.UpdatedAt = now
 	return nil
@@ -104,6 +115,92 @@ type UserWithStats struct {
 // search: itcode prefix filter; sortBy: id/itcode/created_at/last_used_at/cost_usd/backend_cost_usd/aws_cost_usd
 // sortOrder: asc/desc (default desc)
 func (d *DB) ListUsersWithStats(page, pageSize int, search, sortBy, sortOrder string) ([]*UserWithStats, int, error) {
+	if d.isPostgres() {
+		return d.listUsersWithStatsPG(page, pageSize, search, sortBy, sortOrder)
+	}
+	return d.listUsersWithStatsSQLite(page, pageSize, search, sortBy, sortOrder)
+}
+
+func (d *DB) listUsersWithStatsPG(page, pageSize int, search, sortBy, sortOrder string) ([]*UserWithStats, int, error) {
+	if pageSize <= 0 {
+		pageSize = 20
+	}
+	if page <= 0 {
+		page = 1
+	}
+	offset := (page - 1) * pageSize
+
+	whereArgs := []interface{}{}
+	whereClause := ""
+	argN := 1
+	if search != "" {
+		whereClause = fmt.Sprintf(" WHERE u.itcode LIKE $%d", argN)
+		whereArgs = append(whereArgs, search+"%")
+		argN++
+	}
+
+	var total int
+	countSQL := `SELECT COUNT(*) FROM users u` + whereClause
+	if err := d.QueryRow(countSQL, whereArgs...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	allowedSortBy := map[string]string{
+		"id":               "u.id",
+		"itcode":           "u.itcode",
+		"created_at":       "u.created_at",
+		"last_used_at":     "last_used_at",
+		"cost_usd":         "cost_usd",
+		"backend_cost_usd": "backend_cost_usd",
+		"aws_cost_usd":     "aws_cost_usd",
+	}
+	orderCol, ok := allowedSortBy[sortBy]
+	if !ok {
+		orderCol = "u.id"
+	}
+	if strings.ToLower(sortOrder) != "asc" {
+		sortOrder = "DESC"
+	} else {
+		sortOrder = "ASC"
+	}
+	orderClause := fmt.Sprintf(" ORDER BY %s %s", orderCol, sortOrder)
+
+	queryArgs := append(whereArgs, pageSize, offset)
+	limitClause := fmt.Sprintf(" LIMIT $%d OFFSET $%d", argN, argN+1)
+
+	rows, err := d.Query(
+		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_usd, u.aws_daily_quota_usd, u.aws_enabled, u.created_at, u.updated_at,
+		        MAX(l.created_at) as last_used_at,
+		        COALESCE(COUNT(l.id), 0) as requests,
+		        COALESCE(SUM(l.cost_usd), 0) as cost_usd,
+		        COALESCE(SUM(CASE WHEN l.is_openclaw THEN l.cost_usd ELSE 0 END), 0) as oc_cost_usd,
+		        COALESCE(SUM(CASE WHEN l.provider != 'aws' THEN l.cost_usd ELSE 0 END), 0) as backend_cost_usd,
+		        COALESCE(SUM(CASE WHEN l.provider = 'aws' THEN l.cost_usd ELSE 0 END), 0) as aws_cost_usd
+		 FROM users u
+		 LEFT JOIN usage_logs l ON l.user_id = u.id`+
+		whereClause+`
+		 GROUP BY u.id`+
+		orderClause+
+		limitClause, queryArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var users []*UserWithStats
+	for rows.Next() {
+		u := &UserWithStats{}
+		var lastUsed *string
+		if err := rows.Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaUSD, &u.AWSDailyQuotaUSD, &u.AWSEnabled,
+			&u.CreatedAt, &u.UpdatedAt, &lastUsed, &u.Requests, &u.CostUSD, &u.OCCostUSD, &u.BackendCostUSD, &u.AWSCostUSD); err != nil {
+			return nil, 0, err
+		}
+		u.LastUsedAt = parseNullableTime(lastUsed)
+		users = append(users, u)
+	}
+	return users, total, rows.Err()
+}
+
+func (d *DB) listUsersWithStatsSQLite(page, pageSize int, search, sortBy, sortOrder string) ([]*UserWithStats, int, error) {
 	if pageSize <= 0 {
 		pageSize = 20
 	}
@@ -197,7 +294,7 @@ func (d *DB) SearchUsersByItcode(prefix string, limit int) ([]*UserSearchResult,
 		limit = 10
 	}
 	rows, err := d.Query(
-		`SELECT id, itcode, name, COALESCE(aws_enabled, 0) FROM users WHERE itcode LIKE ? ORDER BY itcode LIMIT ?`,
+		`SELECT id, itcode, name, aws_enabled FROM users WHERE itcode LIKE ? ORDER BY itcode LIMIT ?`,
 		prefix+"%", limit,
 	)
 	if err != nil {
@@ -254,7 +351,7 @@ func (d *DB) ListAllAPIKeys(userID int64, page, pageSize int) ([]*APIKeyWithUser
 
 	queryArgs := append(args, pageSize, offset)
 	rows, err := d.Query(
-		`SELECT k.id, k.user_id, u.itcode, u.name, COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
+		`SELECT k.id, k.user_id, u.itcode, u.name, u.aws_enabled, k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
 		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd
 		 FROM api_keys k
 		 LEFT JOIN users u ON u.id = k.user_id
@@ -352,15 +449,26 @@ func (d *DB) CreateAPIKey(k *model.APIKey) error {
 	if k.Channel == "" {
 		k.Channel = "backend"
 	}
-	res, err := d.Exec(
-		`INSERT INTO api_keys (user_id, key, name, status, channel, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		k.UserID, k.Key, k.Name, k.Status, k.Channel, now, now,
-	)
-	if err != nil {
-		return fmt.Errorf("create api_key: %w", err)
+	if d.isPostgres() {
+		err := d.QueryRow(
+			`INSERT INTO api_keys (user_id, key, name, status, channel, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+			k.UserID, k.Key, k.Name, k.Status, k.Channel, now, now,
+		).Scan(&k.ID)
+		if err != nil {
+			return fmt.Errorf("create api_key: %w", err)
+		}
+	} else {
+		res, err := d.Exec(
+			`INSERT INTO api_keys (user_id, key, name, status, channel, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			k.UserID, k.Key, k.Name, k.Status, k.Channel, now, now,
+		)
+		if err != nil {
+			return fmt.Errorf("create api_key: %w", err)
+		}
+		k.ID, _ = res.LastInsertId()
 	}
-	k.ID, _ = res.LastInsertId()
 	k.CreatedAt = now
 	k.UpdatedAt = now
 	return nil
@@ -507,7 +615,7 @@ func (d *DB) ListAllAPIKeysByChannel(channel string, userID int64, page, pageSiz
 
 	queryArgs := append(args, pageSize, offset)
 	rows, err := d.Query(
-		`SELECT k.id, k.user_id, u.itcode, u.name, COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
+		`SELECT k.id, k.user_id, u.itcode, u.name, u.aws_enabled, k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
 		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd
 		 FROM api_keys k
 		 LEFT JOIN users u ON u.id = k.user_id

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getMyUsage, getMyDailyStats, getMyDashboard } from '../api'
-import { formatTime, toDateStr } from '../utils/time'
+import { toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -11,6 +11,8 @@ interface UsageLog {
   provider: string
   input_tokens: number
   output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
   total_tokens: number
   cost_usd: number
   status_code: number
@@ -31,6 +33,8 @@ interface ModelUsage {
   requests: number
   input_tokens: number
   output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
 }
 
 const providerColors: Record<string, string> = {
@@ -87,12 +91,14 @@ export default function DashboardPage() {
 
           const key = `${l.provider}|${l.model}`
           if (!modelMap[key]) {
-            modelMap[key] = { provider: l.provider, model: l.model, cost: 0, requests: 0, input_tokens: 0, output_tokens: 0 }
+            modelMap[key] = { provider: l.provider, model: l.model, cost: 0, requests: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0 }
           }
           modelMap[key].cost += l.cost_usd
           modelMap[key].requests++
           modelMap[key].input_tokens += l.input_tokens
           modelMap[key].output_tokens += l.output_tokens
+          modelMap[key].cache_read_tokens += l.cache_read_tokens || 0
+          modelMap[key].cache_write_tokens += l.cache_write_tokens || 0
         })
 
         setTodayCost(costSum)
@@ -204,7 +210,7 @@ export default function DashboardPage() {
               <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${v}`} />
               <Tooltip
                 contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                formatter={(v) => [`$${Number(v).toFixed(6)}`, '费用']}
+                formatter={((v: number) => [`$${v.toFixed(6)}`, '费用']) as any}
               />
               <Bar dataKey="cost" fill="#DC2626" radius={[3, 3, 0, 0]} />
             </BarChart>
@@ -219,7 +225,7 @@ export default function DashboardPage() {
               <YAxis tick={{ fontSize: 10 }} tickFormatter={(v) => `$${v}`} />
               <Tooltip
                 contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                formatter={(v) => [`$${Number(v).toFixed(6)}`, '费用']}
+                formatter={((v: number) => [`$${v.toFixed(6)}`, '费用']) as any}
               />
               <Bar dataKey="cost" fill="#DC2626" radius={[3, 3, 0, 0]} />
             </BarChart>
@@ -236,7 +242,7 @@ export default function DashboardPage() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50/80">
               <tr>
-                {['渠道', '模型', '费用', '请求数', '输入', '输出'].map((h) => (
+                {['渠道', '模型', '费用', '请求数', '输入', '输出', '缓存读', '缓存写'].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>
                 ))}
               </tr>
@@ -254,6 +260,8 @@ export default function DashboardPage() {
                   <td className="px-4 py-3 text-gray-600">{m.requests}</td>
                   <td className="px-4 py-3 text-gray-600">{(m.input_tokens / 1000).toFixed(1)}K</td>
                   <td className="px-4 py-3 text-gray-600">{(m.output_tokens / 1000).toFixed(1)}K</td>
+                  <td className="px-4 py-3 text-gray-600">{m.cache_read_tokens > 0 ? `${(m.cache_read_tokens / 1000).toFixed(1)}K` : '—'}</td>
+                  <td className="px-4 py-3 text-gray-600">{m.cache_write_tokens > 0 ? `${(m.cache_write_tokens / 1000).toFixed(1)}K` : '—'}</td>
                 </tr>
               ))}
             </tbody>

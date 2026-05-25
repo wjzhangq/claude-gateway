@@ -7,12 +7,7 @@ const userNav = [
   { to: '/keys', label: 'API Keys' },
   { to: '/usage', label: '使用统计' },
   { to: '/playground', label: 'Playground' },
-]
-
-const awsUserNav = [
-  { to: '/aws', label: 'AWS 仪表盘' },
-  { to: '/aws/keys', label: 'AWS Keys' },
-  { to: '/aws/usage', label: 'AWS 统计' },
+  { to: '/applications', label: '申请记录' },
 ]
 
 const adminNav = [
@@ -33,13 +28,6 @@ const providerStatsNav = [
   { to: '/admin/provider/minimax', label: 'MiniMax' },
 ]
 
-const awsAdminNav = [
-  { to: '/admin/aws/users', label: 'AWS 用户' },
-  { to: '/admin/aws/usage', label: 'AWS 使用统计' },
-  { to: '/admin/aws/user-daily', label: 'AWS 用户费用' },
-  { to: '/admin/aws/bedrock', label: 'Bedrock 统计' },
-]
-
 const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   `flex items-center px-3 py-2 rounded-lg text-sm font-medium transition-all ${
     isActive
@@ -48,7 +36,7 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   }`
 
 export default function Layout() {
-  const { user, isAdmin, isAWSEnabled, setUser } = useAuth()
+  const { user, isAdmin, setUser } = useAuth()
   const navigate = useNavigate()
 
   const handleLogout = async () => {
@@ -82,19 +70,6 @@ export default function Layout() {
             ))}
           </div>
 
-          {isAWSEnabled && (
-            <>
-              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">AWS</p>
-              <div className="space-y-0.5">
-                {awsUserNav.map((item) => (
-                  <NavLink key={item.to} to={item.to} className={navLinkClass}>
-                    {item.label}
-                  </NavLink>
-                ))}
-              </div>
-            </>
-          )}
-
           {isAdmin && (
             <>
               <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">管理员</p>
@@ -108,14 +83,6 @@ export default function Layout() {
               <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">渠道统计</p>
               <div className="space-y-0.5">
                 {providerStatsNav.map((item) => (
-                  <NavLink key={item.to} to={item.to} className={navLinkClass}>
-                    {item.label}
-                  </NavLink>
-                ))}
-              </div>
-              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">AWS 管理</p>
-              <div className="space-y-0.5">
-                {awsAdminNav.map((item) => (
                   <NavLink key={item.to} to={item.to} className={navLinkClass}>
                     {item.label}
                   </NavLink>

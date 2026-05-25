@@ -122,6 +122,8 @@ export const adminGetProviderStats = (provider: string, period: string) =>
   api.get('/admin/api/provider/stats', { params: { provider, period } })
 export const adminGetProviderModelStats = (provider: string, date: string) =>
   api.get('/admin/api/provider/model-stats', { params: { provider, date } })
+export const adminGetProviderDailyStats = (provider: string, startDate: string, endDate: string) =>
+  api.get('/admin/api/provider/daily-stats', { params: { provider, start_date: startDate, end_date: endDate } })
 
 // Admin - Groups
 export const adminGetGroups = () => api.get('/admin/api/groups')
@@ -134,30 +136,3 @@ export const adminGetPublicUsage = (params?: Record<string, string | number>) =>
 // Playground — uses the gateway's own /v1 endpoints with a user's API key
 export const playgroundListModels = (apiKey: string) =>
   api.get('/v1/models', { headers: { Authorization: `Bearer ${apiKey}` }, timeout: 30000 })
-
-// ===== User AWS =====
-export const getAWSDashboard = () => api.get('/api/aws/dashboard')
-export const listAWSKeys = () => api.get('/api/aws/keys')
-export const createAWSKey = (name: string) => api.post('/api/aws/keys', { name })
-export const getAWSMyUsage = (params?: Record<string, string | number>) =>
-  api.get('/api/aws/usage', { params })
-export const getAWSMyDailyStats = (params?: Record<string, string | number>) =>
-  api.get('/api/aws/usage/daily', { params })
-
-// ===== Admin AWS =====
-export const adminListAWSUsers = (params?: Record<string, string | number>) =>
-  api.get('/admin/api/aws/users', { params })
-export const adminToggleAWSUser = (id: number) =>
-  api.put(`/admin/api/aws/users/${id}/toggle`)
-export const adminEnableAWSByItcode = (itcode: string) =>
-  api.post('/admin/api/aws/users/enable', { itcode })
-export const adminGetAWSUsage = (params?: Record<string, string | number>) =>
-  api.get('/admin/api/aws/usage', { params })
-export const adminGetAWSDailyStats = (params?: Record<string, string | number>) =>
-  api.get('/admin/api/aws/usage/daily', { params })
-export const adminGetAWSUserDailyCost = (params?: Record<string, string | number>) =>
-  api.get('/admin/api/aws/usage/user-daily', { params })
-export const adminGetAWSKeys = (params?: Record<string, string | number>) =>
-  api.get('/admin/api/aws/keys', { params })
-export const adminGetAWSBedrockStats = (params?: Record<string, string>) =>
-  api.get('/admin/api/aws/bedrock/stats', { params })

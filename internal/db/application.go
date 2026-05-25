@@ -10,15 +10,26 @@ import (
 
 func (d *DB) CreateApplication(a *model.Application) error {
 	now := time.Now()
-	res, err := d.Exec(
-		`INSERT INTO applications (user_id, model, reason, status, created_at, updated_at)
-		 VALUES (?, '', ?, 'pending', ?, ?)`,
-		a.UserID, a.Reason, now, now,
-	)
-	if err != nil {
-		return fmt.Errorf("create application: %w", err)
+	if d.isPostgres() {
+		err := d.QueryRow(
+			`INSERT INTO applications (user_id, model, reason, status, created_at, updated_at)
+			 VALUES ($1, '', $2, 'pending', $3, $4) RETURNING id`,
+			a.UserID, a.Reason, now, now,
+		).Scan(&a.ID)
+		if err != nil {
+			return fmt.Errorf("create application: %w", err)
+		}
+	} else {
+		res, err := d.Exec(
+			`INSERT INTO applications (user_id, model, reason, status, created_at, updated_at)
+			 VALUES (?, '', ?, 'pending', ?, ?)`,
+			a.UserID, a.Reason, now, now,
+		)
+		if err != nil {
+			return fmt.Errorf("create application: %w", err)
+		}
+		a.ID, _ = res.LastInsertId()
 	}
-	a.ID, _ = res.LastInsertId()
 	a.Status = "pending"
 	a.CreatedAt = now
 	a.UpdatedAt = now

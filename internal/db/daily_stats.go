@@ -378,3 +378,41 @@ func (d *DB) GetUserAWSDailyCostByDate(date string) (map[int64]float64, error) {
 	}
 	return result, rows.Err()
 }
+
+type ProviderDailyStat struct {
+	Date         string  `json:"date"`
+	Model        string  `json:"model"`
+	Requests     int     `json:"requests"`
+	InputTokens  int64   `json:"input_tokens"`
+	OutputTokens int64   `json:"output_tokens"`
+	TotalTokens  int64   `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
+}
+
+func (d *DB) GetProviderDailyStats(provider, startDate, endDate string) ([]*ProviderDailyStat, error) {
+	if !d.isPostgres() {
+		return nil, fmt.Errorf("provider daily stats only available on postgres")
+	}
+	rows, err := d.Query(
+		`SELECT date, model, SUM(requests), SUM(input_tokens), SUM(output_tokens),
+				SUM(total_tokens), SUM(cost_usd)
+		 FROM daily_stats
+		 WHERE provider = $1 AND date >= $2 AND date <= $3
+		 GROUP BY date, model
+		 ORDER BY date, SUM(cost_usd) DESC`, provider, startDate, endDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*ProviderDailyStat
+	for rows.Next() {
+		s := &ProviderDailyStat{}
+		if err := rows.Scan(&s.Date, &s.Model, &s.Requests, &s.InputTokens,
+			&s.OutputTokens, &s.TotalTokens, &s.CostUSD); err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}

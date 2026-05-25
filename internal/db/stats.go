@@ -287,27 +287,27 @@ func (d *DB) listUsageLogsPG(userID int64, startDate, endDate, modelFilter, prov
 	argN := 1
 
 	if userID > 0 {
-		conditions = append(conditions, fmt.Sprintf("user_id = $%d", argN))
+		conditions = append(conditions, fmt.Sprintf("l.user_id = $%d", argN))
 		args = append(args, userID)
 		argN++
 	}
 	if startDate != "" {
-		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", argN))
+		conditions = append(conditions, fmt.Sprintf("l.created_at >= $%d", argN))
 		args = append(args, startDate)
 		argN++
 	}
 	if endDate != "" {
-		conditions = append(conditions, fmt.Sprintf("created_at <= $%d", argN))
+		conditions = append(conditions, fmt.Sprintf("l.created_at <= $%d", argN))
 		args = append(args, endDate+" 23:59:59")
 		argN++
 	}
 	if modelFilter != "" {
-		conditions = append(conditions, fmt.Sprintf("model = $%d", argN))
+		conditions = append(conditions, fmt.Sprintf("l.model = $%d", argN))
 		args = append(args, modelFilter)
 		argN++
 	}
 	if providerFilter != "" {
-		conditions = append(conditions, fmt.Sprintf("provider = $%d", argN))
+		conditions = append(conditions, fmt.Sprintf("l.provider = $%d", argN))
 		args = append(args, providerFilter)
 		argN++
 	}
@@ -318,7 +318,7 @@ func (d *DB) listUsageLogsPG(userID int64, startDate, endDate, modelFilter, prov
 	}
 
 	var total int
-	if err := d.QueryRow("SELECT COUNT(*) FROM usage_logs "+where, args...).Scan(&total); err != nil {
+	if err := d.QueryRow("SELECT COUNT(*) FROM usage_logs l "+where, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -1012,14 +1012,27 @@ func (d *DB) GetAWSUserDailyCostRanking(date string, limit int) (*AWSUserDailyCo
 		limit = 20
 	}
 
+	var tableName, dateWhere string
+	if d.isPostgres() {
+		tableName = "usage_logs"
+		dateWhere = "TO_CHAR(l.created_at, 'YYYY-MM-DD') = ?"
+	} else {
+		tableName = "aws_usage_logs"
+		dateWhere = "SUBSTR(l.created_at, 1, 10) = ?"
+	}
+	providerCond := ""
+	if d.isPostgres() {
+		providerCond = " AND l.provider = 'aws'"
+	}
+
 	rows, err := d.Query(
 		`SELECT l.user_id, COALESCE(u.itcode,''), COUNT(*) as requests,
 		        SUM(l.total_tokens) as total_tokens,
 		        SUM(l.cost_usd) as cost_usd
-		 FROM aws_usage_logs l
+		 FROM `+tableName+` l
 		 LEFT JOIN users u ON u.id = l.user_id
-		 WHERE SUBSTR(l.created_at, 1, 10) = ?
-		 GROUP BY l.user_id
+		 WHERE `+dateWhere+providerCond+`
+		 GROUP BY l.user_id, u.itcode
 		 ORDER BY cost_usd DESC
 		 LIMIT ?`, date, limit)
 	if err != nil {
@@ -1039,11 +1052,22 @@ func (d *DB) GetAWSUserDailyCostRanking(date string, limit int) (*AWSUserDailyCo
 		return nil, err
 	}
 
+	var totalDateWhere string
+	if d.isPostgres() {
+		totalDateWhere = "TO_CHAR(created_at, 'YYYY-MM-DD') = ?"
+	} else {
+		totalDateWhere = "SUBSTR(created_at, 1, 10) = ?"
+	}
+	totalProviderCond := ""
+	if d.isPostgres() {
+		totalProviderCond = " AND provider = 'aws'"
+	}
+
 	var totalCost float64
 	var totalReqs int
 	err = d.QueryRow(
 		`SELECT COALESCE(SUM(cost_usd),0), COUNT(*)
-		 FROM aws_usage_logs WHERE SUBSTR(created_at, 1, 10) = ?`, date).Scan(&totalCost, &totalReqs)
+		 FROM `+tableName+` WHERE `+totalDateWhere+totalProviderCond, date).Scan(&totalCost, &totalReqs)
 	if err != nil {
 		return nil, fmt.Errorf("get aws daily totals: %w", err)
 	}
@@ -1074,6 +1098,9 @@ func (d *DB) GetAWSBedrockStats(startDate, endDate string) ([]*BedrockStat, erro
 	where := "WHERE 1=1"
 	args := []interface{}{}
 
+	if d.isPostgres() {
+		where += " AND provider = 'aws'"
+	}
 	if startDate != "" {
 		where += " AND created_at >= ?"
 		args = append(args, startDate)
@@ -1083,8 +1110,17 @@ func (d *DB) GetAWSBedrockStats(startDate, endDate string) ([]*BedrockStat, erro
 		args = append(args, endDate+" 23:59:59")
 	}
 
+	var modelCol, tableName string
+	if d.isPostgres() {
+		modelCol = "backend_name"
+		tableName = "usage_logs"
+	} else {
+		modelCol = "bedrock_model"
+		tableName = "aws_usage_logs"
+	}
+
 	rows, err := d.Query(
-		`SELECT bedrock_model,
+		`SELECT `+modelCol+`,
 		        COUNT(*) as requests,
 		        SUM(input_tokens) as input_tokens,
 		        SUM(output_tokens) as output_tokens,
@@ -1094,8 +1130,8 @@ func (d *DB) GetAWSBedrockStats(startDate, endDate string) ([]*BedrockStat, erro
 		        SUM(cost_usd) as cost_usd,
 		        AVG(latency_ms) as avg_latency_ms,
 		        SUM(CASE WHEN status_code != 200 THEN 1 ELSE 0 END) as error_count
-		 FROM aws_usage_logs `+where+`
-		 GROUP BY bedrock_model
+		 FROM `+tableName+` `+where+`
+		 GROUP BY `+modelCol+`
 		 ORDER BY requests DESC`, args...)
 	if err != nil {
 		return nil, err
@@ -1133,18 +1169,27 @@ func (d *DB) ListAWSUsersWithStats(page, pageSize int) ([]*AWSUserWithStats, int
 	}
 	offset := (page - 1) * pageSize
 
+	boolCond := "aws_enabled = " + d.boolTrue()
+
 	var total int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM users WHERE aws_enabled = 1`).Scan(&total); err != nil {
+	if err := d.QueryRow(`SELECT COUNT(*) FROM users WHERE `+boolCond).Scan(&total); err != nil {
 		return nil, 0, err
+	}
+
+	var awsSubquery string
+	if d.isPostgres() {
+		awsSubquery = "SELECT user_id, COUNT(*) as requests, SUM(cost_usd) as cost_usd FROM usage_logs WHERE provider = 'aws' GROUP BY user_id"
+	} else {
+		awsSubquery = "SELECT user_id, COUNT(*) as requests, SUM(cost_usd) as cost_usd FROM aws_usage_logs GROUP BY user_id"
 	}
 
 	rows, err := d.Query(
 		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_usd, u.aws_daily_quota_usd, u.aws_enabled, u.created_at, u.updated_at,
 		        COALESCE(s.requests,0), COALESCE(s.cost_usd,0)
 		 FROM users u
-		 LEFT JOIN (SELECT user_id, COUNT(*) as requests, SUM(cost_usd) as cost_usd FROM aws_usage_logs GROUP BY user_id) s
+		 LEFT JOIN (`+awsSubquery+`) s
 		   ON s.user_id = u.id
-		 WHERE u.aws_enabled = 1
+		 WHERE u.`+boolCond+`
 		 ORDER BY u.id DESC
 		 LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {

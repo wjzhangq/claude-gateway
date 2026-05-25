@@ -26,8 +26,14 @@ func NewAPIKeyHandler(database *db.DB, ks *auth.KeyStore) *APIKeyHandler {
 // Optional query param: channel=backend|aws|"" (empty = all)
 func (h *APIKeyHandler) ListKeys(c *gin.Context) {
 	userID := c.GetInt64(middleware.CtxUserID)
-	channel := c.DefaultQuery("channel", "backend")
-	keys, err := h.db.ListAPIKeysByUserAndChannel(userID, channel)
+	channel := c.Query("channel")
+	var keys []*model.APIKey
+	var err error
+	if channel != "" {
+		keys, err = h.db.ListAPIKeysByUserAndChannel(userID, channel)
+	} else {
+		keys, err = h.db.ListAPIKeysByUser(userID)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -253,10 +259,19 @@ func (h *APIKeyHandler) RenameKey(c *gin.Context) {
 // AdminListKeys godoc: GET /admin/api/keys
 func (h *APIKeyHandler) AdminListKeys(c *gin.Context) {
 	userID, _ := strconv.ParseInt(c.Query("user_id"), 10, 64)
+	channel := c.Query("channel")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 
-	keys, total, err := h.db.ListAllAPIKeys(userID, page, pageSize)
+	var keys []*db.APIKeyWithUser
+	var total int
+	var err error
+
+	if channel != "" && channel != "all" {
+		keys, total, err = h.db.ListAllAPIKeysByChannel(channel, userID, page, pageSize)
+	} else {
+		keys, total, err = h.db.ListAllAPIKeys(userID, page, pageSize)
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

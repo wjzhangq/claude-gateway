@@ -20,6 +20,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/wjzhangq/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/internal/db"
 )
 
 const batchSize = 500
@@ -54,64 +55,74 @@ func main() {
 	}
 	defer fromDB.Close()
 
-	toDB, err := openPostgres(cfg.Database.Postgres)
+	// Use db.InitPostgres to ensure schema exists
+	pgDB, err := db.InitPostgres(cfg.Database.Postgres)
 	if err != nil {
 		log.Fatalf("连接 PostgreSQL 失败: %v", err)
 	}
-	defer toDB.Close()
+	defer pgDB.Close()
+	toDB := pgDB.DB // underlying *sql.DB
+
+	startTime := time.Now()
+	log.Printf("开始同步: %s → PostgreSQL (%s:%d/%s)",
+		sqlitePath, cfg.Database.Postgres.Host, cfg.Database.Postgres.Port, cfg.Database.Postgres.DBName)
 
 	s := &syncer{from: fromDB, to: toDB}
+
+	// Print source counts for progress overview
+	log.Println("==> 统计源数据...")
+	s.printSourceCounts()
 
 	log.Println("==> 同步用户...")
 	inserted, updated, err := s.syncUsers()
 	if err != nil {
 		log.Fatalf("同步用户失败: %v", err)
 	}
-	log.Printf("    新增: %d, 更新: %d", inserted, updated)
+	log.Printf("    ✓ 完成: 新增 %d, 更新 %d", inserted, updated)
 
 	log.Println("==> 同步 API Key...")
 	inserted, updated, err = s.syncAPIKeys()
 	if err != nil {
 		log.Fatalf("同步 API Key 失败: %v", err)
 	}
-	log.Printf("    新增: %d, 更新: %d", inserted, updated)
+	log.Printf("    ✓ 完成: 新增 %d, 更新 %d", inserted, updated)
 
 	log.Println("==> 同步 usage_logs (backend/kimi/minimax)...")
 	count, err := s.syncUsageLogs()
 	if err != nil {
 		log.Fatalf("同步 usage_logs 失败: %v", err)
 	}
-	log.Printf("    同步: %d 条", count)
+	log.Printf("    ✓ 完成: %d 条", count)
 
 	log.Println("==> 同步 aws_usage_logs...")
 	count, err = s.syncAWSUsageLogs()
 	if err != nil {
 		log.Fatalf("同步 aws_usage_logs 失败: %v", err)
 	}
-	log.Printf("    同步: %d 条", count)
+	log.Printf("    ✓ 完成: %d 条", count)
 
 	log.Println("==> 同步 daily_stats...")
 	count, err = s.syncDailyStats()
 	if err != nil {
 		log.Fatalf("同步 daily_stats 失败: %v", err)
 	}
-	log.Printf("    同步: %d 条", count)
+	log.Printf("    ✓ 完成: %d 条", count)
 
 	log.Println("==> 同步 aws_daily_stats...")
 	count, err = s.syncAWSDailyStats()
 	if err != nil {
 		log.Fatalf("同步 aws_daily_stats 失败: %v", err)
 	}
-	log.Printf("    同步: %d 条", count)
+	log.Printf("    ✓ 完成: %d 条", count)
 
 	log.Println("==> 同步 applications...")
 	count, err = s.syncApplications()
 	if err != nil {
 		log.Fatalf("同步 applications 失败: %v", err)
 	}
-	log.Printf("    同步: %d 条", count)
+	log.Printf("    ✓ 完成: %d 条", count)
 
-	log.Println("==> 同步完成")
+	log.Printf("==> 全部同步完成! 耗时 %s", time.Since(startTime).Round(time.Millisecond))
 }
 
 func openSQLite(path string) (*sql.DB, error) {
@@ -127,35 +138,39 @@ func openSQLite(path string) (*sql.DB, error) {
 	return db, nil
 }
 
-func openPostgres(cfg config.PostgresConfig) (*sql.DB, error) {
-	sslmode := cfg.SSLMode
-	if sslmode == "" {
-		sslmode = "disable"
-	}
-	tz := cfg.Timezone
-	if tz == "" {
-		tz = "Asia/Shanghai"
-	}
-	dsn := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s TimeZone=%s",
-		cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.DBName, sslmode, tz,
-	)
-	db, err := sql.Open("postgres", dsn)
-	if err != nil {
-		return nil, err
-	}
-	db.SetMaxOpenConns(10)
-	db.SetMaxIdleConns(5)
-	if err := db.Ping(); err != nil {
-		db.Close()
-		return nil, err
-	}
-	return db, nil
-}
 
 type syncer struct {
 	from *sql.DB
 	to   *sql.DB
+}
+
+func (s *syncer) printSourceCounts() {
+	tables := []struct {
+		name  string
+		query string
+	}{
+		{"users", "SELECT COUNT(*) FROM users"},
+		{"api_keys", "SELECT COUNT(*) FROM api_keys"},
+		{"usage_logs", "SELECT COUNT(*) FROM usage_logs"},
+		{"aws_usage_logs", "SELECT COUNT(*) FROM aws_usage_logs"},
+		{"daily_stats", "SELECT COUNT(*) FROM daily_stats"},
+		{"aws_daily_stats", "SELECT COUNT(*) FROM aws_daily_stats"},
+		{"applications", "SELECT COUNT(*) FROM applications"},
+	}
+	for _, t := range tables {
+		var count int64
+		if err := s.from.QueryRow(t.query).Scan(&count); err != nil {
+			log.Printf("    %s: (查询失败)", t.name)
+			continue
+		}
+		log.Printf("    %s: %d 条", t.name, count)
+	}
+}
+
+func (s *syncer) countSource(table string) int64 {
+	var count int64
+	s.from.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count)
+	return count
 }
 
 // getLastSyncedID reads sync progress from PG sync_state table.
@@ -354,6 +369,13 @@ func (s *syncer) syncUsageLogs() (int, error) {
 		return 0, err
 	}
 
+	// Count pending records for progress
+	var pendingCount int64
+	s.from.QueryRow(`SELECT COUNT(*) FROM usage_logs WHERE id > ?`, lastID).Scan(&pendingCount)
+	if pendingCount > 0 {
+		log.Printf("    待同步: %d 条 (从 id=%d 开始)", pendingCount, lastID)
+	}
+
 	total := 0
 	for {
 		rows, err := s.from.Query(
@@ -465,7 +487,11 @@ func (s *syncer) syncUsageLogs() (int, error) {
 		if err := s.updateLastSyncedID("usage_logs", lastID); err != nil {
 			return total, fmt.Errorf("更新同步进度: %w", err)
 		}
-		log.Printf("    已同步 usage_logs 至 id=%d (本批 %d 条)", lastID, batchCount)
+		pct := ""
+		if pendingCount > 0 {
+			pct = fmt.Sprintf(" (%.1f%%)", float64(total)/float64(pendingCount)*100)
+		}
+		log.Printf("    进度: %d/%d%s  id=%d", total, pendingCount, pct, lastID)
 
 		if batchCount < batchSize {
 			break
@@ -492,6 +518,12 @@ func (s *syncer) syncAWSUsageLogs() (int, error) {
 	pgKeyMap, err := s.buildPGKeyMap()
 	if err != nil {
 		return 0, err
+	}
+
+	var pendingCount int64
+	s.from.QueryRow(`SELECT COUNT(*) FROM aws_usage_logs WHERE id > ?`, lastID).Scan(&pendingCount)
+	if pendingCount > 0 {
+		log.Printf("    待同步: %d 条 (从 id=%d 开始)", pendingCount, lastID)
 	}
 
 	total := 0
@@ -600,7 +632,11 @@ func (s *syncer) syncAWSUsageLogs() (int, error) {
 		if err := s.updateLastSyncedID("aws_usage_logs", lastID); err != nil {
 			return total, fmt.Errorf("更新同步进度: %w", err)
 		}
-		log.Printf("    已同步 aws_usage_logs 至 id=%d (本批 %d 条)", lastID, batchCount)
+		pct := ""
+		if pendingCount > 0 {
+			pct = fmt.Sprintf(" (%.1f%%)", float64(total)/float64(pendingCount)*100)
+		}
+		log.Printf("    进度: %d/%d%s  id=%d", total, pendingCount, pct, lastID)
 
 		if batchCount < batchSize {
 			break

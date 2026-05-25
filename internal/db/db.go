@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq"
@@ -100,6 +101,39 @@ func (d *DB) Close() error {
 		d.readonlyDB.Close()
 	}
 	return d.DB.Close()
+}
+
+// rewriteQuery converts ? placeholders to $1, $2, ... for PostgreSQL.
+func (d *DB) rewriteQuery(query string) string {
+	if d.driver != "postgres" {
+		return query
+	}
+	var b strings.Builder
+	n := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			b.WriteString(fmt.Sprintf("$%d", n))
+			n++
+		} else {
+			b.WriteByte(query[i])
+		}
+	}
+	return b.String()
+}
+
+// Exec wraps sql.DB.Exec with placeholder rewriting.
+func (d *DB) Exec(query string, args ...interface{}) (sql.Result, error) {
+	return d.DB.Exec(d.rewriteQuery(query), args...)
+}
+
+// Query wraps sql.DB.Query with placeholder rewriting.
+func (d *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
+	return d.DB.Query(d.rewriteQuery(query), args...)
+}
+
+// QueryRow wraps sql.DB.QueryRow with placeholder rewriting.
+func (d *DB) QueryRow(query string, args ...interface{}) *sql.Row {
+	return d.DB.QueryRow(d.rewriteQuery(query), args...)
 }
 
 func (d *DB) runPGSchema() error {

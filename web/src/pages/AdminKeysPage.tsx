@@ -125,6 +125,7 @@ export default function AdminKeysPage() {
   // Filter state
   const [filterItcode, setFilterItcode] = useState('')
   const [filterUserId, setFilterUserId] = useState('')
+  const [filterChannel, setFilterChannel] = useState('')
 
   const [renamingId, setRenamingId] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
@@ -144,10 +145,11 @@ export default function AdminKeysPage() {
   const [createError, setCreateError] = useState('')
   const [createSuccess, setCreateSuccess] = useState('')
 
-  const load = (p = page, uid = filterUserId) => {
+  const load = (p = page, uid = filterUserId, ch = filterChannel) => {
     setLoading(true)
     const params: Record<string, string | number> = { page: p, page_size: pageSize }
     if (uid) params.user_id = Number(uid)
+    if (ch) params.channel = ch
     adminListKeys(params)
       .then((res) => { setKeys(res.data.keys || []); setTotal(res.data.total || 0) })
       .catch(() => {})
@@ -155,10 +157,10 @@ export default function AdminKeysPage() {
   }
 
   useEffect(() => { load() }, [])
-  useEffect(() => { load(page, filterUserId) }, [page])
+  useEffect(() => { load(page, filterUserId, filterChannel) }, [page])
 
-  const handleFilter = () => { setPage(1); load(1, filterUserId) }
-  const handleFilterClear = () => { setFilterItcode(''); setFilterUserId(''); setPage(1); load(1, '') }
+  const handleFilter = () => { setPage(1); load(1, filterUserId, filterChannel) }
+  const handleFilterClear = () => { setFilterItcode(''); setFilterUserId(''); setFilterChannel(''); setPage(1); load(1, '', '') }
 
   const handleCopy = (id: number, key: string) => {
     navigator.clipboard.writeText(key)
@@ -308,8 +310,17 @@ export default function AdminKeysPage() {
           placeholder="按用户 itcode 筛选"
           className="w-52 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
         />
+        <select
+          value={filterChannel}
+          onChange={(e) => setFilterChannel(e.target.value)}
+          className="px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+        >
+          <option value="">全部渠道</option>
+          <option value="backend">Backend</option>
+          <option value="aws">AWS</option>
+        </select>
         <button onClick={handleFilter} className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-xl hover:bg-red-700 transition-colors">查询</button>
-        {filterUserId && (
+        {(filterUserId || filterChannel) && (
           <button onClick={handleFilterClear} className="px-3 py-2 text-sm border border-gray-200 rounded-xl hover:bg-gray-50 text-gray-500 transition-colors">清除</button>
         )}
         <span className="text-sm text-gray-400">共 {total} 条</span>

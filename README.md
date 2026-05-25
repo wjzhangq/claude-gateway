@@ -85,7 +85,16 @@ server:
   mode: release          # debug / release
 
 database:
-  path: data/gateway.db  # SQLite 文件路径，自动创建
+  driver: sqlite           # sqlite | postgres，默认 sqlite
+  path: data/gateway.db    # SQLite 文件路径，自动创建
+  postgres:                # driver=postgres 时必填
+    host: localhost
+    port: 5432
+    user: gateway
+    password: ""
+    dbname: gateway
+    sslmode: disable
+    timezone: Asia/Shanghai
 
 log:
   level: info            # debug / info / warn / error
@@ -361,7 +370,8 @@ bash scripts/build.sh
 
 ```
 ./
-├── bin/gateway          # 可执行文件
+├── bin/gateway          # 主服务可执行文件
+├── bin/sync             # 数据同步工具（SQLite → PostgreSQL）
 ├── config/config.yaml   # 配置文件
 ├── data/gateway.db      # SQLite 数据库（自动创建）
 └── web/dist/            # 前端静态资源
@@ -400,6 +410,9 @@ go test ./...
 
 # 仅构建后端
 go build -o bin/gateway ./cmd/server
+
+# 构建同步工具
+go build -o bin/sync ./cmd/sync
 ```
 
 ## 技术栈
@@ -407,10 +420,105 @@ go build -o bin/gateway ./cmd/server
 | 组件 | 技术 |
 |------|------|
 | 后端 | Go 1.23+, Gin |
-| 数据库 | SQLite (modernc.org/sqlite，无 CGO，WAL 模式) |
+| 数据库 | SQLite (modernc.org/sqlite) 或 PostgreSQL (lib/pq) |
 | 日志 | Logrus |
 | 前端 | React 19 + TypeScript + Tailwind CSS v4 |
 | 构建 | Vite |
+
+---
+
+## 数据库
+
+### SQLite（默认）
+
+零配置，启动时自动创建。适合单机部署和开发调试。
+
+```yaml
+database:
+  driver: sqlite           # 可省略，默认 sqlite
+  path: data/gateway.db
+```
+
+### PostgreSQL
+
+生产环境推荐。支持统一的 `usage_logs` 表（含 `provider` 字段区分 backend/aws/kimi/minimax）和统一的 `daily_stats` 表。
+
+```yaml
+database:
+  driver: postgres
+  path: data/gateway.db    # SQLite 路径保留，供 sync 工具读取
+  postgres:
+    host: your-pg-host.com
+    port: 5432
+    user: gateway
+    password: your-password
+    dbname: gateway
+    sslmode: require       # disable | require | verify-full
+    timezone: Asia/Shanghai
+```
+
+启动时自动创建表结构，无需手动执行 DDL。
+
+---
+
+## 数据同步（SQLite → PostgreSQL）
+
+当从 SQLite 迁移到 PostgreSQL 时，使用内置的 `sync` 工具增量同步历史数据。
+
+### 构建
+
+```bash
+go build -o bin/sync ./cmd/sync
+```
+
+### 用法
+
+```bash
+# 使用配置文件（从 config 中读取 SQLite 路径和 PG 连接信息）
+./bin/sync --config ./config/config.yaml
+
+# 或显式指定 SQLite 源路径
+./bin/sync --fromdb ./data/gateway.db --config ./config/config.yaml
+```
+
+### 同步策略
+
+| 源表 (SQLite) | 目标表 (PostgreSQL) | 方式 |
+|---|---|---|
+| `users` | `users` | UPSERT on `itcode` |
+| `api_keys` | `api_keys` | UPSERT on `key` |
+| `usage_logs` | `usage_logs` (provider 自动推断) | 增量 by id |
+| `aws_usage_logs` | `usage_logs` (provider='aws') | 增量 by id |
+| `daily_stats` | `daily_stats` (provider='backend') | UPSERT on (date, user_id, provider, model) |
+| `aws_daily_stats` | `daily_stats` (provider='aws') | UPSERT on (date, user_id, provider, model) |
+| `applications` | `applications` | INSERT (去重) |
+
+### 特性
+
+- **增量同步**：使用 PG 中的 `sync_state` 表记录每个源表同步到的最大 id，只同步新增数据
+- **幂等**：可重复运行，UPSERT 保证不重复写入
+- **Provider 自动推断**：SQLite `usage_logs.backend` 字段以 `public:kimi` 开头 → provider='kimi'，以 `public:minimax` 开头 → provider='minimax'，其他 → provider='backend'
+- **批量写入**：每 500 条一批提交事务，降低内存占用
+- **用户映射**：通过 itcode 关联 SQLite 和 PG 的用户 ID
+
+### 典型迁移流程
+
+```bash
+# 1. 配置 config.yaml 中的 postgres 部分
+# 2. 启动一次服务让 PG 自动建表（或单独运行建表 SQL）
+./bin/gateway  # 启动后 Ctrl+C 退出即可
+
+# 3. 执行数据同步
+./bin/sync --config ./config/config.yaml
+
+# 4. 修改 config.yaml 中 driver 为 postgres
+# 5. 重新启动服务
+./bin/gateway
+```
+
+同步完成后，后续新数据直接写入 PostgreSQL，无需再次同步。
+
+---
 
 ## 数据库迁移
 

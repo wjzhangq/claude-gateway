@@ -400,6 +400,32 @@ func (h *StatsHandler) GetProviderModelStats(c *gin.Context) {
 	})
 }
 
+func (h *StatsHandler) GetProviderDailyStats(c *gin.Context) {
+	provider := c.Query("provider")
+	if provider == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider is required"})
+		return
+	}
+	startDate := c.Query("start_date")
+	endDate := c.Query("end_date")
+	if startDate == "" || endDate == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "start_date and end_date are required"})
+		return
+	}
+
+	stats, err := h.db.GetProviderDailyStats(provider, startDate, endDate)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"provider":   provider,
+		"start_date": startDate,
+		"end_date":   endDate,
+		"stats":      stats,
+	})
+}
+
 // UpdateConfig replaces the config reference (used during reload).
 func (h *StatsHandler) UpdateConfig(cfg *config.Config) {
 	h.config = cfg

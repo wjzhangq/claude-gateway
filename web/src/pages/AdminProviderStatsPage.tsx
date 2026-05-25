@@ -1,7 +1,21 @@
 import { useEffect, useState } from 'react'
-import { adminGetProviderStats, adminGetProviderModelStats, adminGetBackendStatus } from '../api'
+import { adminGetProviderStats, adminGetProviderModelStats, adminGetBackendStatus, adminGetProviderDailyStats } from '../api'
+import { toDateStr } from '../utils/time'
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+} from 'recharts'
 
 interface ModelStat {
+  model: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  total_tokens: number
+  cost_usd: number
+}
+
+interface DailyModelStat {
+  date: string
   model: string
   requests: number
   input_tokens: number
@@ -34,6 +48,14 @@ export default function AdminProviderStatsPage({ provider }: { provider: string 
   const [backends, setBackends] = useState<BackendStatus[]>([])
   const [loading, setLoading] = useState(true)
 
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() - 13)
+    return toDateStr(d)
+  })
+  const [endDate, setEndDate] = useState(() => toDateStr(new Date()))
+  const [dailyModelStats, setDailyModelStats] = useState<DailyModelStat[]>([])
+  const [chartLoading, setChartLoading] = useState(true)
+
   useEffect(() => {
     setLoading(true)
     const today = new Date().toISOString().slice(0, 10)
@@ -57,6 +79,24 @@ export default function AdminProviderStatsPage({ provider }: { provider: string 
       .catch(() => {})
       .finally(() => setLoading(false))
   }, [provider])
+
+  useEffect(() => {
+    setChartLoading(true)
+    adminGetProviderDailyStats(provider, startDate, endDate)
+      .then((res) => setDailyModelStats(res.data.stats || []))
+      .catch(() => setDailyModelStats([]))
+      .finally(() => setChartLoading(false))
+  }, [provider, startDate, endDate])
+
+  const chartData = dailyModelStats
+    .reduce((acc, s) => {
+      const existing = acc.find(d => d.date === s.date)
+      if (existing) { existing.cost += s.cost_usd; existing.requests += s.requests }
+      else acc.push({ date: s.date, cost: s.cost_usd, requests: s.requests })
+      return acc
+    }, [] as { date: string; cost: number; requests: number }[])
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map(d => ({ ...d, date: d.date.slice(5), cost: +d.cost.toFixed(4) }))
 
   const title = providerTitles[provider] || provider
 
@@ -114,6 +154,74 @@ export default function AdminProviderStatsPage({ provider }: { provider: string 
           <StatCard label="费用" value={loading ? '...' : `$${monthCost.toFixed(4)}`} />
         </div>
       </div>
+
+      {/* Date range trend chart */}
+      <div className="mb-6">
+        <div className="flex items-center gap-3 mb-4">
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-widest">费用趋势</p>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+          />
+          <span className="text-gray-400">—</span>
+          <input
+            type="date"
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400"
+          />
+        </div>
+
+        {chartLoading ? (
+          <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm text-center text-gray-400 text-sm">加载中...</div>
+        ) : chartData.length > 0 ? (
+          <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
+                <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} formatter={((value: number) => [`$${value.toFixed(4)}`, '费用']) as any} />
+                <Bar dataKey="cost" name="费用" fill="#DC2626" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm text-center text-gray-400 text-sm">暂无数据</div>
+        )}
+      </div>
+
+      {/* Daily model breakdown table */}
+      {dailyModelStats.length > 0 && (
+        <div className="mb-6 bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100">
+            <h3 className="text-sm font-semibold text-gray-700">按日期/模型明细</h3>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50/80">
+              <tr>
+                {['日期', '模型', '请求数', '输入 Token', '输出 Token', '费用'].map((h) => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {dailyModelStats.map((s) => (
+                <tr key={`${s.date}-${s.model}`} className="hover:bg-gray-50/50">
+                  <td className="px-4 py-3 text-gray-600">{s.date}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-gray-700">{s.model}</td>
+                  <td className="px-4 py-3 text-gray-600">{s.requests.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-gray-600">{s.input_tokens.toLocaleString()}</td>
+                  <td className="px-4 py-3 text-gray-600">{s.output_tokens.toLocaleString()}</td>
+                  <td className="px-4 py-3 font-medium text-gray-800">${s.cost_usd.toFixed(4)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Backend accounts (only for provider=backend) */}
       {provider === 'backend' && backends.length > 0 && (

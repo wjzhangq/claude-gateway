@@ -316,6 +316,7 @@ func main() {
 		adminAPI.GET("/backends/stats", statsH.GetBackendStats)
 		adminAPI.GET("/provider/stats", statsH.GetProviderStats)
 		adminAPI.GET("/provider/model-stats", statsH.GetProviderModelStats)
+		adminAPI.GET("/provider/daily-stats", statsH.GetProviderDailyStats)
 		adminAPI.GET("/backends/status", func(c *gin.Context) {
 			c.JSON(200, lb.GetBackends())
 		})

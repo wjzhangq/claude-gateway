@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { listKeys, createKey, disableKey, enableKey, deleteKey, setAutoDowngrade, renameKey, switchKeyChannel } from '../api'
-import { useAuth } from '../context/AuthContext'
 import { formatTime } from '../utils/time'
 
 interface APIKey {
@@ -32,7 +31,6 @@ function SkeletonRow() {
 }
 
 export default function APIKeysPage() {
-  const { isAWSEnabled } = useAuth()
   const [keys, setKeys] = useState<APIKey[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
@@ -107,9 +105,12 @@ export default function APIKeysPage() {
     load()
   }
 
-  const handleSwitchChannel = async (id: number) => {
-    if (!confirm('确认将此 Key 切换到 AWS 渠道？切换后将使用 AWS Bedrock 处理请求。')) return
-    await switchKeyChannel(id, 'aws')
+  const handleSwitchChannel = async (id: number, target: 'backend' | 'aws') => {
+    const msg = target === 'aws'
+      ? '确认将此 Key 切换到 AWS 渠道？切换后将使用 AWS Bedrock 处理请求。'
+      : '确认将此 Key 切换到 Backend 渠道？'
+    if (!confirm(msg)) return
+    await switchKeyChannel(id, target)
     load()
   }
 
@@ -296,9 +297,16 @@ export default function APIKeysPage() {
                       >
                         删除
                       </button>
-                      {isAWSEnabled && k.channel !== 'aws' && (
+                      {k.channel === 'aws' ? (
                         <button
-                          onClick={() => handleSwitchChannel(k.id)}
+                          onClick={() => handleSwitchChannel(k.id, 'backend')}
+                          className="text-xs text-blue-400 hover:text-blue-600 transition-colors"
+                        >
+                          切换Backend
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => handleSwitchChannel(k.id, 'aws')}
                           className="text-xs text-orange-400 hover:text-orange-600 transition-colors"
                         >
                           切换AWS

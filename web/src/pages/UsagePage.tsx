@@ -9,6 +9,8 @@ interface UsageLog {
   backend_name: string
   input_tokens: number
   output_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
   total_tokens: number
   cost_usd: number
   status_code: number
@@ -177,6 +179,8 @@ export default function UsagePage() {
                       <td colSpan={8} className="px-6 py-3">
                         <div className="flex gap-6 text-xs text-gray-500">
                           <span>总Token: <b className="text-gray-700">{log.total_tokens.toLocaleString()}</b></span>
+                          {log.cache_read_tokens > 0 && <span>缓存读: <b className="text-gray-700">{log.cache_read_tokens.toLocaleString()}</b></span>}
+                          {log.cache_write_tokens > 0 && <span>缓存写: <b className="text-gray-700">{log.cache_write_tokens.toLocaleString()}</b></span>}
                           {log.backend_name && <span>后端: <b className="text-gray-700">{log.backend_name}</b></span>}
                           <span>延迟: <b className="text-gray-700">{log.latency_ms}ms</b></span>
                         </div>

@@ -300,7 +300,7 @@ export default function AdminUsagePage() {
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="date" tick={{ fontSize: 10 }} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `$${v}`} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} formatter={(value?: number) => [`$${(value ?? 0).toFixed(4)}`, '费用']} />
+              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }} formatter={((value: number) => [`$${value.toFixed(4)}`, '费用']) as any} />
               <Bar dataKey="cost" name="费用" fill="#DC2626" radius={[3, 3, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>

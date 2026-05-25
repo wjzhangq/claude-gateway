@@ -44,6 +44,14 @@ func (d *DB) boolVal(b bool) interface{} {
 	return 0
 }
 
+// boolTrue returns the SQL literal for "true" depending on driver.
+func (d *DB) boolTrue() string {
+	if d.driver == "postgres" {
+		return "true"
+	}
+	return "1"
+}
+
 // isPostgres returns true if the database driver is PostgreSQL.
 func (d *DB) isPostgres() bool {
 	return d.driver == "postgres"
