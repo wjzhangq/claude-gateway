@@ -155,3 +155,12 @@ export const adminGetAWSKeys = (params?: Record<string, string | number>) =>
   api.get('/admin/api/aws/keys', { params })
 export const adminGetAWSBedrockStats = (params?: Record<string, string>) =>
   api.get('/admin/api/aws/bedrock/stats', { params })
+
+// ===== Admin Config =====
+export const adminGetConfigLimits = () =>
+  api.get('/admin/api/config/limits')
+export const adminUpdateConfigLimits = (data: {
+  backend_daily_max?: number
+  aws_daily_max?: number
+  user_limits?: { itcode: string; backend_daily_usd: number; aws_daily_usd: number }[]
+}) => api.put('/admin/api/config/limits', data)

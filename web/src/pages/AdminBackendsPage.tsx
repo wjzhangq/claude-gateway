@@ -78,9 +78,11 @@ export default function AdminBackendsPage() {
   }
 
   const isToday = date === toDateStr(new Date())
-  const totalRequests = stats.reduce((s, b) => s + b.requests, 0)
-  const totalTokens = stats.reduce((s, b) => s + b.total_tokens, 0)
-  const totalCost = stats.reduce((s, b) => s + b.cost_usd, 0)
+  const filteredStats = stats.filter((s) => !s.backend.startsWith('public'))
+  const totalRequests = filteredStats.reduce((s, b) => s + b.requests, 0)
+  const totalTokens = filteredStats.reduce((s, b) => s + b.total_tokens, 0)
+  const totalCost = filteredStats.reduce((s, b) => s + b.cost_usd, 0)
+  const DAILY_LIMIT = 200
 
   // Aggregate status code distribution from all backends
   const combinedStatusDist = backendStatus.reduce((acc, b) => {
@@ -239,16 +241,23 @@ export default function AdminBackendsPage() {
           <tbody className="divide-y divide-gray-50">
             {loading ? (
               Array.from({ length: 3 }).map((_, i) => <SkeletonRow key={i} />)
-            ) : stats.length === 0 ? (
+            ) : filteredStats.length === 0 ? (
               <tr>
                 <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">当天暂无数据</td>
               </tr>
             ) : (
-              stats.map((s) => {
+              filteredStats.map((s) => {
                 const pct = totalRequests > 0 ? ((s.requests / totalRequests) * 100).toFixed(1) : '0'
+                const isDasheng = s.backend.startsWith('dasheng-')
+                const costPct = ((s.cost_usd / DAILY_LIMIT) * 100).toFixed(1)
                 return (
                   <tr key={s.backend} className="hover:bg-gray-50/50 transition-colors">
-                    <td className="px-4 py-3.5 font-mono text-xs font-semibold text-gray-700">{s.backend || '—'}</td>
+                    <td className="px-4 py-3.5 font-mono text-xs font-semibold text-gray-700">
+                      {s.backend || '—'}
+                      {isDasheng && (
+                        <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-indigo-50 text-indigo-600 ring-1 ring-indigo-100">大圣</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3.5 font-medium text-gray-800">{s.requests.toLocaleString()}</td>
                     <td className="px-4 py-3.5">
                       <div className="flex items-center gap-2">
@@ -262,7 +271,10 @@ export default function AdminBackendsPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3.5 text-gray-700">{s.total_tokens.toLocaleString()}</td>
-                    <td className="px-4 py-3.5 text-gray-700">${s.cost_usd.toFixed(4)}</td>
+                    <td className="px-4 py-3.5 text-gray-700">
+                      ${s.cost_usd.toFixed(4)}
+                      <span className={`ml-1.5 text-xs ${parseFloat(costPct) >= 80 ? 'text-red-500 font-medium' : 'text-gray-400'}`}>({costPct}%)</span>
+                    </td>
                     <td className="px-4 py-3.5 text-gray-500 tabular-nums">{Math.round(s.avg_latency_ms)} ms</td>
                     <td className="px-4 py-3.5">
                       {s.error_count > 0 ? (

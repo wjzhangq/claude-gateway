@@ -23,6 +23,7 @@ import AdminAWSUserDailyPage from './pages/AdminAWSUserDailyPage'
 import AdminAWSBedrockPage from './pages/AdminAWSBedrockPage'
 import AdminPublicStatsPage from './pages/AdminPublicStatsPage'
 import AdminPublicUsagePage from './pages/AdminPublicUsagePage'
+import AdminQuotaPage from './pages/AdminQuotaPage'
 import PlaygroundPage from './pages/PlaygroundPage'
 
 export default function App() {
@@ -51,6 +52,7 @@ export default function App() {
                 <Route path="/admin/public/stats" element={<AdminPublicStatsPage />} />
                 <Route path="/admin/public/usage" element={<AdminPublicUsagePage />} />
                 <Route path="/admin/user-daily" element={<AdminUserDailyPage />} />
+                <Route path="/admin/quota" element={<AdminQuotaPage />} />
                 <Route path="/admin/aws/users" element={<AdminAWSUsersPage />} />
                 <Route path="/admin/aws/usage" element={<AdminAWSUsagePage />} />
                 <Route path="/admin/aws/user-daily" element={<AdminAWSUserDailyPage />} />

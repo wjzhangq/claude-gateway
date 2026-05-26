@@ -193,6 +193,24 @@ func main() {
 	appH := handler.NewApplicationHandler(database, keyStore)
 	awsStatsH := handler.NewAWSStatsHandler(database, cfg)
 	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore)
+	configH := handler.NewConfigHandler(cfgPath, cfg, func() error {
+		newCfg, err := config.Load(cfgPath)
+		if err != nil {
+			return err
+		}
+		lb.UpdateBackends(newCfg.Backends)
+		proxyH.UpdateModelReplacements(newCfg.ModelReplacements)
+		proxyH.UpdateConfig(newCfg)
+		publicH.UpdateConfig(newCfg)
+		statsH.UpdateConfig(newCfg)
+		awsStatsH.UpdateConfig(newCfg)
+		if awsProxyH != nil {
+			awsProxyH.UpdateConfig(&newCfg.AWS)
+			awsProxyH.SetRootConfig(newCfg)
+		}
+		*cfg = *newCfg
+		return nil
+	})
 
 	apiAuth := r.Group("/api/auth")
 	{
@@ -316,6 +334,8 @@ func main() {
 		adminAPI.GET("/groups/stats", statsH.GetGroupStats)
 		adminAPI.GET("/applications", appH.ListAll)
 		adminAPI.PUT("/applications/:id/review", appH.Review)
+		adminAPI.GET("/config/limits", configH.GetLimits)
+		adminAPI.PUT("/config/limits", configH.UpdateLimits)
 	}
 
 	// Admin AWS API

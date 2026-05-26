@@ -24,6 +24,7 @@ const adminNav = [
   { to: '/admin/backends', label: 'Backend 统计' },
   { to: '/admin/public/stats', label: 'Public 统计' },
   { to: '/admin/public/usage', label: 'Public 日志' },
+  { to: '/admin/quota', label: '额度设置' },
 ]
 
 const awsAdminNav = [

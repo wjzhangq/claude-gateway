@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { adminGetUsage, adminGetDailyStats, adminSearchUsers, adminExportUsage } from '../api'
+import { adminGetUsage, adminGetDailyStats, adminGetUserDailyCost, adminSearchUsers, adminExportUsage } from '../api'
 import { formatTime, toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -181,21 +181,14 @@ export default function AdminUsagePage() {
   }, [date, page, filterUserId])
 
   useEffect(() => {
-    const params: Record<string, string | number> = { page: 1, page_size: 10000, start_date: date, end_date: date }
-    if (filterUserId) params.user_id = filterUserId
-    adminGetUsage(params)
+    const params: Record<string, string | number> = { date }
+    adminGetUserDailyCost(params)
       .then((res) => {
-        const all: UsageLog[] = res.data.logs || []
-        let cost = 0, ocCost = 0
-        all.forEach((l) => {
-          cost += l.cost_usd
-          if (l.is_openclaw) ocCost += l.cost_usd
-        })
-        setDayCost(cost)
-        setDayOcCost(ocCost)
+        setDayCost(res.data.total_cost ?? 0)
+        setDayOcCost(res.data.oc_cost ?? 0)
       })
       .catch(() => {})
-  }, [date, filterUserId])
+  }, [date])
 
   const shiftDate = (days: number) => {
     setPage(1)
