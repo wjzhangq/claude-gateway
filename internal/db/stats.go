@@ -1208,3 +1208,124 @@ func (d *DB) ListAWSUsersWithStats(page, pageSize int) ([]*AWSUserWithStats, int
 	}
 	return users, total, rows.Err()
 }
+
+// UsageDaySummary holds aggregated cost/request totals for a single date.
+type UsageDaySummary struct {
+	TotalRequests int     `json:"total_requests"`
+	TotalCost     float64 `json:"total_cost"`
+	OCCost        float64 `json:"oc_cost"`
+}
+
+// GetUsageDaySummary returns aggregated totals for a date, optionally filtered by user.
+func (d *DB) GetUsageDaySummary(userID int64, date string) (*UsageDaySummary, error) {
+	s := &UsageDaySummary{}
+	if d.isPostgres() {
+		where := "WHERE TO_CHAR(created_at, 'YYYY-MM-DD') = $1"
+		args := []interface{}{date}
+		if userID > 0 {
+			where += " AND user_id = $2"
+			args = append(args, userID)
+		}
+		err := d.QueryRow(
+			`SELECT COUNT(*), COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0)
+			 FROM usage_logs `+where, args...).Scan(&s.TotalRequests, &s.TotalCost, &s.OCCost)
+		return s, err
+	}
+
+	where := "WHERE SUBSTR(created_at, 1, 10) = ?"
+	args := []interface{}{date}
+	if userID > 0 {
+		where += " AND user_id = ?"
+		args = append(args, userID)
+	}
+	err := d.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0)
+		 FROM usage_logs `+where, args...).Scan(&s.TotalRequests, &s.TotalCost, &s.OCCost)
+	return s, err
+}
+
+// GetUsageDaySummaryByProvider returns aggregated totals for a date, optionally filtered by user and provider.
+func (d *DB) GetUsageDaySummaryByProvider(userID int64, date, provider string) (*UsageDaySummary, error) {
+	if provider == "" {
+		return d.GetUsageDaySummary(userID, date)
+	}
+	s := &UsageDaySummary{}
+	if d.isPostgres() {
+		conditions := []string{"TO_CHAR(created_at, 'YYYY-MM-DD') = $1"}
+		args := []interface{}{date}
+		argN := 2
+		if userID > 0 {
+			conditions = append(conditions, fmt.Sprintf("user_id = $%d", argN))
+			args = append(args, userID)
+			argN++
+		}
+		conditions = append(conditions, fmt.Sprintf("provider = $%d", argN))
+		args = append(args, provider)
+
+		where := "WHERE " + strings.Join(conditions, " AND ")
+		err := d.QueryRow(
+			`SELECT COUNT(*), COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0)
+			 FROM usage_logs `+where, args...).Scan(&s.TotalRequests, &s.TotalCost, &s.OCCost)
+		return s, err
+	}
+
+	where := "WHERE SUBSTR(created_at, 1, 10) = ?"
+	args := []interface{}{date}
+	if userID > 0 {
+		where += " AND user_id = ?"
+		args = append(args, userID)
+	}
+	where += " AND backend = ?"
+	args = append(args, provider)
+	err := d.QueryRow(
+		`SELECT COUNT(*), COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0)
+		 FROM usage_logs `+where, args...).Scan(&s.TotalRequests, &s.TotalCost, &s.OCCost)
+	return s, err
+}
+
+// AdminOverview holds system-wide metrics for the admin dashboard.
+type AdminOverview struct {
+	TotalUsers    int     `json:"total_users"`
+	ActiveUsers   int     `json:"active_users"`
+	TotalKeys     int     `json:"total_keys"`
+	TodayRequests int     `json:"today_requests"`
+	TodayCost     float64 `json:"today_cost"`
+	TodayOCCost   float64 `json:"today_oc_cost"`
+	MonthRequests int     `json:"month_requests"`
+	MonthCost     float64 `json:"month_cost"`
+}
+
+// GetAdminOverview returns aggregated system-wide metrics.
+func (d *DB) GetAdminOverview() (*AdminOverview, error) {
+	o := &AdminOverview{}
+	today := time.Now().Format("2006-01-02")
+	monthStart := today[:8] + "01"
+
+	d.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&o.TotalUsers)
+	d.QueryRow(`SELECT COUNT(*) FROM users WHERE status = 'active'`).Scan(&o.ActiveUsers)
+	d.QueryRow(`SELECT COUNT(*) FROM api_keys WHERE status = 'active'`).Scan(&o.TotalKeys)
+
+	if d.isPostgres() {
+		d.QueryRow(
+			`SELECT COUNT(*), COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0)
+			 FROM usage_logs WHERE TO_CHAR(created_at, 'YYYY-MM-DD') = $1`, today,
+		).Scan(&o.TodayRequests, &o.TodayCost, &o.TodayOCCost)
+
+		d.QueryRow(
+			`SELECT COUNT(*), COALESCE(SUM(cost_usd),0)
+			 FROM usage_logs WHERE created_at >= $1`, monthStart,
+		).Scan(&o.MonthRequests, &o.MonthCost)
+	} else {
+		d.QueryRow(
+			`SELECT COUNT(*), COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0)
+			 FROM usage_logs WHERE SUBSTR(created_at, 1, 10) = ?`, today,
+		).Scan(&o.TodayRequests, &o.TodayCost, &o.TodayOCCost)
+
+		d.QueryRow(
+			`SELECT COUNT(*), COALESCE(SUM(cost_usd),0)
+			 FROM usage_logs WHERE created_at >= ?`, monthStart,
+		).Scan(&o.MonthRequests, &o.MonthCost)
+	}
+
+	return o, nil
+}

@@ -56,8 +56,9 @@ func (h *StatsHandler) GetDailyStats(c *gin.Context) {
 	start := c.Query("start_date")
 	end := c.Query("end_date")
 	model := c.Query("model")
+	backend := c.Query("backend")
 
-	stats, err := h.db.GetDailyStats(userID, start, end, model)
+	stats, err := h.db.GetDailyStatsByProvider(userID, start, end, model, backend)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -424,6 +425,30 @@ func (h *StatsHandler) GetProviderDailyStats(c *gin.Context) {
 		"end_date":   endDate,
 		"stats":      stats,
 	})
+}
+
+// GetUsageSummary godoc: GET /admin/api/usage/summary?date=2026-01-01&user_id=123&backend=aws
+func (h *StatsHandler) GetUsageSummary(c *gin.Context) {
+	userID, _ := strconv.ParseInt(c.Query("user_id"), 10, 64)
+	date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
+	backend := c.Query("backend")
+
+	summary, err := h.db.GetUsageDaySummaryByProvider(userID, date, backend)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, summary)
+}
+
+// GetAdminOverview godoc: GET /admin/api/overview
+func (h *StatsHandler) GetAdminOverview(c *gin.Context) {
+	overview, err := h.db.GetAdminOverview()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, overview)
 }
 
 // UpdateConfig replaces the config reference (used during reload).

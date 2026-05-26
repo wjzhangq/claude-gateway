@@ -58,3 +58,4 @@ temp/
 config/config.yaml
 .claude
 .gitnexus
+.codegraph

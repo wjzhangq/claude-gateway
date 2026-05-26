@@ -11,6 +11,7 @@ const userNav = [
 ]
 
 const adminNav = [
+  { to: '/admin/dashboard', label: '总览' },
   { to: '/admin/users', label: '用户管理' },
   { to: '/admin/keys', label: 'Key 管理' },
   { to: '/admin/applications', label: '审批管理' },

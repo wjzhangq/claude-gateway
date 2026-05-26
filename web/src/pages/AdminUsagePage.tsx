@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { adminGetUsage, adminGetDailyStats, adminSearchUsers, adminExportUsage } from '../api'
+import { adminGetUsage, adminGetDailyStats, adminSearchUsers, adminExportUsage, adminGetUsageSummary } from '../api'
 import { formatTime, toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -135,16 +135,18 @@ export default function AdminUsagePage() {
   // User filter
   const [filterItcode, setFilterItcode] = useState('')
   const [filterUserId, setFilterUserId] = useState('')
+  const [backendFilter, setBackendFilter] = useState('')
 
   useEffect(() => {
     const end = date
     const start = toDateStr(new Date(new Date(date).getTime() - 13 * 86400000))
     const params: Record<string, string | number> = { start_date: start, end_date: end }
     if (filterUserId) params.user_id = filterUserId
+    if (backendFilter) params.backend = backendFilter
     adminGetDailyStats(params)
       .then((res) => setDailyStats(res.data.stats || []))
       .catch(() => {})
-  }, [date, filterUserId])
+  }, [date, filterUserId, backendFilter])
 
   const [dayCost, setDayCost] = useState(0)
   const [dayOcCost, setDayOcCost] = useState(0)
@@ -154,6 +156,7 @@ export default function AdminUsagePage() {
     setExporting(true)
     const params: Record<string, string | number> = { date }
     if (filterUserId) params.user_id = filterUserId
+    if (backendFilter) params.backend = backendFilter
     adminExportUsage(params)
       .then((res) => {
         const url = URL.createObjectURL(res.data)
@@ -169,33 +172,29 @@ export default function AdminUsagePage() {
 
   useEffect(() => {
     setLoading(true)
-    const params: Record<string, string | number> = { page, page_size: pageSize, start_date: date, end_date: date }
-    if (filterUserId) params.user_id = filterUserId
-    adminGetUsage(params)
-      .then((res) => {
-        setLogs(res.data.logs || [])
-        setTotal(res.data.total || 0)
+    const listParams: Record<string, string | number> = { page, page_size: pageSize, start_date: date, end_date: date }
+    const summaryParams: Record<string, string | number> = { date }
+    if (filterUserId) {
+      listParams.user_id = filterUserId
+      summaryParams.user_id = filterUserId
+    }
+    if (backendFilter) {
+      listParams.backend = backendFilter
+      summaryParams.backend = backendFilter
+    }
+    Promise.all([
+      adminGetUsage(listParams),
+      adminGetUsageSummary(summaryParams),
+    ])
+      .then(([usageRes, summaryRes]) => {
+        setLogs(usageRes.data.logs || [])
+        setTotal(usageRes.data.total || 0)
+        setDayCost(summaryRes.data.total_cost || 0)
+        setDayOcCost(summaryRes.data.oc_cost || 0)
       })
       .catch(() => {})
       .finally(() => setLoading(false))
-  }, [date, page, filterUserId])
-
-  useEffect(() => {
-    const params: Record<string, string | number> = { page: 1, page_size: 10000, start_date: date, end_date: date }
-    if (filterUserId) params.user_id = filterUserId
-    adminGetUsage(params)
-      .then((res) => {
-        const all: UsageLog[] = res.data.logs || []
-        let cost = 0, ocCost = 0
-        all.forEach((l) => {
-          cost += l.cost_usd
-          if (l.is_openclaw) ocCost += l.cost_usd
-        })
-        setDayCost(cost)
-        setDayOcCost(ocCost)
-      })
-      .catch(() => {})
-  }, [date, filterUserId])
+  }, [date, page, filterUserId, backendFilter])
 
   const shiftDate = (days: number) => {
     setPage(1)
@@ -239,6 +238,17 @@ export default function AdminUsagePage() {
               清除
             </button>
           )}
+          <select
+            value={backendFilter}
+            onChange={(e) => { setBackendFilter(e.target.value); setPage(1) }}
+            className="px-3.5 py-2 text-sm border border-gray-200 rounded-xl bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
+          >
+            <option value="">全部渠道</option>
+            <option value="backend">Backend</option>
+            <option value="aws">AWS</option>
+            <option value="kimi">Kimi</option>
+            <option value="minimax">MiniMax</option>
+          </select>
           <button
             onClick={handleExport}
             disabled={exporting}

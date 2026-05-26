@@ -17,6 +17,7 @@ import AdminUserDailyPage from './pages/AdminUserDailyPage'
 import AdminPublicStatsPage from './pages/AdminPublicStatsPage'
 import AdminPublicUsagePage from './pages/AdminPublicUsagePage'
 import AdminProviderStatsPage from './pages/AdminProviderStatsPage'
+import AdminDashboardPage from './pages/AdminDashboardPage'
 import PlaygroundPage from './pages/PlaygroundPage'
 import ApplicationsPage from './pages/ApplicationsPage'
 
@@ -36,6 +37,7 @@ export default function App() {
               <Route path="/playground" element={<PlaygroundPage />} />
               <Route path="/applications" element={<ApplicationsPage />} />
               <Route element={<RequireAdmin />}>
+                <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
                 <Route path="/admin/users" element={<AdminUsersPage />} />
                 <Route path="/admin/keys" element={<AdminKeysPage />} />
                 <Route path="/admin/applications" element={<AdminApplicationsPage />} />

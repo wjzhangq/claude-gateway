@@ -16,14 +16,14 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 	_ "modernc.org/sqlite"
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 )
 
-const batchSize = 500
+const batchSize = 50000
 
 func main() {
 	cfgPath := flag.String("config", "config/config.yaml", "配置文件路径")
@@ -126,7 +126,7 @@ func main() {
 }
 
 func openSQLite(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on&mode=ro")
+	db, err := sql.Open("sqlite", path+"?_foreign_keys=on&mode=ro&_busy_timeout=5000")
 	if err != nil {
 		return nil, err
 	}
@@ -205,64 +205,64 @@ func (s *syncer) syncUsers() (int, int, error) {
 	}
 	defer rows.Close()
 
-	inserted, updated := 0, 0
+	tx, err := s.to.Begin()
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin tx: %w", err)
+	}
+	stmt, err := tx.Prepare(
+		`INSERT INTO users (itcode, name, role, status, group_id, daily_quota_tokens, daily_quota_usd,
+		                    aws_daily_quota_usd, aws_enabled, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 ON CONFLICT (itcode) DO UPDATE SET
+		   name = EXCLUDED.name, role = EXCLUDED.role, status = EXCLUDED.status,
+		   group_id = EXCLUDED.group_id, daily_quota_tokens = EXCLUDED.daily_quota_tokens,
+		   daily_quota_usd = EXCLUDED.daily_quota_usd, aws_daily_quota_usd = EXCLUDED.aws_daily_quota_usd,
+		   aws_enabled = EXCLUDED.aws_enabled, updated_at = EXCLUDED.updated_at`)
+	if err != nil {
+		tx.Rollback()
+		return 0, 0, fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	inserted := 0
 	for rows.Next() {
 		var (
-			id              int64
-			itcode, name    string
-			role, status    string
-			groupID         int
-			quotaTokens     int
-			quotaUSD        float64
-			awsQuotaUSD     float64
-			awsEnabled      int
-			createdAt       string
-			updatedAt       string
+			id          int64
+			itcode, name string
+			role, status string
+			groupID      int
+			quotaTokens  int
+			quotaUSD     float64
+			awsQuotaUSD  float64
+			awsEnabled   int
+			createdAt    string
+			updatedAt    string
 		)
 		if err := rows.Scan(&id, &itcode, &name, &role, &status, &groupID,
 			&quotaTokens, &quotaUSD, &awsQuotaUSD, &awsEnabled, &createdAt, &updatedAt); err != nil {
+			tx.Rollback()
 			return 0, 0, fmt.Errorf("读取用户行: %w", err)
 		}
-
-		awsBool := awsEnabled != 0
-		res, err := s.to.Exec(
-			`INSERT INTO users (itcode, name, role, status, group_id, daily_quota_tokens, daily_quota_usd,
-			                    aws_daily_quota_usd, aws_enabled, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-			 ON CONFLICT (itcode) DO UPDATE SET
-			   name = EXCLUDED.name,
-			   role = EXCLUDED.role,
-			   status = EXCLUDED.status,
-			   group_id = EXCLUDED.group_id,
-			   daily_quota_tokens = EXCLUDED.daily_quota_tokens,
-			   daily_quota_usd = EXCLUDED.daily_quota_usd,
-			   aws_daily_quota_usd = EXCLUDED.aws_daily_quota_usd,
-			   aws_enabled = EXCLUDED.aws_enabled,
-			   updated_at = EXCLUDED.updated_at`,
-			itcode, name, role, status, groupID, quotaTokens, quotaUSD,
-			awsQuotaUSD, awsBool, parseTime(createdAt), parseTime(updatedAt),
-		)
-		if err != nil {
+		if _, err := stmt.Exec(itcode, name, role, status, groupID, quotaTokens, quotaUSD,
+			awsQuotaUSD, awsEnabled != 0, parseTime(createdAt), parseTime(updatedAt)); err != nil {
 			log.Printf("    [警告] UPSERT 用户 %s 失败: %v", itcode, err)
 			continue
 		}
-		n, _ := res.RowsAffected()
-		if n > 0 {
-			inserted++
-		}
+		inserted++
 	}
-	// RowsAffected for ON CONFLICT DO UPDATE always returns 1, so we can't distinguish
-	return inserted, updated, rows.Err()
+	if err := rows.Err(); err != nil {
+		tx.Rollback()
+		return 0, 0, err
+	}
+	return inserted, 0, tx.Commit()
 }
 
 // syncAPIKeys UPSERT api_keys from SQLite to PG on key.
 func (s *syncer) syncAPIKeys() (int, int, error) {
-	// Build itcode->PG user_id mapping
 	pgUserMap, err := s.buildPGUserMap()
 	if err != nil {
 		return 0, 0, err
 	}
-	// Build SQLite user_id -> itcode mapping
 	sqliteUserMap, err := s.buildSQLiteUserMap()
 	if err != nil {
 		return 0, 0, err
@@ -277,28 +277,48 @@ func (s *syncer) syncAPIKeys() (int, int, error) {
 	}
 	defer rows.Close()
 
-	inserted, updated := 0, 0
+	tx, err := s.to.Begin()
+	if err != nil {
+		return 0, 0, fmt.Errorf("begin tx: %w", err)
+	}
+	stmt, err := tx.Prepare(
+		`INSERT INTO api_keys (user_id, key, name, status, last_used_at, auto_downgrade, channel,
+		                       total_cost_usd, backend_cost_usd, aws_cost_usd, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 ON CONFLICT (key) DO UPDATE SET
+		   user_id = EXCLUDED.user_id, name = EXCLUDED.name, status = EXCLUDED.status,
+		   last_used_at = EXCLUDED.last_used_at, auto_downgrade = EXCLUDED.auto_downgrade,
+		   channel = EXCLUDED.channel, total_cost_usd = EXCLUDED.total_cost_usd,
+		   backend_cost_usd = EXCLUDED.backend_cost_usd, aws_cost_usd = EXCLUDED.aws_cost_usd,
+		   updated_at = EXCLUDED.updated_at`)
+	if err != nil {
+		tx.Rollback()
+		return 0, 0, fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+
+	inserted := 0
 	for rows.Next() {
 		var (
-			id           int64
-			userID       int64
-			key, name    string
-			status       string
-			lastUsedAt   sql.NullString
+			id            int64
+			userID        int64
+			key, name     string
+			status        string
+			lastUsedAt    sql.NullString
 			autoDowngrade int
-			channel      string
-			totalCost    float64
-			backendCost  float64
-			awsCost      float64
-			createdAt    string
-			updatedAt    string
+			channel       string
+			totalCost     float64
+			backendCost   float64
+			awsCost       float64
+			createdAt     string
+			updatedAt     string
 		)
 		if err := rows.Scan(&id, &userID, &key, &name, &status, &lastUsedAt, &autoDowngrade,
 			&channel, &totalCost, &backendCost, &awsCost, &createdAt, &updatedAt); err != nil {
+			tx.Rollback()
 			return 0, 0, fmt.Errorf("读取 API Key 行: %w", err)
 		}
 
-		// Map SQLite user_id -> itcode -> PG user_id
 		itcode, ok := sqliteUserMap[userID]
 		if !ok {
 			log.Printf("    [警告] API Key %s... 的 user_id %d 无对应用户，跳过", key[:min(8, len(key))], userID)
@@ -310,37 +330,23 @@ func (s *syncer) syncAPIKeys() (int, int, error) {
 			continue
 		}
 
-		autoBool := autoDowngrade != 0
-		var lastUsed interface{}
+		var lastUsed any
 		if lastUsedAt.Valid && lastUsedAt.String != "" {
 			lastUsed = parseTime(lastUsedAt.String)
 		}
 
-		_, err := s.to.Exec(
-			`INSERT INTO api_keys (user_id, key, name, status, last_used_at, auto_downgrade, channel,
-			                       total_cost_usd, backend_cost_usd, aws_cost_usd, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-			 ON CONFLICT (key) DO UPDATE SET
-			   user_id = EXCLUDED.user_id,
-			   name = EXCLUDED.name,
-			   status = EXCLUDED.status,
-			   last_used_at = EXCLUDED.last_used_at,
-			   auto_downgrade = EXCLUDED.auto_downgrade,
-			   channel = EXCLUDED.channel,
-			   total_cost_usd = EXCLUDED.total_cost_usd,
-			   backend_cost_usd = EXCLUDED.backend_cost_usd,
-			   aws_cost_usd = EXCLUDED.aws_cost_usd,
-			   updated_at = EXCLUDED.updated_at`,
-			pgUserID, key, name, status, lastUsed, autoBool, channel,
-			totalCost, backendCost, awsCost, parseTime(createdAt), parseTime(updatedAt),
-		)
-		if err != nil {
+		if _, err := stmt.Exec(pgUserID, key, name, status, lastUsed, autoDowngrade != 0, channel,
+			totalCost, backendCost, awsCost, parseTime(createdAt), parseTime(updatedAt)); err != nil {
 			log.Printf("    [警告] UPSERT API Key 失败: %v", err)
 			continue
 		}
 		inserted++
 	}
-	return inserted, updated, rows.Err()
+	if err := rows.Err(); err != nil {
+		tx.Rollback()
+		return 0, 0, err
+	}
+	return inserted, 0, tx.Commit()
 }
 
 // syncUsageLogs incrementally syncs usage_logs from SQLite to PG.
@@ -354,7 +360,6 @@ func (s *syncer) syncUsageLogs() (int, error) {
 		return 0, fmt.Errorf("获取同步进度: %w", err)
 	}
 
-	// Build user_id mapping: SQLite user_id -> PG user_id
 	sqliteUserMap, err := s.buildSQLiteUserMap()
 	if err != nil {
 		return 0, err
@@ -363,13 +368,11 @@ func (s *syncer) syncUsageLogs() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Build api_key mapping: SQLite key string -> PG api_key_id
 	pgKeyMap, err := s.buildPGKeyMap()
 	if err != nil {
 		return 0, err
 	}
 
-	// Count pending records for progress
 	var pendingCount int64
 	s.from.QueryRow(`SELECT COUNT(*) FROM usage_logs WHERE id > ?`, lastID).Scan(&pendingCount)
 	if pendingCount > 0 {
@@ -377,6 +380,8 @@ func (s *syncer) syncUsageLogs() (int, error) {
 	}
 
 	total := 0
+	startTime := time.Now()
+	lastLog := time.Now()
 	for {
 		rows, err := s.from.Query(
 			`SELECT id, user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens,
@@ -395,15 +400,16 @@ func (s *syncer) syncUsageLogs() (int, error) {
 			return total, fmt.Errorf("begin tx: %w", err)
 		}
 
-		stmt, err := tx.Prepare(
-			`INSERT INTO usage_logs
-			 (user_id, group_id, api_key_id, provider, model, backend_name, input_tokens, output_tokens, total_tokens,
-			  cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`)
+		stmt, err := tx.Prepare(pq.CopyIn("usage_logs",
+			"user_id", "group_id", "api_key_id", "provider", "model", "backend_name",
+			"input_tokens", "output_tokens", "total_tokens",
+			"cache_read_tokens", "cache_write_tokens",
+			"cost_usd", "status_code", "latency_ms",
+			"is_openclaw", "is_downgraded", "ua", "created_at"))
 		if err != nil {
 			tx.Rollback()
 			rows.Close()
-			return total, fmt.Errorf("prepare: %w", err)
+			return total, fmt.Errorf("prepare copy: %w", err)
 		}
 
 		for rows.Next() {
@@ -433,7 +439,6 @@ func (s *syncer) syncUsageLogs() (int, error) {
 				return total, fmt.Errorf("scan: %w", err)
 			}
 
-			// Map user_id
 			itcode, ok := sqliteUserMap[userID]
 			if !ok {
 				if id > maxID {
@@ -449,20 +454,16 @@ func (s *syncer) syncUsageLogs() (int, error) {
 				continue
 			}
 
-			// Map api_key_id: get the key string from SQLite, then find PG id
 			pgKeyID := mapKeyID(s.from, apiKeyID, pgKeyMap)
-
-			// Infer provider from backend field
 			provider, backendName := inferProvider(backend)
 
-			_, err := stmt.Exec(
+			if _, err := stmt.Exec(
 				pgUID, groupID, pgKeyID, provider, model, backendName,
 				inTok, outTok, totalTok, 0, 0,
 				costUSD, statusCode, latencyMs,
 				isOC != 0, isDG != 0, ua, parseTime(createdAt),
-			)
-			if err != nil {
-				log.Printf("    [警告] 插入 usage_log id=%d 失败: %v", id, err)
+			); err != nil {
+				log.Printf("    [警告] COPY usage_log id=%d 失败: %v", id, err)
 			}
 
 			if id > maxID {
@@ -471,12 +472,19 @@ func (s *syncer) syncUsageLogs() (int, error) {
 			batchCount++
 		}
 		rows.Close()
-		stmt.Close()
 
 		if batchCount == 0 {
+			stmt.Close()
 			tx.Rollback()
 			break
 		}
+
+		if _, err := stmt.Exec(); err != nil {
+			stmt.Close()
+			tx.Rollback()
+			return total, fmt.Errorf("flush copy: %w", err)
+		}
+		stmt.Close()
 
 		if err := tx.Commit(); err != nil {
 			return total, fmt.Errorf("commit: %w", err)
@@ -487,11 +495,21 @@ func (s *syncer) syncUsageLogs() (int, error) {
 		if err := s.updateLastSyncedID("usage_logs", lastID); err != nil {
 			return total, fmt.Errorf("更新同步进度: %w", err)
 		}
-		pct := ""
-		if pendingCount > 0 {
-			pct = fmt.Sprintf(" (%.1f%%)", float64(total)/float64(pendingCount)*100)
+		if time.Since(lastLog) >= 30*time.Second || batchCount < batchSize {
+			elapsed := time.Since(startTime).Seconds()
+			speed := float64(total) / elapsed
+			pct := ""
+			eta := ""
+			if pendingCount > 0 {
+				pct = fmt.Sprintf(" (%.1f%%)", float64(total)/float64(pendingCount)*100)
+				if speed > 0 {
+					remaining := float64(pendingCount-int64(total)) / speed
+					eta = fmt.Sprintf(" ETA %.0fs", remaining)
+				}
+			}
+			log.Printf("    进度: %d/%d%s  id=%d  %.0f条/s%s", total, pendingCount, pct, lastID, speed, eta)
+			lastLog = time.Now()
 		}
-		log.Printf("    进度: %d/%d%s  id=%d", total, pendingCount, pct, lastID)
 
 		if batchCount < batchSize {
 			break
@@ -527,6 +545,8 @@ func (s *syncer) syncAWSUsageLogs() (int, error) {
 	}
 
 	total := 0
+	startTime := time.Now()
+	lastLog := time.Now()
 	for {
 		rows, err := s.from.Query(
 			`SELECT id, user_id, api_key_id, model, bedrock_model, input_tokens, output_tokens, total_tokens,
@@ -545,15 +565,16 @@ func (s *syncer) syncAWSUsageLogs() (int, error) {
 			return total, fmt.Errorf("begin tx: %w", err)
 		}
 
-		stmt, err := tx.Prepare(
-			`INSERT INTO usage_logs
-			 (user_id, group_id, api_key_id, provider, model, backend_name, input_tokens, output_tokens, total_tokens,
-			  cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, created_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`)
+		stmt, err := tx.Prepare(pq.CopyIn("usage_logs",
+			"user_id", "group_id", "api_key_id", "provider", "model", "backend_name",
+			"input_tokens", "output_tokens", "total_tokens",
+			"cache_read_tokens", "cache_write_tokens",
+			"cost_usd", "status_code", "latency_ms",
+			"is_openclaw", "is_downgraded", "ua", "created_at"))
 		if err != nil {
 			tx.Rollback()
 			rows.Close()
-			return total, fmt.Errorf("prepare: %w", err)
+			return total, fmt.Errorf("prepare copy: %w", err)
 		}
 
 		for rows.Next() {
@@ -600,14 +621,13 @@ func (s *syncer) syncAWSUsageLogs() (int, error) {
 
 			pgKeyID := mapKeyID(s.from, apiKeyID, pgKeyMap)
 
-			_, err := stmt.Exec(
+			if _, err := stmt.Exec(
 				pgUID, groupID, pgKeyID, "aws", model, bedrockModel,
 				inTok, outTok, totalTok, cacheRead, cacheWrite,
 				costUSD, statusCode, latencyMs,
 				false, false, ua, parseTime(createdAt),
-			)
-			if err != nil {
-				log.Printf("    [警告] 插入 aws_usage_log id=%d 失败: %v", id, err)
+			); err != nil {
+				log.Printf("    [警告] COPY aws_usage_log id=%d 失败: %v", id, err)
 			}
 
 			if id > maxID {
@@ -616,12 +636,19 @@ func (s *syncer) syncAWSUsageLogs() (int, error) {
 			batchCount++
 		}
 		rows.Close()
-		stmt.Close()
 
 		if batchCount == 0 {
+			stmt.Close()
 			tx.Rollback()
 			break
 		}
+
+		if _, err := stmt.Exec(); err != nil {
+			stmt.Close()
+			tx.Rollback()
+			return total, fmt.Errorf("flush copy: %w", err)
+		}
+		stmt.Close()
 
 		if err := tx.Commit(); err != nil {
 			return total, fmt.Errorf("commit: %w", err)
@@ -632,11 +659,21 @@ func (s *syncer) syncAWSUsageLogs() (int, error) {
 		if err := s.updateLastSyncedID("aws_usage_logs", lastID); err != nil {
 			return total, fmt.Errorf("更新同步进度: %w", err)
 		}
-		pct := ""
-		if pendingCount > 0 {
-			pct = fmt.Sprintf(" (%.1f%%)", float64(total)/float64(pendingCount)*100)
+		if time.Since(lastLog) >= 30*time.Second || batchCount < batchSize {
+			elapsed := time.Since(startTime).Seconds()
+			speed := float64(total) / elapsed
+			pct := ""
+			eta := ""
+			if pendingCount > 0 {
+				pct = fmt.Sprintf(" (%.1f%%)", float64(total)/float64(pendingCount)*100)
+				if speed > 0 {
+					remaining := float64(pendingCount-int64(total)) / speed
+					eta = fmt.Sprintf(" ETA %.0fs", remaining)
+				}
+			}
+			log.Printf("    进度: %d/%d%s  id=%d  %.0f条/s%s", total, pendingCount, pct, lastID, speed, eta)
+			lastLog = time.Now()
 		}
-		log.Printf("    进度: %d/%d%s  id=%d", total, pendingCount, pct, lastID)
 
 		if batchCount < batchSize {
 			break
