@@ -26,6 +26,10 @@ type Backend struct {
 	lastErr         atomic.Int64 // unix timestamp of last error
 	disabled        atomic.Bool
 	validationFailed atomic.Bool  // set on startup validation failure; never auto-recovered
+	quotaExhausted  atomic.Bool   // set by external check when daily quota is exceeded
+	quotaLimit      atomic.Int64  // hard_limit_usd * 100 (cents precision)
+	quotaUsage      atomic.Int64  // total_usage * 100 (cents precision)
+	quotaCheckedAt  atomic.Int64  // unix timestamp of last quota check
 	statusCodes     []int         // last 50 status codes
 	statusCodeDist  map[int]int   // distribution of status codes
 	statusMu        sync.Mutex
@@ -118,6 +122,10 @@ type BackendInfo struct {
 	StatusCodeDist  map[int]int `json:"status_code_dist"`
 	StatusCodes     []int       `json:"status_codes"`
 	ErrorRate       float64     `json:"error_rate"`
+	QuotaExhausted  bool        `json:"quota_exhausted"`
+	QuotaLimit      float64     `json:"quota_limit"`
+	QuotaUsage      float64     `json:"quota_usage"`
+	QuotaCheckedAt  int64       `json:"quota_checked_at"`
 }
 
 // GetBackends returns all backends with their status info.
@@ -136,6 +144,10 @@ func (lb *LoadBalancer) GetBackends() []BackendInfo {
 			StatusCodeDist: b.GetStatusCodeDist(),
 			StatusCodes:    b.GetStatusCodes(),
 			ErrorRate:      b.GetErrorRate(),
+			QuotaExhausted: b.quotaExhausted.Load(),
+			QuotaLimit:     float64(b.quotaLimit.Load()) / 100,
+			QuotaUsage:     float64(b.quotaUsage.Load()) / 100,
+			QuotaCheckedAt: b.quotaCheckedAt.Load(),
 		})
 	}
 	return result
@@ -171,6 +183,7 @@ func NewLoadBalancer(cfgs []config.BackendAPI) *LoadBalancer {
 		})
 	}
 	go lb.recoveryLoop()
+	go lb.quotaResetLoop()
 	return lb
 }
 
@@ -184,7 +197,7 @@ func (lb *LoadBalancer) Pick() *Backend {
 	// First pass: compute total weight of healthy backends
 	totalWeight := 0
 	for _, b := range lb.backends {
-		if !b.disabled.Load() && !b.validationFailed.Load() {
+		if !b.disabled.Load() && !b.validationFailed.Load() && !b.quotaExhausted.Load() {
 			totalWeight += b.Weight
 		}
 	}
@@ -195,7 +208,7 @@ func (lb *LoadBalancer) Pick() *Backend {
 	// Second pass: weighted selection
 	r := rand.Intn(totalWeight)
 	for _, b := range lb.backends {
-		if b.disabled.Load() || b.validationFailed.Load() {
+		if b.disabled.Load() || b.validationFailed.Load() || b.quotaExhausted.Load() {
 			continue
 		}
 		r -= b.Weight
@@ -206,7 +219,7 @@ func (lb *LoadBalancer) Pick() *Backend {
 	// Fallback: return last healthy backend (handles rounding edge cases)
 	for i := len(lb.backends) - 1; i >= 0; i-- {
 		b := lb.backends[i]
-		if !b.disabled.Load() && !b.validationFailed.Load() {
+		if !b.disabled.Load() && !b.validationFailed.Load() && !b.quotaExhausted.Load() {
 			return b
 		}
 	}
@@ -315,4 +328,40 @@ func validateBackend(b *Backend) bool {
 
 	log.Printf("[backend:%s] validate: OK — %d model(s) available", b.Name, len(result.Data))
 	return true
+}
+
+// SetQuotaStatus updates the quota state for a named backend.
+func (lb *LoadBalancer) SetQuotaStatus(name string, exhausted bool, limit, usage float64) bool {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	for _, b := range lb.backends {
+		if b.Name == name {
+			b.quotaExhausted.Store(exhausted)
+			b.quotaLimit.Store(int64(limit * 100))
+			b.quotaUsage.Store(int64(usage * 100))
+			b.quotaCheckedAt.Store(time.Now().Unix())
+			if exhausted {
+				log.Printf("[backend:%s] quota exhausted: usage=%.2f limit=%.2f", b.Name, usage, limit)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// quotaResetLoop clears quotaExhausted for all backends at 00:00 CST daily.
+func (lb *LoadBalancer) quotaResetLoop() {
+	cst := time.FixedZone("CST", 8*3600)
+	for {
+		now := time.Now().In(cst)
+		next := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, cst)
+		time.Sleep(next.Sub(now))
+		lb.mu.RLock()
+		for _, b := range lb.backends {
+			b.quotaExhausted.Store(false)
+			b.quotaUsage.Store(0)
+		}
+		lb.mu.RUnlock()
+		log.Printf("[quota] daily reset: all backends re-enabled")
+	}
 }

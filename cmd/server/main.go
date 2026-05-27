@@ -144,7 +144,9 @@ func main() {
 
 	lb := proxy.NewLoadBalancer(cfg.Backends)
 	proxyH := proxy.NewHandler(lb, collector, keyStore, cfg, cfg.ModelReplacements)
-	lb.ValidateBackends()
+	if cfg.ValidateBackends {
+		lb.ValidateBackends()
+	}
 
 	// ─── AWS Bedrock initialization ───────────────────────────────────
 	var awsProxyH *awsproxy.Handler
@@ -360,6 +362,37 @@ func main() {
 		dbAPI.GET("/schema", dbExplorerH.GetSchema)
 		dbAPI.POST("/query", dbExplorerH.ExecuteQuery)
 	}
+
+	// Backend quota sync API (session_secret auth, called by cmd/check)
+	r.POST("/admin/api/backends/quota", func(c *gin.Context) {
+		raw := c.GetHeader("Authorization")
+		raw = strings.TrimPrefix(raw, "Bearer ")
+		raw = strings.TrimPrefix(raw, "bearer ")
+		if raw == "" || raw != cfg.Auth.SessionSecret {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+
+		var req struct {
+			Backends []struct {
+				Name      string  `json:"name"`
+				Exhausted bool    `json:"exhausted"`
+				Limit     float64 `json:"limit"`
+				Usage     float64 `json:"usage"`
+			} `json:"backends"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		results := make([]gin.H, 0, len(req.Backends))
+		for _, b := range req.Backends {
+			found := lb.SetQuotaStatus(b.Name, b.Exhausted, b.Limit, b.Usage)
+			results = append(results, gin.H{"name": b.Name, "found": found, "exhausted": b.Exhausted})
+		}
+		c.JSON(200, gin.H{"updated": results})
+	})
 
 	// Serve frontend static files
 	r.Static("/assets", "web/dist/assets")

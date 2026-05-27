@@ -29,7 +29,9 @@ mkdir -p bin
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "bin/gateway${SUFFIX}" ./cmd/server
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "bin/sync${SUFFIX}" ./cmd/sync
 CGO_ENABLED=0 go build -ldflags="-s -w" -o "bin/fix${SUFFIX}" ./cmd/fix
+CGO_ENABLED=0 go build -ldflags="-s -w" -o "bin/check${SUFFIX}" ./cmd/check
 
-echo "==> 构建完成：bin/gateway${SUFFIX}  bin/sync${SUFFIX}"
+echo "==> 构建完成：bin/gateway${SUFFIX}  bin/sync${SUFFIX}  bin/check${SUFFIX}"
 echo "    运行方式：./bin/gateway${SUFFIX} -config config/config.yaml"
 echo "    同步方式：./bin/sync${SUFFIX} --fromdb ./database.db --todb ./data/gateway.db"
+echo "    额度检查：./bin/check${SUFFIX} -config config/config.yaml"

@@ -5,7 +5,7 @@
 ## 功能特性
 
 - **API 兼容**：同时支持 OpenAI 风格（`/v1/chat/completions`）和 Anthropic 原生风格（`/v1/messages`）
-- **多后端负载均衡**：加权随机分发，自动故障剔除与恢复，启动时健康检查
+- **多后端负载均衡**：加权随机分发，自动故障剔除与恢复，可选启动时健康检查
 - **AWS Bedrock 支持**：独立渠道接入 AWS Bedrock，支持流式和非流式，自动格式转换，独立配额管理
 - **第三方 Provider 支持**：配置 `public_providers` 接入任意兼容 OpenAI/Anthropic 协议的第三方服务
 - **自动降级**：请求失败时自动降级到配置的 fallback 模型（由 `fallback` 配置项指定，路由到 public provider）
@@ -111,6 +111,8 @@ backends:
     api_key: "sk-ant-xxx"
     weight: 10           # 权重，越高分配流量越多
     enabled: true
+
+validate_backends: false   # 启动时是否检查后端 /v1/models 可用性（默认 false）
 
 model_replacements:      # 模型名称替换规则（客户端请求的模型名 -> 实际转发的模型名）
   claude-3-5-sonnet: claude-3-5-sonnet-20241022
@@ -295,7 +297,7 @@ backends:
 
 **健康检查机制：**
 
-- 启动时对每个后端调用 `GET /v1/models` 验证可用性，失败的后端永久禁用（重启恢复）
+- 启动时健康检查默认关闭，设置 `validate_backends: true` 后启用（对每个后端调用 `GET /v1/models` 验证可用性，失败的后端永久禁用，重启恢复）
 - 运行时连续 5 次请求失败后临时禁用，30 秒后自动恢复
 
 ---

@@ -20,6 +20,10 @@ interface BackendStatus {
   status_code_dist: Record<number, number>
   status_codes: number[]
   error_rate: number
+  quota_exhausted: boolean
+  quota_limit: number
+  quota_usage: number
+  quota_checked_at: number
 }
 
 function SkeletonCard() {
@@ -225,6 +229,78 @@ export default function AdminBackendsPage() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Backend Status */}
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden mb-6">
+        <div className="px-4 py-3 border-b border-gray-50">
+          <h3 className="text-sm font-semibold text-gray-700">Backend 状态</h3>
+        </div>
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50/80">
+            <tr>
+              {['Backend', '状态', '权重', '额度用量', '最近检查'].map((h) => (
+                <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-50">
+            {statusLoading ? (
+              Array.from({ length: 3 }).map((_, i) => (
+                <tr key={i}>
+                  {Array.from({ length: 5 }).map((_, j) => (
+                    <td key={j} className="px-4 py-3.5"><div className="skeleton h-3.5 w-20 rounded" /></td>
+                  ))}
+                </tr>
+              ))
+            ) : backendStatus.length === 0 ? (
+              <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-gray-400">无数据</td></tr>
+            ) : (
+              backendStatus.map((b) => {
+                const isHealthy = !b.disabled && !b.quota_exhausted
+                const statusLabel = b.disabled ? '已禁用' : b.quota_exhausted ? '额度耗尽' : '正常'
+                const statusColor = b.disabled ? 'bg-red-50 text-red-700 ring-red-100' : b.quota_exhausted ? 'bg-orange-50 text-orange-700 ring-orange-100' : 'bg-green-50 text-green-700 ring-green-100'
+                const quotaStr = b.quota_limit > 0
+                  ? `$${b.quota_usage.toFixed(2)} / $${b.quota_limit.toFixed(2)}`
+                  : '—'
+                const quotaPct = b.quota_limit > 0 ? (b.quota_usage / b.quota_limit) * 100 : 0
+                const checkedStr = b.quota_checked_at > 0
+                  ? new Date(b.quota_checked_at * 1000).toLocaleTimeString()
+                  : '—'
+                return (
+                  <tr key={b.name} className="hover:bg-gray-50/50 transition-colors">
+                    <td className="px-4 py-3.5 font-mono text-xs font-semibold text-gray-700">{b.name}</td>
+                    <td className="px-4 py-3.5">
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${statusColor}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${isHealthy ? 'bg-green-500' : b.disabled ? 'bg-red-500' : 'bg-orange-500'}`} />
+                        {statusLabel}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3.5 text-gray-700">{b.weight}</td>
+                    <td className="px-4 py-3.5">
+                      {b.quota_limit > 0 ? (
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 bg-gray-100 rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className={`h-1.5 rounded-full transition-all ${quotaPct >= 100 ? 'bg-red-500' : quotaPct >= 80 ? 'bg-orange-500' : 'bg-green-500'}`}
+                              style={{ width: `${Math.min(quotaPct, 100)}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-500 tabular-nums">{quotaStr}</span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-300">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3.5 text-xs text-gray-400">{checkedStr}</td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
       </div>
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
