@@ -54,6 +54,11 @@ func (h *Handler) UpdateConfig(cfg *config.AWSConfig) {
 	h.mu.Unlock()
 }
 
+// GetBedrockClient returns the underlying BedrockClient for direct use (e.g. perf testing).
+func (h *Handler) GetBedrockClient() *BedrockClient {
+	return h.client
+}
+
 func (h *Handler) awsCfg() *config.AWSConfig {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

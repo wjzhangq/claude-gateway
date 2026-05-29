@@ -89,7 +89,41 @@ var migrations = []migration{
 	{28, `CREATE INDEX IF NOT EXISTS idx_aws_usage_logs_group_created ON aws_usage_logs(group_id, created_at)`},
 	{29, `CREATE INDEX IF NOT EXISTS idx_daily_stats_user_date ON daily_stats(user_id, date)`},
 	{30, `CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_user_date ON aws_daily_stats(user_id, date)`},
+	{31, perfTestSchema},
 }
+
+const perfTestSchema = `
+CREATE TABLE IF NOT EXISTS perf_test_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    initiated_by    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'running',
+    channels        TEXT NOT NULL,
+    input_sizes     TEXT NOT NULL,
+    output_sizes    TEXT NOT NULL,
+    total_cells     INTEGER NOT NULL,
+    completed_cells INTEGER NOT NULL DEFAULT 0,
+    error_msg       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS perf_test_results (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id              INTEGER NOT NULL REFERENCES perf_test_runs(id),
+    channel             TEXT NOT NULL,
+    model               TEXT NOT NULL,
+    input_tokens        INTEGER NOT NULL,
+    max_tokens          INTEGER NOT NULL,
+    ttft_ms             REAL,
+    tpot_ms             REAL,
+    tokens_per_second   REAL,
+    actual_output_tokens INTEGER,
+    total_duration_ms   REAL,
+    status              TEXT NOT NULL DEFAULT 'pending',
+    error_msg           TEXT,
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_perf_test_results_run_id ON perf_test_results(run_id);
+`
 
 func (d *DB) runMigrations() error {
 	if _, err := d.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (

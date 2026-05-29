@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/sirupsen/logrus"
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
@@ -206,9 +207,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 
 				isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 				if isStream {
-					h.streamResponse(c, resp, backend.Name, fbModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, true)
+					h.streamResponse(c, resp, backend.Name, fbModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, true, body)
 				} else {
-					h.bufferResponse(c, resp, backend.Name, fbModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, true)
+					h.bufferResponse(c, resp, backend.Name, fbModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, true, body)
 				}
 				return
 			}
@@ -341,6 +342,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			}
 
 			if err != nil || resp == nil {
+				logBackendAnomaly("backend request failed", keyInfo, backend.Name, reqModel, 0, body, nil, time.Since(start), err)
 				c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
 				return
 			}
@@ -400,9 +402,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// Stream or buffer
 	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	if isStream {
-		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded)
+		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded, body)
 	} else {
-		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded)
+		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded, body)
 	}
 }
 
@@ -523,7 +525,7 @@ func (h *Handler) replaceModelInBody(body []byte, oldModel, newModel string) []b
 
 const streamReadBufSize = 4096
 
-func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool) {
+func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool, reqBody []byte) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -534,6 +536,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	buf := make([]byte, streamReadBufSize)
 	// partial holds bytes of an incomplete SSE line across reads
 	var partial []byte
+	var respBuf []byte
 	for {
 		select {
 		case <-ctx.Done():
@@ -546,6 +549,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 			if canFlush {
 				flusher.Flush()
 			}
+			respBuf = append(respBuf, buf[:n]...)
 			// Parse SSE lines incrementally for token counting
 			partial = append(partial, buf[:n]...)
 			for {
@@ -572,10 +576,19 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 	}
 
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, time.Since(start), isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
+	latency := time.Since(start)
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
+
+	if statusCode >= 400 || (lastIn == 0 && lastOut == 0) {
+		msg := "backend zero tokens"
+		if statusCode >= 400 {
+			msg = "backend error response"
+		}
+		logBackendAnomaly(msg, keyInfo, backendName, model, statusCode, reqBody, respBuf, latency, nil)
+	}
 }
 
-func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool) {
+func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool, reqBody []byte) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("read response body: %v", err)
@@ -584,7 +597,16 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, time.Since(start), isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
+	latency := time.Since(start)
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
+
+	if statusCode >= 400 || (in == 0 && out == 0) {
+		msg := "backend zero tokens"
+		if statusCode >= 400 {
+			msg = "backend error response"
+		}
+		logBackendAnomaly(msg, keyInfo, backendName, model, statusCode, reqBody, respBody, latency, nil)
+	}
 }
 
 // parseBodyTokens extracts token counts from a non-streaming JSON response.
@@ -698,6 +720,37 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	if cost > 0 && statusCode < 400 {
 		h.keyStore.AddDailyCost(info.UserID, cost)
 	}
+}
+
+func logBackendAnomaly(msg string, keyInfo interface{}, backendName, model string, statusCode int, reqBody, respBody []byte, latency time.Duration, reqErr error) {
+	fields := logrus.Fields{
+		"backend":     backendName,
+		"model":       model,
+		"status_code": statusCode,
+		"latency_ms":  latency.Milliseconds(),
+	}
+	if reqErr != nil {
+		fields["error"] = reqErr.Error()
+	}
+	if info, ok := keyInfo.(*auth.KeyInfo); ok && info != nil {
+		fields["itcode"] = info.Itcode
+		fields["user_id"] = info.UserID
+	}
+	if len(reqBody) > 0 {
+		body := string(reqBody)
+		if len(body) > 4096 {
+			body = body[:4096] + "...(truncated)"
+		}
+		fields["request_body"] = body
+	}
+	if len(respBody) > 0 {
+		resp := string(respBody)
+		if len(resp) > 4096 {
+			resp = resp[:4096] + "...(truncated)"
+		}
+		fields["response_body"] = resp
+	}
+	logger.LogBackendRequest(msg, fields, "request_body", "response_body")
 }
 
 // ChatCompletions handles POST /v1/chat/completions (OpenAI style).

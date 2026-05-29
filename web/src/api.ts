@@ -164,3 +164,22 @@ export const adminUpdateConfigLimits = (data: {
   aws_daily_max?: number
   user_limits?: { itcode: string; backend_daily_usd: number; aws_daily_usd: number }[]
 }) => api.put('/admin/api/config/limits', data)
+
+// ===== Admin Performance Test =====
+export const adminStartPerfTest = (config: {
+  channels: { name: string; model: string }[]
+  input_sizes: number[]
+  output_sizes: number[]
+}) => api.post('/admin/api/perftest/run', config)
+
+export const adminGetPerfTestRun = (id: number) =>
+  api.get(`/admin/api/perftest/run/${id}`)
+
+export const adminGetPerfTestRuns = (limit?: number) =>
+  api.get('/admin/api/perftest/runs', { params: limit ? { limit } : {} })
+
+export const adminCancelPerfTest = (id: number) =>
+  api.delete(`/admin/api/perftest/run/${id}`)
+
+export const adminGetPerfTestOptions = () =>
+  api.get('/admin/api/perftest/options')

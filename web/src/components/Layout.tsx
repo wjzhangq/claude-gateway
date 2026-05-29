@@ -25,6 +25,7 @@ const adminNav = [
   { to: '/admin/public/stats', label: 'Public 统计' },
   { to: '/admin/public/usage', label: 'Public 日志' },
   { to: '/admin/quota', label: '额度设置' },
+  { to: '/admin/perftest', label: '性能测试' },
 ]
 
 const awsAdminNav = [

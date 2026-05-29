@@ -24,6 +24,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/model"
+	"github.com/wjzhangq/claude-gateway/internal/perftest"
 	"github.com/wjzhangq/claude-gateway/internal/proxy"
 	"github.com/wjzhangq/claude-gateway/internal/publicproxy"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
@@ -42,6 +43,7 @@ func main() {
 
 	logger.Init(cfg.Log.Level, cfg.Log.Format)
 	logger.InitErrorLog(cfg.Log.Dir)
+	logger.InitBackendLog(cfg.Log.Dir)
 
 	if err := os.MkdirAll("data", 0755); err != nil {
 		logger.Fatalf("create data dir: %v", err)
@@ -214,6 +216,14 @@ func main() {
 		return nil
 	})
 
+	// ─── Performance test initialization ─────────────────────────────
+	var bedrockInvoker perftest.BedrockInvoker
+	if awsProxyH != nil {
+		bedrockInvoker = awsProxyH.GetBedrockClient()
+	}
+	perfRunner := perftest.NewRunner(lb, bedrockInvoker, cfg)
+	perfTestH := handler.NewPerfTestHandler(database, perfRunner, cfg, lb)
+
 	apiAuth := r.Group("/api/auth")
 	{
 		apiAuth.POST("/send-code", authH.SendCode)
@@ -338,6 +348,12 @@ func main() {
 		adminAPI.PUT("/applications/:id/review", appH.Review)
 		adminAPI.GET("/config/limits", configH.GetLimits)
 		adminAPI.PUT("/config/limits", configH.UpdateLimits)
+		adminAPI.POST("/perftest/run", perfTestH.StartRun)
+		adminAPI.GET("/perftest/run/:id", perfTestH.GetRun)
+		adminAPI.GET("/perftest/run/:id/stream", perfTestH.StreamProgress)
+		adminAPI.GET("/perftest/runs", perfTestH.ListRuns)
+		adminAPI.GET("/perftest/options", perfTestH.GetOptions)
+		adminAPI.DELETE("/perftest/run/:id", perfTestH.CancelRun)
 	}
 
 	// Admin AWS API

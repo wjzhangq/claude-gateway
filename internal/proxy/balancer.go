@@ -242,6 +242,38 @@ func (lb *LoadBalancer) recoveryLoop() {
 	}
 }
 
+// PickForPerfTest selects a healthy backend and returns its connection details for perf testing.
+func (lb *LoadBalancer) PickForPerfTest() (name, url, apiKey string, client *http.Client, ok bool) {
+	b := lb.Pick()
+	if b == nil {
+		return "", "", "", nil, false
+	}
+	return b.Name, b.URL, b.APIKey, b.Client(), true
+}
+
+// PickByNameForPerfTest selects a specific backend by name for perf testing.
+func (lb *LoadBalancer) PickByNameForPerfTest(name string) (url, apiKey string, client *http.Client, ok bool) {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	for _, b := range lb.backends {
+		if b.Name == name {
+			return b.URL, b.APIKey, b.Client(), true
+		}
+	}
+	return "", "", nil, false
+}
+
+// GetBackendNames returns the names of all configured backends.
+func (lb *LoadBalancer) GetBackendNames() []string {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	names := make([]string, 0, len(lb.backends))
+	for _, b := range lb.backends {
+		names = append(names, b.Name)
+	}
+	return names
+}
+
 // ValidateBackends calls GET /v1/models on each backend and logs the result.
 // Backends that fail validation (non-200, missing/empty data array) are disabled (weight=0).
 func (lb *LoadBalancer) ValidateBackends() {
