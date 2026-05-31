@@ -168,8 +168,8 @@ export default function AWSKeysPage() {
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-x-auto">
+        <table className="w-full text-sm min-w-[900px]">
           <thead className="bg-gray-50/80">
             <tr>
               {['名称', 'Key', '状态', '请求数', '费用', '创建时间', '最后使用', '操作'].map((h) => (
@@ -228,7 +228,7 @@ export default function AWSKeysPage() {
                   <td className="px-4 py-3.5 text-gray-600 text-xs">${(k.cost_usd || 0).toFixed(4)}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">{formatDate(k.created_at)}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">{formatTime(k.last_used_at)}</td>
-                  <td className="px-4 py-3.5">
+                  <td className="px-4 py-3.5 whitespace-nowrap">
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => setRevealedId(revealedId === k.id ? null : k.id)}

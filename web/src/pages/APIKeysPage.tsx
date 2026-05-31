@@ -178,8 +178,8 @@ export default function APIKeysPage() {
         </div>
       )}
 
-      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-x-auto">
+        <table className="w-full text-sm min-w-[1100px]">
           <thead className="bg-gray-50/80">
             <tr>
               {['名称', 'Key', '状态', '自动降级', '请求数', 'Backend费用', 'AWS费用', '总费用', '创建时间', '最后使用', '操作'].map((h) => (
@@ -258,7 +258,7 @@ export default function APIKeysPage() {
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
                     {formatTime(k.last_used_at)}
                   </td>
-                  <td className="px-4 py-3.5">
+                  <td className="px-4 py-3.5 whitespace-nowrap">
                     <div className="flex items-center gap-3">
                       <button
                         onClick={() => setRevealedId(revealedId === k.id ? null : k.id)}
