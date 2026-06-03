@@ -170,6 +170,7 @@ func NewLoadBalancer(cfgs []config.BackendAPI) *LoadBalancer {
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 20,
 			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  true, // prevent gzip on SSE streams (e.g. MiniMax returns compressed binary)
 		}
 		lb.backends = append(lb.backends, &Backend{
 			Name:   c.Name,
@@ -301,6 +302,7 @@ func (lb *LoadBalancer) UpdateBackends(cfgs []config.BackendAPI) {
 			MaxIdleConns:        100,
 			MaxIdleConnsPerHost: 20,
 			IdleConnTimeout:     90 * time.Second,
+			DisableCompression:  true, // prevent gzip on SSE streams (e.g. MiniMax returns compressed binary)
 		}
 		newBackends = append(newBackends, &Backend{
 			Name:   c.Name,
