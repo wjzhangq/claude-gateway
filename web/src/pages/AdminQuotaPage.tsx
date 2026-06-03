@@ -6,11 +6,13 @@ interface UserLimit {
   itcode: string
   backend_daily_usd: number
   aws_daily_usd: number
+  aws_monthly_usd: number
 }
 
 interface LimitsData {
   backend_daily_max: number
   aws_daily_max: number
+  aws_monthly_max: number
   user_daily_limits: UserLimit[]
 }
 
@@ -19,10 +21,12 @@ export default function AdminQuotaPage() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [backendMax, setBackendMax] = useState('')
-  const [awsMax, setAwsMax] = useState('')
+  const [awsDailyMax, setAwsDailyMax] = useState('')
+  const [awsMonthlyMax, setAwsMonthlyMax] = useState('')
   const [editIdx, setEditIdx] = useState<number | null>(null)
   const [editBackend, setEditBackend] = useState('')
-  const [editAws, setEditAws] = useState('')
+  const [editAwsDaily, setEditAwsDaily] = useState('')
+  const [editAwsMonthly, setEditAwsMonthly] = useState('')
 
   const fetchData = () => {
     setLoading(true)
@@ -30,7 +34,8 @@ export default function AdminQuotaPage() {
       .then((res) => {
         setData(res.data)
         setBackendMax(String(res.data.backend_daily_max))
-        setAwsMax(String(res.data.aws_daily_max))
+        setAwsDailyMax(String(res.data.aws_daily_max))
+        setAwsMonthlyMax(String(res.data.aws_monthly_max ?? 0))
       })
       .catch(() => setData(null))
       .finally(() => setLoading(false))
@@ -43,7 +48,8 @@ export default function AdminQuotaPage() {
     try {
       await adminUpdateConfigLimits({
         backend_daily_max: Number(backendMax),
-        aws_daily_max: Number(awsMax),
+        aws_daily_max: Number(awsDailyMax),
+        aws_monthly_max: Number(awsMonthlyMax),
       })
       toast('全局额度已更新')
       fetchData()
@@ -60,7 +66,8 @@ export default function AdminQuotaPage() {
         user_limits: [{
           itcode: user.itcode,
           backend_daily_usd: Number(editBackend),
-          aws_daily_usd: Number(editAws),
+          aws_daily_usd: Number(editAwsDaily),
+          aws_monthly_usd: Number(editAwsMonthly),
         }],
       })
       toast(`${user.itcode} 额度已更新`)
@@ -75,20 +82,21 @@ export default function AdminQuotaPage() {
     const u = data.user_daily_limits[idx]
     setEditIdx(idx)
     setEditBackend(String(u.backend_daily_usd))
-    setEditAws(String(u.aws_daily_usd))
+    setEditAwsDaily(String(u.aws_daily_usd))
+    setEditAwsMonthly(String(u.aws_monthly_usd ?? 0))
   }
 
   return (
     <div className="p-8">
       <div className="mb-7">
         <h2 className="text-xl font-bold text-gray-900">额度设置</h2>
-        <p className="text-sm text-gray-400 mt-0.5">管理全局每日额度上限和用户额度覆盖</p>
+        <p className="text-sm text-gray-400 mt-0.5">管理全局额度上限和用户额度覆盖</p>
       </div>
 
       {/* 全局设置 */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6 mb-6">
-        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">全局每日上限</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-4">全局上限</h3>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div>
             <label className="block text-sm text-gray-500 mb-1">Backend 每日上限 (USD)</label>
             <input
@@ -103,9 +111,22 @@ export default function AdminQuotaPage() {
             <label className="block text-sm text-gray-500 mb-1">AWS 每日上限 (USD)</label>
             <input
               type="number"
-              value={awsMax}
-              onChange={(e) => setAwsMax(e.target.value)}
+              value={awsDailyMax}
+              onChange={(e) => setAwsDailyMax(e.target.value)}
               className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500/20 focus:border-red-400 outline-none transition"
+              disabled={loading}
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-500 mb-1">
+              AWS 每月上限 (USD)
+              <span className="ml-1.5 text-xs text-amber-500 font-normal">若 &gt; 0 则启用月计费</span>
+            </label>
+            <input
+              type="number"
+              value={awsMonthlyMax}
+              onChange={(e) => setAwsMonthlyMax(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 outline-none transition"
               disabled={loading}
             />
           </div>
@@ -125,7 +146,7 @@ export default function AdminQuotaPage() {
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100">
           <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">用户额度覆盖</h3>
-          <p className="text-xs text-gray-400 mt-0.5">这些用户的额度优先于全局上限生效</p>
+          <p className="text-xs text-gray-400 mt-0.5">这些用户的额度优先于全局上限生效。AWS 月限 &gt; 0 时启用月计费，否则使用日限。</p>
         </div>
         <table className="w-full">
           <thead>
@@ -133,6 +154,7 @@ export default function AdminQuotaPage() {
               <th className="text-left px-6 py-3 font-medium">ITCode</th>
               <th className="text-right px-6 py-3 font-medium">Backend 每日 (USD)</th>
               <th className="text-right px-6 py-3 font-medium">AWS 每日 (USD)</th>
+              <th className="text-right px-6 py-3 font-medium">AWS 每月 (USD)</th>
               <th className="text-center px-6 py-3 font-medium">操作</th>
             </tr>
           </thead>
@@ -140,7 +162,7 @@ export default function AdminQuotaPage() {
             {loading ? (
               Array.from({ length: 3 }).map((_, i) => (
                 <tr key={i}>
-                  {[100, 80, 80, 60].map((w, j) => (
+                  {[100, 80, 80, 80, 60].map((w, j) => (
                     <td key={j} className="px-6 py-3.5">
                       <div className="skeleton h-3.5 rounded" style={{ width: w }} />
                     </td>
@@ -149,7 +171,7 @@ export default function AdminQuotaPage() {
               ))
             ) : data?.user_daily_limits.length === 0 ? (
               <tr>
-                <td colSpan={4} className="text-center py-8 text-gray-400 text-sm">
+                <td colSpan={5} className="text-center py-8 text-gray-400 text-sm">
                   暂无用户额度覆盖配置
                 </td>
               </tr>
@@ -173,12 +195,26 @@ export default function AdminQuotaPage() {
                     {editIdx === idx ? (
                       <input
                         type="number"
-                        value={editAws}
-                        onChange={(e) => setEditAws(e.target.value)}
+                        value={editAwsDaily}
+                        onChange={(e) => setEditAwsDaily(e.target.value)}
                         className="w-28 px-2 py-1 border border-gray-200 rounded text-sm text-right focus:ring-2 focus:ring-red-500/20 focus:border-red-400 outline-none"
                       />
                     ) : (
                       <span className="text-sm text-gray-700">${u.aws_daily_usd}</span>
+                    )}
+                  </td>
+                  <td className="px-6 py-3.5 text-right">
+                    {editIdx === idx ? (
+                      <input
+                        type="number"
+                        value={editAwsMonthly}
+                        onChange={(e) => setEditAwsMonthly(e.target.value)}
+                        className="w-28 px-2 py-1 border border-amber-200 rounded text-sm text-right focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 outline-none"
+                      />
+                    ) : (
+                      <span className={`text-sm ${u.aws_monthly_usd > 0 ? 'text-amber-600 font-medium' : 'text-gray-400'}`}>
+                        {u.aws_monthly_usd > 0 ? `$${u.aws_monthly_usd}` : '—'}
+                      </span>
                     )}
                   </td>
                   <td className="px-6 py-3.5 text-center">

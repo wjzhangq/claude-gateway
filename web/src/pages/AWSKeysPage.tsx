@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listAWSKeys, createAWSKey, disableKey, enableKey, deleteKey, renameKey, switchKeyChannel } from '../api'
+import { listAWSKeys, createAWSKey, disableKey, enableKey, deleteKey, renameKey, switchKeyChannel, getAWSDashboard } from '../api'
 import { formatTime, formatDate } from '../utils/time'
 
 interface APIKey {
@@ -38,6 +38,11 @@ export default function AWSKeysPage() {
   const [copied, setCopied] = useState<number | null>(null)
   const [renamingId, setRenamingId] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [dashboard, setDashboard] = useState<{
+    month_cost_usd: number
+    aws_monthly_limit: number
+    aws_monthly_remaining?: number
+  } | null>(null)
 
   const handleCopy = (id: number, key: string) => {
     navigator.clipboard.writeText(key)
@@ -53,7 +58,12 @@ export default function AWSKeysPage() {
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    getAWSDashboard()
+      .then((res) => setDashboard(res.data))
+      .catch(() => {})
+  }, [])
 
   const handleCreate = async () => {
     if (!newName) { setError('请输入名称'); return }
@@ -116,6 +126,41 @@ export default function AWSKeysPage() {
           + 创建 AWS Key
         </button>
       </div>
+
+      {/* 月费用卡片 */}
+      {dashboard && dashboard.aws_monthly_limit > 0 && (
+        <div className="mb-6">
+          <div className="bg-white rounded-xl border border-gray-100 px-6 py-5 shadow-sm max-w-md">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">AWS 本月限额</span>
+              <span className="text-xs text-gray-400">
+                ${dashboard.month_cost_usd.toFixed(2)} / ${dashboard.aws_monthly_limit.toFixed(2)}
+              </span>
+            </div>
+            <div className="w-full bg-gray-100 rounded-full h-2.5 mb-2">
+              <div
+                className={`h-2.5 rounded-full transition-all ${
+                  (dashboard.aws_monthly_remaining ?? 0) <= 0
+                    ? 'bg-red-500'
+                    : dashboard.month_cost_usd / dashboard.aws_monthly_limit > 0.8
+                      ? 'bg-amber-500'
+                      : 'bg-amber-400'
+                }`}
+                style={{ width: `${Math.min((dashboard.month_cost_usd / dashboard.aws_monthly_limit) * 100, 100)}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-lg font-bold text-gray-900">
+                ${(dashboard.aws_monthly_remaining ?? dashboard.aws_monthly_limit - dashboard.month_cost_usd).toFixed(2)}
+                <span className="text-xs font-normal text-gray-400 ml-1">本月剩余</span>
+              </span>
+              {(dashboard.aws_monthly_remaining ?? 1) <= 0 && (
+                <span className="text-xs text-red-500 font-medium">已达月上限</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {showCreate && (
         <div className="mb-6 bg-white border border-gray-100 rounded-xl p-5 shadow-sm">

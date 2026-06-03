@@ -129,19 +129,31 @@ func (h *Handler) checkAWSDailyLimit(c *gin.Context) bool {
 
 	cfg := h.awsCfg()
 
-	// Effective daily limit resolution (highest priority first):
-	// 1. If the user's itcode appears in config.user_daily_limits with aws_daily_usd > 0,
-	//    use that value directly — it overrides both the global cap and the DB quota.
-	// 2. Otherwise fall back to min(global AWSDailyMax, per-user AWSDailyQuotaUSD),
-	//    treating 0 as "no limit" for each.
-	var effectiveLimit float64
+	// Effective limit resolution (highest priority first):
+	// 1. user_daily_limits[itcode].aws_monthly_usd > 0  → monthly billing, use that value
+	// 2. aws.aws_monthly_max > 0                        → monthly billing, use global monthly
+	// 3. user_daily_limits[itcode].aws_daily_usd > 0   → daily billing, use that value
+	// 4. min(aws_daily_max, per-user db quota)          → daily billing fallback
 	h.mu.RLock()
 	root := h.rootConfig
 	h.mu.RUnlock()
+
+	var effectiveLimit float64
+	useMonthly := false
+
 	if root != nil {
-		if override := root.LookupUserDailyLimit(keyInfo.Itcode); override != nil && override.AWSDailyUSD > 0 {
-			effectiveLimit = override.AWSDailyUSD
+		if override := root.LookupUserDailyLimit(keyInfo.Itcode); override != nil {
+			if override.AWSMonthlyUSD > 0 {
+				effectiveLimit = override.AWSMonthlyUSD
+				useMonthly = true
+			} else if override.AWSDailyUSD > 0 {
+				effectiveLimit = override.AWSDailyUSD
+			}
 		}
+	}
+	if effectiveLimit == 0 && cfg.AWSMonthlyMax > 0 {
+		effectiveLimit = cfg.AWSMonthlyMax
+		useMonthly = true
 	}
 	if effectiveLimit == 0 {
 		globalMax := cfg.AWSDailyMax
@@ -161,14 +173,23 @@ func (h *Handler) checkAWSDailyLimit(c *gin.Context) bool {
 	}
 
 	if effectiveLimit > 0 {
-		todayCost := h.keyStore.GetAWSDailyCost(keyInfo.UserID)
-		if todayCost >= effectiveLimit {
-			logger.Warnf("daily AWS limit exceeded: user_id=%d today=%.4f limit=%.4f", keyInfo.UserID, todayCost, effectiveLimit)
+		var currentCost float64
+		if useMonthly {
+			currentCost = h.keyStore.GetAWSMonthlyCost(keyInfo.UserID)
+		} else {
+			currentCost = h.keyStore.GetAWSDailyCost(keyInfo.UserID)
+		}
+		if currentCost >= effectiveLimit {
+			period := "daily"
+			if useMonthly {
+				period = "monthly"
+			}
+			logger.Warnf("AWS %s limit exceeded: user_id=%d current=%.4f limit=%.4f", period, keyInfo.UserID, currentCost, effectiveLimit)
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"type": "error",
 				"error": gin.H{
 					"type":    "rate_limit_error",
-					"message": "Daily AWS spending limit exceeded. Please try again tomorrow.",
+					"message": fmt.Sprintf("AWS %s spending limit exceeded. Please try again later.", period),
 				},
 			})
 			return true
@@ -988,9 +1009,10 @@ func (h *Handler) emitUsage(keyInfo *auth.KeyInfo, keyStr, reqModel, bedrockMode
 		UA:               ua,
 	})
 
-	// Accumulate AWS daily cost for per-user quota tracking
+	// Accumulate AWS daily and monthly cost for per-user quota tracking
 	if cost > 0 && statusCode < 400 {
 		h.keyStore.AddAWSDailyCost(keyInfo.UserID, cost)
+		h.keyStore.AddAWSMonthlyCost(keyInfo.UserID, cost)
 	}
 }
 

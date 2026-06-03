@@ -13,8 +13,9 @@ import (
 // allowing individual users to have a higher (or lower) ceiling than the global default.
 type UserDailyLimit struct {
 	Itcode          string  `yaml:"itcode"`
-	BackendDailyUSD float64 `yaml:"backend_daily_usd"` // 0 = not overridden for backend channel
-	AWSDailyUSD     float64 `yaml:"aws_daily_usd"`     // 0 = not overridden for AWS channel
+	BackendDailyUSD float64 `yaml:"backend_daily_usd"`  // 0 = not overridden for backend channel
+	AWSDailyUSD     float64 `yaml:"aws_daily_usd"`      // 0 = not overridden for AWS channel (daily)
+	AWSMonthlyUSD   float64 `yaml:"aws_monthly_usd"`    // 0 = not overridden; >0 switches AWS to monthly billing
 }
 
 // Config is the root configuration structure.
@@ -101,8 +102,9 @@ type AWSConfig struct {
 	CacheEnabled    int                          `yaml:"cache_enabled"`
 	CacheTTL        time.Duration                `yaml:"cache_ttl"`
 	Socks5Proxy     string                       `yaml:"socks5"`        // optional socks5 proxy, e.g. socks5://user:pass@host:port or user:pass@host:port
-	AWSDailyMax     float64                      `yaml:"aws_daily_max"` // max AWS spend per user per day in USD (0 = unlimited)
-	ModelReplace    map[string]string            `yaml:"model_replace"` // exact: upstream name -> Bedrock ARN
+	AWSDailyMax     float64                      `yaml:"aws_daily_max"`   // max AWS spend per user per day in USD (0 = unlimited)
+	AWSMonthlyMax   float64                      `yaml:"aws_monthly_max"` // max AWS spend per user per natural month in USD (0 = use daily limit)
+	ModelReplace    map[string]string            `yaml:"model_replace"`   // exact: upstream name -> Bedrock ARN
 	ModelDefault    map[string]string            `yaml:"model_default"` // glob pattern -> upstream name
 	ModelPricing    map[string]ModelPricingEntry `yaml:"model_pricing"` // glob pattern -> pricing
 }

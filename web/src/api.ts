@@ -162,7 +162,8 @@ export const adminGetConfigLimits = () =>
 export const adminUpdateConfigLimits = (data: {
   backend_daily_max?: number
   aws_daily_max?: number
-  user_limits?: { itcode: string; backend_daily_usd: number; aws_daily_usd: number }[]
+  aws_monthly_max?: number
+  user_limits?: { itcode: string; backend_daily_usd: number; aws_daily_usd: number; aws_monthly_usd: number }[]
 }) => api.put('/admin/api/config/limits', data)
 
 // ===== Admin Performance Test =====

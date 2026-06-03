@@ -8,19 +8,21 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wjzhangq/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 )
 
 // AWSStatsHandler serves AWS usage statistics endpoints.
 type AWSStatsHandler struct {
-	db     *db.DB
-	config *config.Config
+	db       *db.DB
+	config   *config.Config
+	keyStore *auth.KeyStore
 }
 
 // NewAWSStatsHandler creates an AWSStatsHandler.
-func NewAWSStatsHandler(database *db.DB, cfg *config.Config) *AWSStatsHandler {
-	return &AWSStatsHandler{db: database, config: cfg}
+func NewAWSStatsHandler(database *db.DB, cfg *config.Config, ks *auth.KeyStore) *AWSStatsHandler {
+	return &AWSStatsHandler{db: database, config: cfg, keyStore: ks}
 }
 
 // UpdateConfig replaces the config reference (used during reload).
@@ -64,13 +66,39 @@ func (h *AWSStatsHandler) GetMyDashboard(c *gin.Context) {
 		monthCost += s.CostUSD
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"today_requests":  todayRequests,
-		"today_cost_usd":  todayCost,
-		"month_requests":  monthRequests,
-		"month_cost_usd":  monthCost,
-		"today_stats":     todayStats,
-	})
+	// Resolve monthly limit for this user
+	var awsMonthlyLimit float64
+	cfg := h.config
+	if cfg != nil {
+		var itcode string
+		if raw, ok := c.Get(middleware.CtxKeyInfo); ok {
+			if ki, ok := raw.(*auth.KeyInfo); ok {
+				itcode = ki.Itcode
+			}
+		}
+		if override := cfg.LookupUserDailyLimit(itcode); override != nil && override.AWSMonthlyUSD > 0 {
+			awsMonthlyLimit = override.AWSMonthlyUSD
+		} else if cfg.AWS.AWSMonthlyMax > 0 {
+			awsMonthlyLimit = cfg.AWS.AWSMonthlyMax
+		}
+	}
+
+	resp := gin.H{
+		"today_requests":    todayRequests,
+		"today_cost_usd":    todayCost,
+		"month_requests":    monthRequests,
+		"month_cost_usd":    monthCost,
+		"today_stats":       todayStats,
+		"aws_monthly_limit": awsMonthlyLimit,
+	}
+	if awsMonthlyLimit > 0 {
+		remaining := awsMonthlyLimit - monthCost
+		if remaining < 0 {
+			remaining = 0
+		}
+		resp["aws_monthly_remaining"] = remaining
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 // GetMyUsage godoc: GET /api/aws/usage

@@ -195,7 +195,7 @@ func main() {
 	userH := handler.NewUserHandler(database, keyStore)
 	statsH := handler.NewStatsHandler(database, cfg, keyStore)
 	appH := handler.NewApplicationHandler(database, keyStore)
-	awsStatsH := handler.NewAWSStatsHandler(database, cfg)
+	awsStatsH := handler.NewAWSStatsHandler(database, cfg, keyStore)
 	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore)
 	configH := handler.NewConfigHandler(cfgPath, cfg, func() error {
 		newCfg, err := config.Load(cfgPath)

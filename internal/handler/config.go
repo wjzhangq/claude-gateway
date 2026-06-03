@@ -23,15 +23,17 @@ func NewConfigHandler(cfgPath string, cfg *config.Config, reloadFn func() error)
 }
 
 type limitsResponse struct {
-	BackendDailyMax float64              `json:"backend_daily_max"`
-	AWSDailyMax     float64              `json:"aws_daily_max"`
-	UserDailyLimits []userLimitResponse  `json:"user_daily_limits"`
+	BackendDailyMax float64             `json:"backend_daily_max"`
+	AWSDailyMax     float64             `json:"aws_daily_max"`
+	AWSMonthlyMax   float64             `json:"aws_monthly_max"`
+	UserDailyLimits []userLimitResponse `json:"user_daily_limits"`
 }
 
 type userLimitResponse struct {
 	Itcode          string  `json:"itcode"`
 	BackendDailyUSD float64 `json:"backend_daily_usd"`
 	AWSDailyUSD     float64 `json:"aws_daily_usd"`
+	AWSMonthlyUSD   float64 `json:"aws_monthly_usd"`
 }
 
 func (h *ConfigHandler) GetLimits(c *gin.Context) {
@@ -41,11 +43,13 @@ func (h *ConfigHandler) GetLimits(c *gin.Context) {
 			Itcode:          l.Itcode,
 			BackendDailyUSD: l.BackendDailyUSD,
 			AWSDailyUSD:     l.AWSDailyUSD,
+			AWSMonthlyUSD:   l.AWSMonthlyUSD,
 		}
 	}
 	c.JSON(http.StatusOK, limitsResponse{
 		BackendDailyMax: h.cfg.BackendDailyMax,
 		AWSDailyMax:     h.cfg.AWS.AWSDailyMax,
+		AWSMonthlyMax:   h.cfg.AWS.AWSMonthlyMax,
 		UserDailyLimits: limits,
 	})
 }
@@ -53,6 +57,7 @@ func (h *ConfigHandler) GetLimits(c *gin.Context) {
 type updateLimitsRequest struct {
 	BackendDailyMax *float64           `json:"backend_daily_max"`
 	AWSDailyMax     *float64           `json:"aws_daily_max"`
+	AWSMonthlyMax   *float64           `json:"aws_monthly_max"`
 	UserLimits      []userLimitRequest `json:"user_limits"`
 }
 
@@ -60,6 +65,7 @@ type userLimitRequest struct {
 	Itcode          string  `json:"itcode"`
 	BackendDailyUSD float64 `json:"backend_daily_usd"`
 	AWSDailyUSD     float64 `json:"aws_daily_usd"`
+	AWSMonthlyUSD   float64 `json:"aws_monthly_usd"`
 }
 
 func (h *ConfigHandler) UpdateLimits(c *gin.Context) {
@@ -84,8 +90,12 @@ func (h *ConfigHandler) UpdateLimits(c *gin.Context) {
 		content = replaceYAMLValue(content, `aws_daily_max`, formatFloat(*req.AWSDailyMax))
 	}
 
+	if req.AWSMonthlyMax != nil {
+		content = replaceYAMLValue(content, `aws_monthly_max`, formatFloat(*req.AWSMonthlyMax))
+	}
+
 	for _, ul := range req.UserLimits {
-		content = replaceUserLimit(content, ul.Itcode, ul.BackendDailyUSD, ul.AWSDailyUSD)
+		content = replaceUserLimit(content, ul.Itcode, ul.BackendDailyUSD, ul.AWSDailyUSD, ul.AWSMonthlyUSD)
 	}
 
 	if err := os.WriteFile(h.cfgPath, []byte(content), 0644); err != nil {
@@ -106,7 +116,7 @@ func replaceYAMLValue(content, key, newValue string) string {
 	return re.ReplaceAllString(content, "${1}"+newValue+"${3}")
 }
 
-func replaceUserLimit(content, itcode string, backendUSD, awsUSD float64) string {
+func replaceUserLimit(content, itcode string, backendUSD, awsDailyUSD, awsMonthlyUSD float64) string {
 	lines := strings.Split(content, "\n")
 	var result []string
 	found := false
@@ -119,13 +129,15 @@ func replaceUserLimit(content, itcode string, backendUSD, awsUSD float64) string
 				for i+1 < len(lines) {
 					next := lines[i+1]
 					trimmed := strings.TrimSpace(next)
-					if trimmed == "" || (!strings.HasPrefix(trimmed, "backend_daily_usd") && !strings.HasPrefix(trimmed, "aws_daily_usd") && !strings.HasPrefix(trimmed, "#")) {
+					if trimmed == "" || (!strings.HasPrefix(trimmed, "backend_daily_usd") && !strings.HasPrefix(trimmed, "aws_daily_usd") && !strings.HasPrefix(trimmed, "aws_monthly_usd") && !strings.HasPrefix(trimmed, "#")) {
 						break
 					}
 					if strings.HasPrefix(trimmed, "backend_daily_usd") {
 						next = replaceYAMLValue(next, "backend_daily_usd", formatFloat(backendUSD))
 					} else if strings.HasPrefix(trimmed, "aws_daily_usd") {
-						next = replaceYAMLValue(next, "aws_daily_usd", formatFloat(awsUSD))
+						next = replaceYAMLValue(next, "aws_daily_usd", formatFloat(awsDailyUSD))
+					} else if strings.HasPrefix(trimmed, "aws_monthly_usd") {
+						next = replaceYAMLValue(next, "aws_monthly_usd", formatFloat(awsMonthlyUSD))
 					}
 					result = append(result, next)
 					i++

@@ -32,20 +32,23 @@ type KeyInfo struct {
 
 // KeyStore holds all active API keys in memory for O(1) lookup.
 type KeyStore struct {
-	mu              sync.RWMutex
-	keys            map[string]*KeyInfo // key string -> KeyInfo
-	dailyCosts      map[int64]float64   // userID -> today's accumulated backend cost (USD)
-	dailyCostDate   string              // "YYYY-MM-DD" of the current daily cost window
-	awsDailyCosts   map[int64]float64   // userID -> today's accumulated AWS cost (USD)
-	awsDailyCostDate string             // "YYYY-MM-DD" of the current AWS daily cost window
+	mu               sync.RWMutex
+	keys             map[string]*KeyInfo // key string -> KeyInfo
+	dailyCosts       map[int64]float64   // userID -> today's accumulated backend cost (USD)
+	dailyCostDate    string              // "YYYY-MM-DD" of the current daily cost window
+	awsDailyCosts    map[int64]float64   // userID -> today's accumulated AWS cost (USD)
+	awsDailyCostDate string              // "YYYY-MM-DD" of the current AWS daily cost window
+	awsMonthlyCosts  map[int64]float64   // userID -> this month's accumulated AWS cost (USD)
+	awsMonthlyCostMonth string           // "YYYY-MM" of the current AWS monthly cost window
 }
 
 // NewKeyStore creates an empty KeyStore.
 func NewKeyStore() *KeyStore {
 	return &KeyStore{
-		keys:          make(map[string]*KeyInfo),
-		dailyCosts:    make(map[int64]float64),
-		awsDailyCosts: make(map[int64]float64),
+		keys:            make(map[string]*KeyInfo),
+		dailyCosts:      make(map[int64]float64),
+		awsDailyCosts:   make(map[int64]float64),
+		awsMonthlyCosts: make(map[int64]float64),
 	}
 }
 
@@ -319,7 +322,53 @@ func (ks *KeyStore) GetAWSDailyCost(userID int64) float64 {
 	return cost
 }
 
-// InitAWSDailyCosts seeds the in-memory AWS daily cost map from a pre-fetched snapshot.
+// ── AWS Monthly cost tracking ─────────────────────────────────────────────────
+
+// thisMonthStr returns the current month as "YYYY-MM" in local time.
+func thisMonthStr() string {
+	return time.Now().Format("2006-01")
+}
+
+// checkAndResetAWSMonthly resets awsMonthlyCosts if the month has rolled over.
+// Must be called with ks.mu held (write lock).
+func (ks *KeyStore) checkAndResetAWSMonthly() {
+	month := thisMonthStr()
+	if ks.awsMonthlyCostMonth != month {
+		ks.awsMonthlyCosts = make(map[int64]float64)
+		ks.awsMonthlyCostMonth = month
+	}
+}
+
+// AddAWSMonthlyCost accumulates AWS spend for a user this month. Thread-safe.
+func (ks *KeyStore) AddAWSMonthlyCost(userID int64, costUSD float64) {
+	if costUSD <= 0 {
+		return
+	}
+	ks.mu.Lock()
+	ks.checkAndResetAWSMonthly()
+	ks.awsMonthlyCosts[userID] += costUSD
+	ks.mu.Unlock()
+}
+
+// GetAWSMonthlyCost returns this month's accumulated AWS spend for a user. Thread-safe.
+func (ks *KeyStore) GetAWSMonthlyCost(userID int64) float64 {
+	ks.mu.Lock()
+	ks.checkAndResetAWSMonthly()
+	cost := ks.awsMonthlyCosts[userID]
+	ks.mu.Unlock()
+	return cost
+}
+
+// InitAWSMonthlyCosts seeds the in-memory AWS monthly cost map from a pre-fetched snapshot.
+func (ks *KeyStore) InitAWSMonthlyCosts(month string, costs map[int64]float64) {
+	ks.mu.Lock()
+	ks.awsMonthlyCostMonth = month
+	ks.awsMonthlyCosts = make(map[int64]float64, len(costs))
+	for uid, c := range costs {
+		ks.awsMonthlyCosts[uid] = c
+	}
+	ks.mu.Unlock()
+}
 func (ks *KeyStore) InitAWSDailyCosts(date string, costs map[int64]float64) {
 	ks.mu.Lock()
 	ks.awsDailyCostDate = date
