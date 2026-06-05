@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,6 +31,8 @@ type quotaBackend struct {
 
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
+	enableGlob := flag.String("enable", "", "glob pattern to mark matching backends as available (e.g. 'aws-*')")
+	disableGlob := flag.String("disable", "", "glob pattern to mark matching backends as exhausted (e.g. 'aws-*')")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -39,6 +42,34 @@ func main() {
 
 	gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Server.Port)
 	client := &http.Client{Timeout: 15 * time.Second}
+
+	// Handle --enable / --disable glob overrides without running quota checks.
+	if *enableGlob != "" || *disableGlob != "" {
+		var results []quotaBackend
+		for _, b := range cfg.Backends {
+			if *enableGlob != "" {
+				if matched, _ := filepath.Match(*enableGlob, b.Name); matched {
+					log.Printf("[%s] marking as available (--enable %s)", b.Name, *enableGlob)
+					results = append(results, quotaBackend{Name: b.Name, Exhausted: false})
+				}
+			}
+			if *disableGlob != "" {
+				if matched, _ := filepath.Match(*disableGlob, b.Name); matched {
+					log.Printf("[%s] marking as exhausted (--disable %s)", b.Name, *disableGlob)
+					results = append(results, quotaBackend{Name: b.Name, Exhausted: true})
+				}
+			}
+		}
+		if len(results) == 0 {
+			log.Println("no backends matched the glob pattern")
+			return
+		}
+		if err := syncToServer(client, gatewayURL, cfg.Auth.SessionSecret, results); err != nil {
+			log.Fatalf("sync to server: %v", err)
+		}
+		log.Println("done")
+		return
+	}
 
 	var results []quotaBackend
 	for _, b := range cfg.Backends {
