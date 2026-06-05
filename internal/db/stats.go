@@ -357,6 +357,38 @@ func (d *DB) GetBackendStats(startDate, endDate string) ([]*BackendStat, error) 
 	return result, rows.Err()
 }
 
+// UserBackendDailyStat holds today's usage for one backend, for a specific user.
+type UserBackendDailyStat struct {
+	Backend     string  `json:"backend"`
+	Requests    int     `json:"requests"`
+	TotalTokens int64   `json:"total_tokens"`
+	CostUSD     float64 `json:"cost_usd"`
+}
+
+// GetUserTodayBackendBreakdown returns today's usage grouped by backend for the given user.
+func (d *DB) GetUserTodayBackendBreakdown(userID int64, date string) ([]*UserBackendDailyStat, error) {
+	rows, err := d.Query(
+		`SELECT backend, COUNT(*) as requests, SUM(total_tokens) as total_tokens, SUM(cost_usd) as cost_usd
+		 FROM usage_logs
+		 WHERE user_id = ? AND SUBSTR(created_at, 1, 10) = ? AND backend != ''
+		 GROUP BY backend
+		 ORDER BY cost_usd DESC`, userID, date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []*UserBackendDailyStat
+	for rows.Next() {
+		s := &UserBackendDailyStat{}
+		if err := rows.Scan(&s.Backend, &s.Requests, &s.TotalTokens, &s.CostUSD); err != nil {
+			return nil, err
+		}
+		result = append(result, s)
+	}
+	return result, rows.Err()
+}
+
 // GetGroupStats aggregates usage_logs by group for the given date range.
 func (d *DB) GetGroupStats(startDate, endDate string) ([]*model.GroupStats, error) {
 	where := "WHERE 1=1"

@@ -286,6 +286,13 @@ func main() {
 	// Public API (no auth required)
 	r.POST("/api/check_key", keyH.CheckKey)
 
+	// External API (API key auth)
+	apiExternal := r.Group("/api/v1")
+	apiExternal.Use(middleware.AuthMiddleware(keyStore))
+	{
+		apiExternal.GET("/quota", statsH.GetMyQuota)
+	}
+
 	// User API routes (session auth)
 	apiUser := r.Group("/api")
 	apiUser.Use(middleware.SessionAuthMiddleware())

@@ -194,6 +194,102 @@ func (h *StatsHandler) GetMyDashboard(c *gin.Context) {
 	})
 }
 
+// GetMyQuota godoc: GET /api/quota — API-key-authenticated quota + today's usage summary.
+// Returns: itcode, backend daily limit/used/remaining, per-backend breakdown,
+// and (if AWS enabled) AWS daily/monthly limit/used/remaining.
+func (h *StatsHandler) GetMyQuota(c *gin.Context) {
+	userID := c.GetInt64(middleware.CtxUserID)
+	today := time.Now().Format("2006-01-02")
+
+	user, err := h.db.GetUserByID(userID)
+	if err != nil || user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "not authenticated"})
+		return
+	}
+
+	// ── Backend daily limit (mirrors GetMyDashboard logic) ───────────────────
+	var backendLimit float64
+	if override := h.config.LookupUserDailyLimit(user.Itcode); override != nil && override.BackendDailyUSD > 0 {
+		backendLimit = override.BackendDailyUSD
+	} else {
+		globalMax := h.config.BackendDailyMax
+		userMax := user.DailyQuotaUSD
+		switch {
+		case globalMax > 0 && userMax > 0:
+			if globalMax < userMax {
+				backendLimit = globalMax
+			} else {
+				backendLimit = userMax
+			}
+		case globalMax > 0:
+			backendLimit = globalMax
+		case userMax > 0:
+			backendLimit = userMax
+		}
+	}
+
+	backendUsed := h.keyStore.GetDailyCost(userID)
+	var backendRemaining float64
+	if backendLimit > 0 {
+		backendRemaining = backendLimit - backendUsed
+		if backendRemaining < 0 {
+			backendRemaining = 0
+		}
+	}
+
+	// ── Per-backend breakdown ─────────────────────────────────────────────────
+	backends, err := h.db.GetUserTodayBackendBreakdown(userID, today)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	resp := gin.H{
+		"itcode":             user.Itcode,
+		"date":               today,
+		"backend_daily_limit":     backendLimit,
+		"backend_daily_used":      backendUsed,
+		"backend_daily_remaining": backendRemaining,
+		"backends":           backends,
+	}
+
+	// ── AWS (only if enabled) ─────────────────────────────────────────────────
+	if user.AWSEnabled {
+		awsUsed := h.keyStore.GetAWSDailyCost(userID)
+
+		awsGlobalMax := h.config.AWS.AWSDailyMax
+		awsUserMax := user.AWSDailyQuotaUSD
+		var awsLimit float64
+		switch {
+		case awsGlobalMax > 0 && awsUserMax > 0:
+			if awsGlobalMax < awsUserMax {
+				awsLimit = awsGlobalMax
+			} else {
+				awsLimit = awsUserMax
+			}
+		case awsGlobalMax > 0:
+			awsLimit = awsGlobalMax
+		case awsUserMax > 0:
+			awsLimit = awsUserMax
+		}
+
+		var awsRemaining float64
+		if awsLimit > 0 {
+			awsRemaining = awsLimit - awsUsed
+			if awsRemaining < 0 {
+				awsRemaining = 0
+			}
+		}
+
+		resp["aws_enabled"] = true
+		resp["aws_daily_limit"] = awsLimit
+		resp["aws_daily_used"] = awsUsed
+		resp["aws_daily_remaining"] = awsRemaining
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
 // ExportMyUsage godoc: GET /api/usage/export
 // Query params: date (YYYY-MM-DD), model, backend
 // Returns a CSV of the current user's usage logs for the given day.
