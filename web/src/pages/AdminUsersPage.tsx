@@ -170,9 +170,11 @@ export default function AdminUsersPage() {
   const [transferTarget, setTransferTarget] = useState('')
   const [transferring, setTransferring] = useState(false)
 
-  const load = (p = page) => {
+  const load = (p = page, sq = searchQuery, sk = sortKey, so = sortOrder) => {
     setLoading(true)
-    adminListUsers({ page: p, page_size: pageSize })
+    const params: Record<string, string | number> = { page: p, page_size: pageSize, sort_by: sk, sort_order: so }
+    if (sq.trim()) params.search = sq.trim()
+    adminListUsers(params)
       .then((res) => { setUsers(res.data.users || []); setTotal(res.data.total || 0) })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -182,49 +184,25 @@ export default function AdminUsersPage() {
     adminGetGroups().then((res) => setGroups(res.data.groups || [])).catch(() => {})
   }
 
-  useEffect(() => { load(); loadGroups() }, [])
-  useEffect(() => { load(page) }, [page])
+  useEffect(() => { load(1, searchQuery, sortKey, sortOrder); loadGroups() }, [])
+  useEffect(() => { load(page, searchQuery, sortKey, sortOrder) }, [page])
 
   const handleSort = (key: string) => {
-    if (sortKey === key) {
-      setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortKey(key)
-      setSortOrder('desc')
-    }
+    const newOrder = sortKey === key ? (sortOrder === 'asc' ? 'desc' : 'asc') : 'desc'
+    const newKey = key
+    setSortKey(newKey)
+    setSortOrder(newOrder)
+    setPage(1)
+    load(1, searchQuery, newKey, newOrder)
   }
 
-  const filteredUsers = searchQuery.trim()
-    ? users.filter((u) => {
-        const q = searchQuery.trim().toLowerCase()
-        return (
-          u.itcode.toLowerCase().includes(q) ||
-          (u.name ?? '').toLowerCase().includes(q)
-        )
-      })
-    : users
+  const sortedUsers = users
 
-  const sortedUsers = [...filteredUsers].sort((a, b) => {
-    let aVal: string | number = a.id
-    let bVal: string | number = b.id
-    if (sortKey === 'itcode') { aVal = a.itcode; bVal = b.itcode }
-    else if (sortKey === 'role') { aVal = a.role; bVal = b.role }
-    else if (sortKey === 'status') { aVal = a.status; bVal = b.status }
-    else if (sortKey === 'group_id') { aVal = a.group_id; bVal = b.group_id }
-    else if (sortKey === 'daily_quota_usd') { aVal = a.daily_quota_usd || 0; bVal = b.daily_quota_usd || 0 }
-    else if (sortKey === 'aws_daily_quota_usd') { aVal = a.aws_daily_quota_usd || 0; bVal = b.aws_daily_quota_usd || 0 }
-    else if (sortKey === 'requests') { aVal = a.requests || 0; bVal = b.requests || 0 }
-    else if (sortKey === 'cost_usd') { aVal = a.cost_usd || 0; bVal = b.cost_usd || 0 }
-    else if (sortKey === 'backend_cost_usd') { aVal = a.backend_cost_usd || 0; bVal = b.backend_cost_usd || 0 }
-    else if (sortKey === 'aws_cost_usd') { aVal = a.aws_cost_usd || 0; bVal = b.aws_cost_usd || 0 }
-    else if (sortKey === 'created_at') { aVal = a.created_at; bVal = b.created_at }
-    else if (sortKey === 'last_used_at') { aVal = a.last_used_at || ''; bVal = b.last_used_at || '' }
-
-    if (typeof aVal === 'string' && typeof bVal === 'string') {
-      return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal)
-    }
-    return sortOrder === 'asc' ? (aVal as number) - (bVal as number) : (bVal as number) - (aVal as number)
-  })
+  const handleSearch = (q: string) => {
+    setSearchQuery(q)
+    setPage(1)
+    load(1, q, sortKey, sortOrder)
+  }
 
   const sortIcon = (key: string) => {
     if (sortKey !== key) return <span className="ml-1 opacity-30">↕</span>
@@ -381,8 +359,8 @@ export default function AdminUsersPage() {
         <div className="flex items-center gap-3">
           <input
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="搜索 itcode / 名称..."
+            onChange={(e) => handleSearch(e.target.value)}
+            placeholder="搜索 itcode..."
             className="w-56 px-3.5 py-2 border border-gray-200 rounded-xl text-sm bg-gray-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500/30 focus:border-red-400 transition-all"
           />
           <button

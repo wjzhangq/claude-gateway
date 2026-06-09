@@ -117,7 +117,7 @@ func (d *DB) ListUsersWithStats(page, pageSize int, search, sortBy, sortOrder st
 	whereClause := ""
 	if search != "" {
 		whereClause = " WHERE u.itcode LIKE ?"
-		whereArgs = append(whereArgs, search+"%")
+		whereArgs = append(whereArgs, "%"+search+"%")
 	}
 
 	var total int
