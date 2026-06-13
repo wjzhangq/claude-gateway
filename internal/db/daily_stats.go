@@ -113,6 +113,31 @@ func (d *DB) GetUserDailyCostByDate(date string) (map[int64]float64, error) {
 	return result, rows.Err()
 }
 
+// GetUserAWSMonthlyCostByMonth returns a map of userID -> total AWS cost_usd for a given month.
+// month must be in "YYYY-MM" format. Used at startup to seed the in-memory monthly cost tracking.
+// Reads directly from aws_usage_logs to capture costs not yet aggregated into aws_daily_stats.
+func (d *DB) GetUserAWSMonthlyCostByMonth(month string) (map[int64]float64, error) {
+	rows, err := d.Query(
+		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM aws_usage_logs WHERE SUBSTR(created_at, 1, 7) = ? GROUP BY user_id`,
+		month,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get user aws monthly cost for %s: %w", month, err)
+	}
+	defer rows.Close()
+
+	result := make(map[int64]float64)
+	for rows.Next() {
+		var userID int64
+		var cost float64
+		if err := rows.Scan(&userID, &cost); err != nil {
+			return nil, err
+		}
+		result[userID] = cost
+	}
+	return result, rows.Err()
+}
+
 // GetUserAWSDailyCostByDate returns a map of userID -> total AWS cost_usd for a given date.
 // Used at startup to seed the in-memory AWS daily cost tracking in KeyStore.
 // Reads directly from aws_usage_logs (not aws_daily_stats) to avoid the aggregation lag.

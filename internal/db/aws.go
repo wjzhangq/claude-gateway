@@ -239,6 +239,55 @@ type AWSUserDailyCostResult struct {
 	TotalReqs int                 `json:"total_requests"`
 }
 
+// GetAWSUserMonthlyCostRanking returns top N users by AWS cost for a given month (YYYY-MM).
+func (d *DB) GetAWSUserMonthlyCostRanking(month string, limit int) (*AWSUserDailyCostResult, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := d.Query(
+		`SELECT l.user_id, COALESCE(u.itcode,''), COUNT(*) as requests,
+		        SUM(l.total_tokens) as total_tokens,
+		        SUM(l.cost_usd) as cost_usd
+		 FROM aws_usage_logs l
+		 LEFT JOIN users u ON u.id = l.user_id
+		 WHERE SUBSTR(l.created_at, 1, 7) = ?
+		 GROUP BY l.user_id
+		 ORDER BY cost_usd DESC
+		 LIMIT ?`, month, limit)
+	if err != nil {
+		return nil, fmt.Errorf("get aws user monthly cost ranking: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*AWSUserDailyCost
+	for rows.Next() {
+		u := &AWSUserDailyCost{}
+		if err := rows.Scan(&u.UserID, &u.Itcode, &u.Requests, &u.TotalTokens, &u.CostUSD); err != nil {
+			return nil, err
+		}
+		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	var totalCost float64
+	var totalReqs int
+	err = d.QueryRow(
+		`SELECT COALESCE(SUM(cost_usd),0), COUNT(*)
+		 FROM aws_usage_logs WHERE SUBSTR(created_at, 1, 7) = ?`, month).Scan(&totalCost, &totalReqs)
+	if err != nil {
+		return nil, fmt.Errorf("get aws monthly totals: %w", err)
+	}
+
+	return &AWSUserDailyCostResult{
+		Users:     users,
+		TotalCost: totalCost,
+		TotalReqs: totalReqs,
+	}, nil
+}
+
 // GetAWSUserDailyCostRanking returns top N users by AWS cost for a given date.
 func (d *DB) GetAWSUserDailyCostRanking(date string, limit int) (*AWSUserDailyCostResult, error) {
 	if limit <= 0 {

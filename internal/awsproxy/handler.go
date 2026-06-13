@@ -235,7 +235,16 @@ func (h *Handler) Messages(c *gin.Context) {
 	}
 
 	cfg := h.awsCfg()
-	bedrockModel, err := ResolveModel(req.Model, cfg.ModelReplace, cfg.ModelDefault)
+
+	// Apply locked model override before resolving to Bedrock ARN
+	requestModel := req.Model
+	if ki, _ := c.Get(middleware.CtxKeyInfo); ki != nil {
+		if info, ok := ki.(*auth.KeyInfo); ok && info.LockedModel != "" {
+			requestModel = info.LockedModel
+		}
+	}
+
+	bedrockModel, err := ResolveModel(requestModel, cfg.ModelReplace, cfg.ModelDefault)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -248,9 +257,9 @@ func (h *Handler) Messages(c *gin.Context) {
 	start := time.Now()
 
 	if req.Stream {
-		h.streamMessages(c, bedrockBody, bedrockModel, req.Model, keyInfo, keyStr, start)
+		h.streamMessages(c, bedrockBody, bedrockModel, requestModel, keyInfo, keyStr, start)
 	} else {
-		h.syncMessages(c, bedrockBody, bedrockModel, req.Model, keyInfo, keyStr, start)
+		h.syncMessages(c, bedrockBody, bedrockModel, requestModel, keyInfo, keyStr, start)
 	}
 }
 
@@ -370,7 +379,16 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 
 	cfg := h.awsCfg()
-	bedrockModel, err := ResolveModel(oaiReq.Model, cfg.ModelReplace, cfg.ModelDefault)
+
+	// Apply locked model override before resolving to Bedrock ARN
+	requestModel := oaiReq.Model
+	if ki, _ := c.Get(middleware.CtxKeyInfo); ki != nil {
+		if info, ok := ki.(*auth.KeyInfo); ok && info.LockedModel != "" {
+			requestModel = info.LockedModel
+		}
+	}
+
+	bedrockModel, err := ResolveModel(requestModel, cfg.ModelReplace, cfg.ModelDefault)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -388,9 +406,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	start := time.Now()
 
 	if oaiReq.Stream {
-		h.streamChatCompletions(c, bedrockBody, bedrockModel, oaiReq.Model, keyInfo, keyStr, start)
+		h.streamChatCompletions(c, bedrockBody, bedrockModel, requestModel, keyInfo, keyStr, start)
 	} else {
-		h.syncChatCompletions(c, bedrockBody, bedrockModel, oaiReq.Model, keyInfo, keyStr, start)
+		h.syncChatCompletions(c, bedrockBody, bedrockModel, requestModel, keyInfo, keyStr, start)
 	}
 }
 
@@ -830,6 +848,99 @@ func stripEmptyTextBlocks(messages []interface{}) []interface{} {
 }
 
 
+// stripOrphanedToolPairs removes tool_use blocks (by name) from assistant messages
+// and their matching tool_result blocks from subsequent user messages. This prevents
+// TOOL_USE_RESULT_MISMATCH errors when non-standard tools are stripped from the tools
+// list but their historical usage remains in the conversation.
+func stripOrphanedToolPairs(messages []interface{}, strippedToolNames map[string]bool) []interface{} {
+	if len(strippedToolNames) == 0 {
+		return messages
+	}
+
+	// Collect tool_use IDs that were stripped from assistant messages.
+	strippedIDs := map[string]bool{}
+	for i, msg := range messages {
+		msgMap, ok := msg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if role, _ := msgMap["role"].(string); role != "assistant" {
+			continue
+		}
+		blocks, ok := msgMap["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		var kept []interface{}
+		for _, block := range blocks {
+			bm, ok := block.(map[string]interface{})
+			if !ok {
+				kept = append(kept, block)
+				continue
+			}
+			if typ, _ := bm["type"].(string); typ == "tool_use" {
+				name, _ := bm["name"].(string)
+				if strippedToolNames[name] {
+					id, _ := bm["id"].(string)
+					if id != "" {
+						strippedIDs[id] = true
+					}
+					logger.Warnf("stripOrphanedToolPairs: removing tool_use block id=%s name=%s from assistant message", id, name)
+					continue
+				}
+			}
+			kept = append(kept, block)
+		}
+		if len(kept) == 0 {
+			kept = []interface{}{map[string]interface{}{"type": "text", "text": " "}}
+		}
+		msgMap["content"] = kept
+		messages[i] = msgMap
+	}
+
+	if len(strippedIDs) == 0 {
+		return messages
+	}
+
+	// Strip matching tool_result blocks from user messages.
+	for i, msg := range messages {
+		msgMap, ok := msg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if role, _ := msgMap["role"].(string); role != "user" {
+			continue
+		}
+		blocks, ok := msgMap["content"].([]interface{})
+		if !ok {
+			continue
+		}
+		var kept []interface{}
+		for _, block := range blocks {
+			bm, ok := block.(map[string]interface{})
+			if !ok {
+				kept = append(kept, block)
+				continue
+			}
+			if typ, _ := bm["type"].(string); typ == "tool_result" {
+				id, _ := bm["tool_use_id"].(string)
+				if strippedIDs[id] {
+					logger.Warnf("stripOrphanedToolPairs: removing tool_result block tool_use_id=%s from user message", id)
+					continue
+				}
+			}
+			kept = append(kept, block)
+		}
+		if len(kept) == 0 {
+			kept = []interface{}{map[string]interface{}{"type": "text", "text": " "}}
+		}
+		msgMap["content"] = kept
+		messages[i] = msgMap
+	}
+
+	return messages
+}
+
 // prepareAnthropicBody sets anthropic_version to "bedrock-2023-05-31" and removes
 // fields that Bedrock does not accept: "model" and "stream".
 // It also ensures max_tokens > thinking.budget_tokens when extended thinking is used,
@@ -849,6 +960,10 @@ func prepareAnthropicBody(body []byte) []byte {
 	// Filter out non-standard tool types that Bedrock doesn't support
 	// (e.g. web_search_20250305, code_execution). Only keep tools with
 	// type "custom" or with an "input_schema" (standard function-call tools).
+	// Track stripped tool names so we can also remove their tool_use/tool_result
+	// blocks from message history — Bedrock returns TOOL_USE_RESULT_MISMATCH
+	// when a tool_use block exists with no corresponding tool_result.
+	strippedToolNames := map[string]bool{}
 	if toolsRaw, ok := m["tools"]; ok {
 		var tools []map[string]interface{}
 		if err := json.Unmarshal(toolsRaw, &tools); err == nil {
@@ -860,7 +975,11 @@ func prepareAnthropicBody(body []byte) []byte {
 				if toolType == "" || toolType == "custom" || hasInputSchema {
 					filtered = append(filtered, tool)
 				} else {
-					logger.Warnf("prepareAnthropicBody: stripping unsupported tool type %q (name=%v)", toolType, tool["name"])
+					name, _ := tool["name"].(string)
+					logger.Warnf("prepareAnthropicBody: stripping unsupported tool type %q (name=%v)", toolType, name)
+					if name != "" {
+						strippedToolNames[name] = true
+					}
 				}
 			}
 			if len(filtered) == 0 {
@@ -898,7 +1017,7 @@ func prepareAnthropicBody(body []byte) []byte {
 								m["system"] = b
 							}
 						}
-						cleaned = stripThinkingBlocks(stripEmptyTextBlocks(msgs))
+						cleaned = stripThinkingBlocks(stripEmptyTextBlocks(stripOrphanedToolPairs(msgs, strippedToolNames)))
 					}
 				}
 				if b, err := json.Marshal(cleaned); err == nil {

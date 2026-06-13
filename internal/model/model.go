@@ -32,6 +32,7 @@ type APIKey struct {
 	TotalCostUSD   float64    `db:"total_cost_usd"   json:"total_cost_usd"`
 	BackendCostUSD float64    `db:"backend_cost_usd" json:"backend_cost_usd"`
 	AWSCostUSD     float64    `db:"aws_cost_usd"     json:"aws_cost_usd"`
+	LockedModel    string     `db:"locked_model"     json:"locked_model"`
 }
 
 // UsageLog records a single API call.

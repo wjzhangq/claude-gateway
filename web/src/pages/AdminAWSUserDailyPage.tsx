@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { adminGetAWSUserDailyCost } from '../api'
+import { adminGetAWSUserDailyCost, adminGetAWSUserMonthlyCost } from '../api'
 import { toDateStr } from '../utils/time'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
@@ -13,7 +13,7 @@ interface UserCost {
   cost_usd: number
 }
 
-interface DailyResult {
+interface CostResult {
   users: UserCost[]
   total_cost: number
   total_requests: number
@@ -37,24 +37,41 @@ const COLORS = [
   '#6366F1', '#818CF8', '#A5B4FC', '#10B981', '#34D399',
 ]
 
+function toMonthStr(d: Date) {
+  return d.toISOString().slice(0, 7)
+}
+
 export default function AdminAWSUserDailyPage() {
+  const [tab, setTab] = useState<'daily' | 'monthly'>('monthly')
   const [date, setDate] = useState(() => toDateStr(new Date()))
-  const [data, setData] = useState<DailyResult | null>(null)
+  const [month, setMonth] = useState(() => toMonthStr(new Date()))
+  const [data, setData] = useState<CostResult | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     setLoading(true)
-    adminGetAWSUserDailyCost({ date })
+    const req = tab === 'daily'
+      ? adminGetAWSUserDailyCost({ date })
+      : adminGetAWSUserMonthlyCost({ month })
+    req
       .then((res) => setData(res.data))
       .catch(() => setData(null))
       .finally(() => setLoading(false))
-  }, [date])
+  }, [tab, date, month])
 
   const shiftDate = (days: number) => {
     setDate((d) => toDateStr(new Date(new Date(d).getTime() + days * 86400000)))
   }
+  const shiftMonth = (months: number) => {
+    setMonth((m) => {
+      const d = new Date(m + '-01')
+      d.setMonth(d.getMonth() + months)
+      return toMonthStr(d)
+    })
+  }
 
   const isToday = date === toDateStr(new Date())
+  const isThisMonth = month === toMonthStr(new Date())
   const totalCost = data?.total_cost ?? 0
   const users = data?.users ?? []
 
@@ -68,38 +85,78 @@ export default function AdminAWSUserDailyPage() {
       <div className="flex items-center gap-4 mb-7">
         <div>
           <h2 className="text-xl font-bold text-gray-900">AWS 用户费用排行</h2>
-          <p className="text-sm text-gray-400 mt-0.5">按日统计 AWS Bedrock 用户费用</p>
+          <p className="text-sm text-gray-400 mt-0.5">AWS Bedrock 用户费用统计</p>
         </div>
-        <div className="flex items-center gap-1.5 ml-auto bg-white border border-gray-200 rounded-xl px-2 py-1.5 shadow-sm">
+
+        <div className="flex items-center gap-1 bg-gray-100 rounded-xl p-1 ml-auto">
           <button
-            onClick={() => shiftDate(-1)}
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors text-sm font-medium"
+            onClick={() => setTab('monthly')}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              tab === 'monthly' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
           >
-            ‹
+            本月
           </button>
-          <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
-            className="px-2 py-0.5 text-sm text-gray-700 focus:outline-none bg-transparent"
-          />
           <button
-            onClick={() => shiftDate(1)}
-            disabled={isToday}
-            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors text-sm font-medium"
+            onClick={() => setTab('daily')}
+            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+              tab === 'daily' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
           >
-            ›
+            按日
           </button>
         </div>
+
+        {tab === 'daily' ? (
+          <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-xl px-2 py-1.5 shadow-sm">
+            <button
+              onClick={() => shiftDate(-1)}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors text-sm font-medium"
+            >‹</button>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="px-2 py-0.5 text-sm text-gray-700 focus:outline-none bg-transparent"
+            />
+            <button
+              onClick={() => shiftDate(1)}
+              disabled={isToday}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors text-sm font-medium"
+            >›</button>
+          </div>
+        ) : (
+          <div className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-xl px-2 py-1.5 shadow-sm">
+            <button
+              onClick={() => shiftMonth(-1)}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 transition-colors text-sm font-medium"
+            >‹</button>
+            <input
+              type="month"
+              value={month}
+              onChange={(e) => setMonth(e.target.value)}
+              className="px-2 py-0.5 text-sm text-gray-700 focus:outline-none bg-transparent"
+            />
+            <button
+              onClick={() => shiftMonth(1)}
+              disabled={isThisMonth}
+              className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 disabled:opacity-30 transition-colors text-sm font-medium"
+            >›</button>
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">当日请求</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
+            {tab === 'daily' ? '当日请求' : '本月请求'}
+          </p>
           <p className="text-xl font-bold text-gray-900">{data?.total_requests?.toLocaleString() ?? '—'}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
-          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">当日总费用</p>
+          <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-1">
+            {tab === 'daily' ? '当日总费用' : '本月总费用'}
+          </p>
           <p className="text-xl font-bold text-amber-600">${totalCost.toFixed(4)}</p>
         </div>
         <div className="bg-white rounded-xl border border-gray-100 px-5 py-4 shadow-sm">
@@ -132,7 +189,9 @@ export default function AdminAWSUserDailyPage() {
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
-          <h3 className="text-sm font-semibold text-gray-700">{date} AWS 用户费用排行</h3>
+          <h3 className="text-sm font-semibold text-gray-700">
+            {tab === 'daily' ? `${date} AWS 用户费用排行` : `${month} AWS 月度费用排行`}
+          </h3>
           <span className="text-xs text-gray-400">Top 20</span>
         </div>
         <table className="w-full text-sm">
@@ -150,7 +209,7 @@ export default function AdminAWSUserDailyPage() {
               Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
             ) : users.length === 0 ? (
               <tr>
-                <td colSpan={5} className="px-4 py-10 text-center text-sm text-gray-400">当天暂无数据</td>
+                <td colSpan={5} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td>
               </tr>
             ) : (
               users.map((u, idx) => (

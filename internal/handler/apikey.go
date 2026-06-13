@@ -504,3 +504,52 @@ func (h *APIKeyHandler) TransferKey(c *gin.Context) {
 	h.reloadKeys()
 	c.JSON(http.StatusOK, gin.H{"user_id": user.ID, "itcode": user.Itcode})
 }
+
+// SetLockedModel godoc: PUT /api/keys/:id/locked-model
+// User sets or clears the locked model for their own key.
+func (h *APIKeyHandler) SetLockedModel(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if !h.verifyKeyOwnership(c, id) {
+		return
+	}
+	var req struct {
+		LockedModel string `json:"locked_model"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.UpdateAPIKeyLockedModel(id, req.LockedModel); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.reloadKeys()
+	c.JSON(http.StatusOK, gin.H{"locked_model": req.LockedModel})
+}
+
+// AdminSetLockedModel godoc: PUT /admin/api/keys/:id/locked-model
+// Sets or clears the locked model for a key. Pass locked_model="" to remove the lock.
+func (h *APIKeyHandler) AdminSetLockedModel(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		LockedModel string `json:"locked_model"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.db.UpdateAPIKeyLockedModel(id, req.LockedModel); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	h.reloadKeys()
+	c.JSON(http.StatusOK, gin.H{"locked_model": req.LockedModel})
+}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listKeys, createKey, disableKey, enableKey, deleteKey, setAutoDowngrade, renameKey, switchKeyChannel } from '../api'
+import { listKeys, createKey, disableKey, enableKey, deleteKey, setAutoDowngrade, renameKey, switchKeyChannel, setLockedModel } from '../api'
 import { useAuth } from '../context/AuthContext'
 import { formatTime, formatDate } from '../utils/time'
 
@@ -9,6 +9,7 @@ interface APIKey {
   key: string
   status: string
   auto_downgrade: boolean
+  locked_model: string
   created_at: string
   last_used_at: string | null
   requests: number
@@ -21,7 +22,7 @@ interface APIKey {
 function SkeletonRow() {
   return (
     <tr>
-      {[80, 160, 60, 50, 70, 70, 80, 80, 80, 90, 110, 120].map((w, i) => (
+      {[80, 160, 60, 50, 80, 70, 70, 80, 80, 80, 90, 110, 120].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -43,6 +44,8 @@ export default function APIKeysPage() {
   const [copied, setCopied] = useState<number | null>(null)
   const [renamingId, setRenamingId] = useState<number | null>(null)
   const [renameValue, setRenameValue] = useState('')
+  const [lockingId, setLockingId] = useState<number | null>(null)
+  const [lockValue, setLockValue] = useState('')
 
   const handleCopy = (id: number, key: string) => {
     navigator.clipboard.writeText(key)
@@ -103,6 +106,12 @@ export default function APIKeysPage() {
     if (!renameValue.trim()) return
     await renameKey(id, renameValue.trim())
     setRenamingId(null)
+    load()
+  }
+
+  const handleSetLockedModel = async (id: number) => {
+    await setLockedModel(id, lockValue.trim())
+    setLockingId(null)
     load()
   }
 
@@ -182,7 +191,7 @@ export default function APIKeysPage() {
         <table className="w-full text-sm min-w-[1100px]">
           <thead className="bg-gray-50/80">
             <tr>
-              {['名称', 'Key', '状态', '自动降级', '请求数', 'Backend费用', 'AWS费用', '总费用', '创建时间', '最后使用', '操作'].map((h) => (
+              {['名称', 'Key', '状态', '自动降级', '锁定模型', '请求数', 'Backend费用', 'AWS费用', '总费用', '创建时间', '最后使用', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -194,7 +203,7 @@ export default function APIKeysPage() {
               Array.from({ length: 3 }).map((_, i) => <SkeletonRow key={i} />)
             ) : keys.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-4 py-10 text-center text-sm text-gray-400">暂无 API Key</td>
+                <td colSpan={12} className="px-4 py-10 text-center text-sm text-gray-400">暂无 API Key</td>
               </tr>
             ) : (
               keys.map((k) => (
@@ -247,6 +256,33 @@ export default function APIKeysPage() {
                         }`}
                       />
                     </button>
+                  </td>
+                  <td className="px-4 py-3.5 text-xs text-gray-600 max-w-[140px]">
+                    {lockingId === k.id ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          value={lockValue}
+                          onChange={(e) => setLockValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleSetLockedModel(k.id); if (e.key === 'Escape') setLockingId(null) }}
+                          placeholder="模型名或留空清除"
+                          className="w-32 px-2 py-1 border border-red-300 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-red-400"
+                          autoFocus
+                        />
+                        <button onClick={() => handleSetLockedModel(k.id)} className="text-xs text-green-600 hover:text-green-800">✓</button>
+                        <button onClick={() => setLockingId(null)} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setLockingId(k.id); setLockValue(k.locked_model || '') }}
+                        className="group flex items-center gap-1 text-left"
+                        title="点击设置锁定模型"
+                      >
+                        {k.locked_model
+                          ? <span className="font-mono text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded ring-1 ring-orange-100 truncate max-w-[120px]">{k.locked_model}</span>
+                          : <span className="text-gray-300 group-hover:text-gray-500">—</span>
+                        }
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs">{(k.requests || 0).toLocaleString()}</td>
                   <td className="px-4 py-3.5 text-gray-800 text-xs font-medium">${(k.backend_cost_usd || 0).toFixed(4)}</td>

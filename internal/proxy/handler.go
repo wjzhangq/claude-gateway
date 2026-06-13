@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -289,19 +290,19 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		}
 	}
 
+	// Apply locked model override: if the key has a locked model set, force it
+	if info, ok := keyInfo.(*auth.KeyInfo); ok && info.LockedModel != "" {
+		body = replaceModelInBody(body, reqModel, info.LockedModel)
+		reqModel = info.LockedModel
+	}
+
 	// Apply model replacements: if request model contains a configured pattern, replace it
 	h.mu.RLock()
 	replacements := h.modelReplacements
 	h.mu.RUnlock()
 	for pattern, replacement := range replacements {
 		if strings.Contains(reqModel, pattern) {
-			oldToken := `"model":"` + reqModel + `"`
-			newToken := `"model":"` + replacement + `"`
-			body = bytes.Replace(body, []byte(oldToken), []byte(newToken), 1)
-			// also handle space after colon: "model": "value"
-			oldTokenSpace := `"model": "` + reqModel + `"`
-			newTokenSpace := `"model": "` + replacement + `"`
-			body = bytes.Replace(body, []byte(oldTokenSpace), []byte(newTokenSpace), 1)
+			body = replaceModelInBody(body, reqModel, replacement)
 			reqModel = replacement
 			break
 		}
@@ -596,6 +597,15 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 	c.Writer.Write(respBody)
 
+	// Decompress gzip for parsing/logging; the raw bytes have already been forwarded above.
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		if r, err2 := gzip.NewReader(bytes.NewReader(respBody)); err2 == nil {
+			if decoded, err3 := io.ReadAll(r); err3 == nil {
+				respBody = decoded
+			}
+		}
+	}
+
 	in, out := parseBodyTokens(respBody)
 	latency := time.Since(start)
 	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
@@ -836,4 +846,12 @@ func (h *Handler) UpdateConfig(cfg *config.Config) {
 	h.mu.Lock()
 	h.config = cfg
 	h.mu.Unlock()
+}
+
+// replaceModelInBody replaces the model field value in a JSON request body.
+// Handles both "model":"value" and "model": "value" forms.
+func replaceModelInBody(body []byte, oldModel, newModel string) []byte {
+	body = bytes.Replace(body, []byte(`"model":"`+oldModel+`"`), []byte(`"model":"`+newModel+`"`), 1)
+	body = bytes.Replace(body, []byte(`"model": "`+oldModel+`"`), []byte(`"model": "`+newModel+`"`), 1)
+	return body
 }

@@ -241,6 +241,22 @@ func (h *AWSStatsHandler) GetDailyStats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"stats": stats})
 }
 
+// GetUserMonthlyCostRanking godoc: GET /admin/api/aws/usage/user-monthly
+func (h *AWSStatsHandler) GetUserMonthlyCostRanking(c *gin.Context) {
+	month := c.Query("month")
+	if month == "" {
+		month = time.Now().Format("2006-01")
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	result, err := h.db.GetAWSUserMonthlyCostRanking(month, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, result)
+}
+
 // GetUserDailyCostRanking godoc: GET /admin/api/aws/usage/user-daily
 func (h *AWSStatsHandler) GetUserDailyCostRanking(c *gin.Context) {
 	date := c.Query("date")

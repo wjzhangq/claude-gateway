@@ -45,6 +45,8 @@ export const disableKey = (id: number) => api.put(`/api/keys/${id}/disable`)
 export const enableKey = (id: number) => api.put(`/api/keys/${id}/enable`)
 export const setAutoDowngrade = (id: number, autoDowngrade: boolean) =>
   api.put(`/api/keys/${id}/auto-downgrade`, { auto_downgrade: autoDowngrade })
+export const setLockedModel = (id: number, lockedModel: string) =>
+  api.put(`/api/keys/${id}/locked-model`, { locked_model: lockedModel })
 export const renameKey = (id: number, name: string) =>
   api.put(`/api/keys/${id}/rename`, { name })
 export const deleteKey = (id: number) => api.delete(`/api/keys/${id}`)
@@ -90,6 +92,8 @@ export const adminSwitchKeyChannel = (id: number, channel: 'backend' | 'aws') =>
   api.put(`/admin/api/keys/${id}/channel`, { channel })
 export const adminTransferKey = (id: number, itcode: string) =>
   api.put(`/admin/api/keys/${id}/transfer`, { itcode })
+export const adminSetLockedModel = (id: number, lockedModel: string) =>
+  api.put(`/admin/api/keys/${id}/locked-model`, { locked_model: lockedModel })
 
 // Admin - Usage
 export const adminGetUsage = (params?: Record<string, string | number>) =>
@@ -151,6 +155,8 @@ export const adminGetAWSDailyStats = (params?: Record<string, string | number>) 
   api.get('/admin/api/aws/usage/daily', { params })
 export const adminGetAWSUserDailyCost = (params?: Record<string, string | number>) =>
   api.get('/admin/api/aws/usage/user-daily', { params })
+export const adminGetAWSUserMonthlyCost = (params?: Record<string, string | number>) =>
+  api.get('/admin/api/aws/usage/user-monthly', { params })
 export const adminGetAWSKeys = (params?: Record<string, string | number>) =>
   api.get('/admin/api/aws/keys', { params })
 export const adminGetAWSBedrockStats = (params?: Record<string, string>) =>

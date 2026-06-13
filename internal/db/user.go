@@ -255,7 +255,7 @@ func (d *DB) ListAllAPIKeys(userID int64, page, pageSize int) ([]*APIKeyWithUser
 	queryArgs := append(args, pageSize, offset)
 	rows, err := d.Query(
 		`SELECT k.id, k.user_id, u.itcode, u.name, COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
-		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd
+		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
 		 LEFT JOIN users u ON u.id = k.user_id
 		 `+where+`
@@ -272,7 +272,7 @@ func (d *DB) ListAllAPIKeys(userID int64, page, pageSize int) ([]*APIKeyWithUser
 		var lastUsed *string
 		if err := rows.Scan(&k.ID, &k.UserID, &k.UserItcode, &k.UserName, &k.UserAWSEnabled,
 			&k.Key, &k.APIKey.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed,
-			&k.CreatedAt, &k.UpdatedAt, &k.TotalCostUSD, &k.BackendCostUSD, &k.AWSCostUSD); err != nil {
+			&k.CreatedAt, &k.UpdatedAt, &k.TotalCostUSD, &k.BackendCostUSD, &k.AWSCostUSD, &k.LockedModel); err != nil {
 			return nil, 0, err
 		}
 		k.LastUsedAt = parseNullableTime(lastUsed)
@@ -369,9 +369,9 @@ func (d *DB) CreateAPIKey(k *model.APIKey) error {
 func (d *DB) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 	k := &model.APIKey{}
 	err := d.QueryRow(
-		`SELECT id, user_id, key, name, status, channel, auto_downgrade, created_at, updated_at
+		`SELECT id, user_id, key, name, status, channel, auto_downgrade, created_at, updated_at, locked_model
 		 FROM api_keys WHERE key = ?`, key,
-	).Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &k.CreatedAt, &k.UpdatedAt)
+	).Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &k.CreatedAt, &k.UpdatedAt, &k.LockedModel)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -383,9 +383,9 @@ func (d *DB) GetAPIKeyByID(id int64) (*model.APIKey, error) {
 	k := &model.APIKey{}
 	var lastUsed *string
 	err := d.QueryRow(
-		`SELECT id, user_id, key, name, status, channel, auto_downgrade, last_used_at, created_at, updated_at
+		`SELECT id, user_id, key, name, status, channel, auto_downgrade, last_used_at, created_at, updated_at, locked_model
 		 FROM api_keys WHERE id = ?`, id,
-	).Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt)
+	).Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt, &k.LockedModel)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -399,7 +399,7 @@ func (d *DB) GetAPIKeyByID(id int64) (*model.APIKey, error) {
 func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 	rows, err := d.Query(
 		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
-		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd
+		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
 		 WHERE k.user_id = ?
 		 ORDER BY k.id DESC`, userID)
@@ -411,7 +411,7 @@ func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
 	for rows.Next() {
 		k := &model.APIKey{}
 		var lastUsed *string
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt, &k.TotalCostUSD, &k.BackendCostUSD, &k.AWSCostUSD); err != nil {
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt, &k.TotalCostUSD, &k.BackendCostUSD, &k.AWSCostUSD, &k.LockedModel); err != nil {
 			return nil, err
 		}
 		k.LastUsedAt = parseNullableTime(lastUsed)
@@ -431,7 +431,7 @@ func (d *DB) ListAPIKeysByUserAndChannel(userID int64, channel string) ([]*model
 	}
 	rows, err := d.Query(
 		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
-		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd
+		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
 		 `+where+`
 		 ORDER BY k.id DESC`, args...)
@@ -443,7 +443,7 @@ func (d *DB) ListAPIKeysByUserAndChannel(userID int64, channel string) ([]*model
 	for rows.Next() {
 		k := &model.APIKey{}
 		var lastUsed *string
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt, &k.TotalCostUSD, &k.BackendCostUSD, &k.AWSCostUSD); err != nil {
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt, &k.TotalCostUSD, &k.BackendCostUSD, &k.AWSCostUSD, &k.LockedModel); err != nil {
 			return nil, err
 		}
 		k.LastUsedAt = parseNullableTime(lastUsed)
@@ -454,7 +454,7 @@ func (d *DB) ListAPIKeysByUserAndChannel(userID int64, channel string) ([]*model
 
 func (d *DB) ListAllActiveAPIKeys() ([]*model.APIKey, error) {
 	rows, err := d.Query(
-		`SELECT id, user_id, key, name, status, channel, auto_downgrade, last_used_at, created_at, updated_at
+		`SELECT id, user_id, key, name, status, channel, auto_downgrade, last_used_at, created_at, updated_at, locked_model
 		 FROM api_keys WHERE status = 'active'`)
 	if err != nil {
 		return nil, err
@@ -464,7 +464,7 @@ func (d *DB) ListAllActiveAPIKeys() ([]*model.APIKey, error) {
 	for rows.Next() {
 		k := &model.APIKey{}
 		var lastUsed *string
-		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt); err != nil {
+		if err := rows.Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt, &k.LockedModel); err != nil {
 			return nil, err
 		}
 		k.LastUsedAt = parseNullableTime(lastUsed)
@@ -508,7 +508,7 @@ func (d *DB) ListAllAPIKeysByChannel(channel string, userID int64, page, pageSiz
 	queryArgs := append(args, pageSize, offset)
 	rows, err := d.Query(
 		`SELECT k.id, k.user_id, u.itcode, u.name, COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
-		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd
+		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
 		 LEFT JOIN users u ON u.id = k.user_id
 		 `+where+`
@@ -525,7 +525,7 @@ func (d *DB) ListAllAPIKeysByChannel(channel string, userID int64, page, pageSiz
 		var lastUsed *string
 		if err := rows.Scan(&k.ID, &k.UserID, &k.UserItcode, &k.UserName, &k.UserAWSEnabled,
 			&k.Key, &k.APIKey.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed,
-			&k.CreatedAt, &k.UpdatedAt, &k.TotalCostUSD, &k.BackendCostUSD, &k.AWSCostUSD); err != nil {
+			&k.CreatedAt, &k.UpdatedAt, &k.TotalCostUSD, &k.BackendCostUSD, &k.AWSCostUSD, &k.LockedModel); err != nil {
 			return nil, 0, err
 		}
 		k.LastUsedAt = parseNullableTime(lastUsed)
@@ -546,6 +546,14 @@ func (d *DB) UpdateAPIKeyAutoDowngrade(id int64, autoDowngrade bool) error {
 	_, err := d.Exec(
 		`UPDATE api_keys SET auto_downgrade=?, updated_at=? WHERE id=?`,
 		autoDowngrade, time.Now(), id,
+	)
+	return err
+}
+
+func (d *DB) UpdateAPIKeyLockedModel(id int64, lockedModel string) error {
+	_, err := d.Exec(
+		`UPDATE api_keys SET locked_model=?, updated_at=? WHERE id=?`,
+		lockedModel, time.Now(), id,
 	)
 	return err
 }

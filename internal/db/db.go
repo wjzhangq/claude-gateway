@@ -90,6 +90,7 @@ var migrations = []migration{
 	{29, `CREATE INDEX IF NOT EXISTS idx_daily_stats_user_date ON daily_stats(user_id, date)`},
 	{30, `CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_user_date ON aws_daily_stats(user_id, date)`},
 	{31, perfTestSchema},
+	{32, `ALTER TABLE api_keys ADD COLUMN locked_model TEXT NOT NULL DEFAULT ''`},
 }
 
 const perfTestSchema = `

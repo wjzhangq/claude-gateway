@@ -75,12 +75,21 @@ func main() {
 		logger.Infof("init daily costs: loaded %d user records for %s", len(dailyCosts), today)
 	}
 
-	// Seed today's AWS daily costs from aws_daily_stats
+	// Seed today's AWS daily costs from aws_usage_logs
 	if awsDailyCosts, err := database.GetUserAWSDailyCostByDate(today); err != nil {
 		logger.Warnf("init aws daily costs: %v", err)
 	} else {
 		keyStore.InitAWSDailyCosts(today, awsDailyCosts)
 		logger.Infof("init aws daily costs: loaded %d user records for %s", len(awsDailyCosts), today)
+	}
+
+	// Seed this month's AWS monthly costs from aws_usage_logs (fixes quota bypass after restart)
+	thisMonth := time.Now().Format("2006-01")
+	if awsMonthlyCosts, err := database.GetUserAWSMonthlyCostByMonth(thisMonth); err != nil {
+		logger.Warnf("init aws monthly costs: %v", err)
+	} else {
+		keyStore.InitAWSMonthlyCosts(thisMonth, awsMonthlyCosts)
+		logger.Infof("init aws monthly costs: loaded %d user records for %s", len(awsMonthlyCosts), thisMonth)
 	}
 
 	codeStore := auth.NewCodeStore(cfg.Auth.CodeExpiry)
@@ -306,6 +315,7 @@ func main() {
 		apiUser.PUT("/keys/:id/auto-downgrade", keyH.SetAutoDowngrade)
 		apiUser.PUT("/keys/:id/rename", keyH.RenameKey)
 		apiUser.PUT("/keys/:id/channel", keyH.SwitchChannel) // channel migration
+		apiUser.PUT("/keys/:id/locked-model", keyH.SetLockedModel)
 		apiUser.DELETE("/keys/:id", keyH.DeleteKey)
 		apiUser.GET("/usage", statsH.GetMyUsage)
 		apiUser.GET("/usage/daily", statsH.GetMyDailyStats)
@@ -341,6 +351,7 @@ func main() {
 		adminAPI.PUT("/keys/:id/rename", keyH.RenameKey)
 		adminAPI.PUT("/keys/:id/channel", keyH.AdminSwitchChannel)
 		adminAPI.PUT("/keys/:id/transfer", keyH.TransferKey)
+		adminAPI.PUT("/keys/:id/locked-model", keyH.AdminSetLockedModel)
 		adminAPI.GET("/usage", statsH.GetUsage)
 		adminAPI.GET("/usage/export", statsH.ExportUsage)
 		adminAPI.GET("/usage/daily", statsH.GetDailyStats)
@@ -375,6 +386,7 @@ func main() {
 		adminAWS.GET("/usage", awsStatsH.GetUsage)
 		adminAWS.GET("/usage/daily", awsStatsH.GetDailyStats)
 		adminAWS.GET("/usage/user-daily", awsStatsH.GetUserDailyCostRanking)
+		adminAWS.GET("/usage/user-monthly", awsStatsH.GetUserMonthlyCostRanking)
 		adminAWS.GET("/bedrock/stats", awsStatsH.GetBedrockStats)
 	}
 

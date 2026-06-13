@@ -24,6 +24,7 @@ type KeyInfo struct {
 	DowngradedUntil  time.Time // if set and in future, skip original model and use GPT directly
 	LastUsedAt       time.Time // updated in-memory on every request, flushed to DB periodically
 	Channel          string    // "backend" | "aws"
+	LockedModel      string    // "" = no lock; non-empty = force this model on every request
 	// Cost accumulators (write-back pattern, flushed to DB periodically)
 	backendCostDelta float64 // pending backend cost not yet written to DB
 	awsCostDelta     float64 // pending aws cost not yet written to DB
@@ -75,6 +76,7 @@ func (ks *KeyStore) Load(keys []model.APIKey, users map[int64]*model.User) {
 			CreatedAt:        k.CreatedAt,
 			AutoDowngrade:    k.AutoDowngrade,
 			Channel:          k.Channel,
+			LockedModel:      k.LockedModel,
 		}
 		if k.LastUsedAt != nil {
 			info.LastUsedAt = *k.LastUsedAt

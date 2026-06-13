@@ -115,13 +115,30 @@ func LogErrorRequest(msg string, fields logrus.Fields, fileOnlyKeys ...string) {
 	fileMu.Unlock()
 }
 
-// Backend log: separate daily-rotated file for backend anomalies (errors + zero-token).
+// Backend log: separate daily-rotated files for backend anomalies (errors + zero-token).
+// dasheng-prefixed backends are written to dasheng-YYYY-MM-DD.log; others to backend-YYYY-MM-DD.log.
 var (
-	backendMu      sync.Mutex
-	backendDate    string
-	backendFile    *os.File
-	backendLogger  *logrus.Logger
+	backendLogDir string
+
+	backendMu     sync.Mutex
+	backendDate   string
+	backendFile   *os.File
+	backendLogger *logrus.Logger
+
+	dashengMu     sync.Mutex
+	dashengDate   string
+	dashengFile   *os.File
+	dashengLogger *logrus.Logger
 )
+
+func newFileLogger() *logrus.Logger {
+	l := logrus.New()
+	l.SetLevel(logrus.DebugLevel)
+	l.SetFormatter(&logrus.JSONFormatter{
+		TimestampFormat: "2006-01-02T15:04:05.000Z07:00",
+	})
+	return l
+}
 
 // InitBackendLog sets up daily-rotated backend log files in dir.
 // If dir is empty, backend file logging is disabled.
@@ -133,18 +150,19 @@ func InitBackendLog(dir string) {
 		log.Errorf("failed to create log dir %s: %v", dir, err)
 		return
 	}
-	backendLogger = logrus.New()
-	backendLogger.SetLevel(logrus.DebugLevel)
-	backendLogger.SetFormatter(&logrus.JSONFormatter{
-		TimestampFormat: "2006-01-02T15:04:05.000Z07:00",
-	})
+	backendLogDir = dir
+	backendLogger = newFileLogger()
+	dashengLogger = newFileLogger()
 	backendMu.Lock()
-	rotateBackendIfNeeded(dir)
+	rotateBackendIfNeeded()
 	backendMu.Unlock()
+	dashengMu.Lock()
+	rotateDashengIfNeeded()
+	dashengMu.Unlock()
 	log.Infof("backend log dir initialized: %s", dir)
 }
 
-func rotateBackendIfNeeded(dir string) {
+func rotateBackendIfNeeded() {
 	today := time.Now().Format("2006-01-02")
 	if today == backendDate && backendFile != nil {
 		return
@@ -152,7 +170,7 @@ func rotateBackendIfNeeded(dir string) {
 	if backendFile != nil {
 		backendFile.Close()
 	}
-	filename := filepath.Join(dir, fmt.Sprintf("backend-%s.log", today))
+	filename := filepath.Join(backendLogDir, fmt.Sprintf("backend-%s.log", today))
 	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		log.Errorf("failed to open backend log file %s: %v", filename, err)
@@ -161,13 +179,32 @@ func rotateBackendIfNeeded(dir string) {
 	}
 	backendFile = f
 	backendDate = today
-	if backendLogger != nil {
-		backendLogger.SetOutput(f)
-	}
+	backendLogger.SetOutput(f)
 }
 
-// LogBackendRequest writes a structured backend anomaly entry to the daily
-// backend log file. It also logs a summary to stdout at warn level.
+func rotateDashengIfNeeded() {
+	today := time.Now().Format("2006-01-02")
+	if today == dashengDate && dashengFile != nil {
+		return
+	}
+	if dashengFile != nil {
+		dashengFile.Close()
+	}
+	filename := filepath.Join(backendLogDir, fmt.Sprintf("dasheng-%s.log", today))
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Errorf("failed to open dasheng log file %s: %v", filename, err)
+		dashengFile = nil
+		return
+	}
+	dashengFile = f
+	dashengDate = today
+	dashengLogger.SetOutput(f)
+}
+
+// LogBackendRequest writes a structured backend anomaly entry to the appropriate
+// daily log file. dasheng-prefixed backends go to dasheng-YYYY-MM-DD.log; all
+// others go to backend-YYYY-MM-DD.log. A summary is also logged to stdout.
 func LogBackendRequest(msg string, fields logrus.Fields, fileOnlyKeys ...string) {
 	consoleFields := make(logrus.Fields, len(fields))
 	for k, v := range fields {
@@ -178,13 +215,28 @@ func LogBackendRequest(msg string, fields logrus.Fields, fileOnlyKeys ...string)
 	}
 	log.WithFields(consoleFields).Warn(msg)
 
-	if backendLogger == nil || logDir == "" {
+	if backendLogDir == "" {
 		return
 	}
-	backendMu.Lock()
-	rotateBackendIfNeeded(logDir)
-	backendLogger.WithFields(fields).Warn(msg)
-	backendMu.Unlock()
+
+	backendName, _ := fields["backend"].(string)
+	isDasheng := len(backendName) >= 7 && backendName[:7] == "dasheng"
+
+	if isDasheng {
+		dashengMu.Lock()
+		rotateDashengIfNeeded()
+		if dashengFile != nil {
+			dashengLogger.WithFields(fields).Warn(msg)
+		}
+		dashengMu.Unlock()
+	} else {
+		backendMu.Lock()
+		rotateBackendIfNeeded()
+		if backendFile != nil {
+			backendLogger.WithFields(fields).Warn(msg)
+		}
+		backendMu.Unlock()
+	}
 }
 
 // Get returns the configured logrus logger.

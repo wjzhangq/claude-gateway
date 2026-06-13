@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { adminListKeys, adminRenameKey, adminTransferKey, adminSearchUsers, adminSwitchKeyChannel, adminCreateKey } from '../api'
+import { adminListKeys, adminRenameKey, adminTransferKey, adminSearchUsers, adminSwitchKeyChannel, adminCreateKey, adminSetLockedModel } from '../api'
 import { formatTime, formatDate } from '../utils/time'
 
 interface APIKeyWithUser {
@@ -13,6 +13,7 @@ interface APIKeyWithUser {
   status: string
   channel: string
   auto_downgrade: boolean
+  locked_model: string
   last_used_at: string | null
   created_at: string
   requests: number
@@ -106,7 +107,7 @@ function ItcodeSearchInput({
 function SkeletonRow() {
   return (
     <tr>
-      {[80, 80, 120, 60, 60, 60, 80, 70, 90, 110, 130].map((w, i) => (
+      {[80, 80, 120, 60, 60, 80, 60, 70, 90, 110, 130].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -133,6 +134,8 @@ export default function AdminKeysPage() {
   const [transferring, setTransferring] = useState(false)
   const [revealedId, setRevealedId] = useState<number | null>(null)
   const [copied, setCopied] = useState<number | null>(null)
+  const [lockingId, setLockingId] = useState<number | null>(null)
+  const [lockValue, setLockValue] = useState('')
 
   // Create key form state
   const [createItcode, setCreateItcode] = useState('')
@@ -189,6 +192,12 @@ export default function AdminKeysPage() {
     const newCh = k.channel === 'aws' ? 'backend' : 'aws'
     if (!confirm(`确认将 Key "${k.name || k.key.slice(0, 12)}" 切换到 ${newCh === 'aws' ? 'AWS' : 'Backend'} 渠道？`)) return
     await adminSwitchKeyChannel(k.id, newCh)
+    load()
+  }
+
+  const handleSetLockedModel = async (id: number) => {
+    await adminSetLockedModel(id, lockValue.trim())
+    setLockingId(null)
     load()
   }
 
@@ -319,7 +328,7 @@ export default function AdminKeysPage() {
         <table className="w-full text-sm min-w-[1000px]">
           <thead className="bg-gray-50/80">
             <tr>
-              {['用户', 'Key名称', 'Key', '状态', '渠道', '请求数', '费用', '创建时间', '最后使用', '操作'].map((h) => (
+              {['用户', 'Key名称', 'Key', '状态', '渠道', '锁定模型', '请求数', '费用', '创建时间', '最后使用', '操作'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">{h}</th>
               ))}
             </tr>
@@ -328,7 +337,7 @@ export default function AdminKeysPage() {
             {loading ? (
               Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
             ) : keys.length === 0 ? (
-              <tr><td colSpan={10} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td></tr>
+              <tr><td colSpan={11} className="px-4 py-10 text-center text-sm text-gray-400">暂无数据</td></tr>
             ) : (
               keys.map((k) => (
                 <tr key={k.id} className="hover:bg-gray-50/50 transition-colors">
@@ -366,6 +375,33 @@ export default function AdminKeysPage() {
                     }`}>
                       {k.channel === 'aws' ? 'AWS' : 'Backend'}
                     </span>
+                  </td>
+                  <td className="px-4 py-3.5 text-xs text-gray-600 max-w-[140px]">
+                    {lockingId === k.id ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          value={lockValue}
+                          onChange={(e) => setLockValue(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleSetLockedModel(k.id); if (e.key === 'Escape') setLockingId(null) }}
+                          placeholder="模型名或留空清除"
+                          className="w-32 px-2 py-1 border border-red-300 rounded-lg text-xs focus:outline-none focus:ring-1 focus:ring-red-400"
+                          autoFocus
+                        />
+                        <button onClick={() => handleSetLockedModel(k.id)} className="text-xs text-green-600 hover:text-green-800">✓</button>
+                        <button onClick={() => setLockingId(null)} className="text-xs text-gray-400 hover:text-gray-600">✕</button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => { setLockingId(k.id); setLockValue(k.locked_model || '') }}
+                        className="group flex items-center gap-1 text-left"
+                        title="点击设置锁定模型"
+                      >
+                        {k.locked_model
+                          ? <span className="font-mono text-orange-600 bg-orange-50 px-1.5 py-0.5 rounded ring-1 ring-orange-100 truncate max-w-[120px]">{k.locked_model}</span>
+                          : <span className="text-gray-300 group-hover:text-gray-500">—</span>
+                        }
+                      </button>
+                    )}
                   </td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs">{(k.requests || 0).toLocaleString()}</td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs">${(k.cost_usd || 0).toFixed(4)}</td>
