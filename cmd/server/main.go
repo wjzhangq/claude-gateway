@@ -429,6 +429,37 @@ func main() {
 		c.JSON(200, gin.H{"updated": results})
 	})
 
+	// Backend health sync API (session_secret auth, called by cmd/check --health)
+	r.POST("/admin/api/backends/health", func(c *gin.Context) {
+		raw := c.GetHeader("Authorization")
+		raw = strings.TrimPrefix(raw, "Bearer ")
+		raw = strings.TrimPrefix(raw, "bearer ")
+		if raw == "" || raw != cfg.Auth.SessionSecret {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+
+		var req struct {
+			Backends []struct {
+				Name      string `json:"name"`
+				Healthy   bool   `json:"healthy"`
+				LatencyMs int64  `json:"latency_ms"`
+				Error     string `json:"error"`
+			} `json:"backends"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+
+		results := make([]gin.H, 0, len(req.Backends))
+		for _, b := range req.Backends {
+			found := lb.SetHealthStatus(b.Name, b.Healthy, b.LatencyMs)
+			results = append(results, gin.H{"name": b.Name, "found": found, "healthy": b.Healthy})
+		}
+		c.JSON(200, gin.H{"updated": results})
+	})
+
 	// Serve frontend static files
 	r.Static("/assets", "web/dist/assets")
 	r.StaticFile("/favicon.ico", "web/dist/favicon.ico")

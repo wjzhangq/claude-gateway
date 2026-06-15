@@ -15,6 +15,69 @@ import (
 
 const maxStatusCodes = 50
 
+// Backend health states. The backend moves between them based on classified
+// request outcomes and external health probes.
+const (
+	stateHealthy  int32 = 0 // full weight
+	stateDegraded int32 = 1 // reduced weight (Weight/4)
+	stateDisabled int32 = 2 // not selectable; recovers only via active probe
+)
+
+// degradedWeightDivisor is applied to a backend's weight while degraded.
+const degradedWeightDivisor = 4
+
+// Thresholds for state transitions driven by consecutive request outcomes.
+const (
+	consecErrToDegrade = 3 // consecutive errors: healthy -> degraded
+	consecErrToDisable = 5 // consecutive errors: -> disabled
+	consecOKToHealthy  = 3 // consecutive successes: degraded -> healthy
+)
+
+// ErrorClass categorizes a request outcome for health accounting.
+type ErrorClass int
+
+const (
+	ErrNone      ErrorClass = iota // 2xx success
+	ErrClient                      // 4xx (non-401/403/429): caller's fault, ignored
+	ErrAuth                        // 401/403: backend key invalid -> disable
+	ErrRateLimit                   // 429: transient, counts as error
+	ErrServer                      // 5xx: upstream fault, counts as error
+	ErrTransport                   // connection-level failure, counts as error
+)
+
+// ClassifyError maps an HTTP status code and/or transport error to an ErrorClass.
+// A non-nil transportErr always takes precedence (no usable status code).
+func ClassifyError(statusCode int, transportErr error) ErrorClass {
+	if transportErr != nil {
+		return ErrTransport
+	}
+	switch {
+	case statusCode >= 200 && statusCode < 300:
+		return ErrNone
+	case statusCode == 401 || statusCode == 403:
+		return ErrAuth
+	case statusCode == 429:
+		return ErrRateLimit
+	case statusCode >= 500:
+		return ErrServer
+	case statusCode >= 400:
+		return ErrClient
+	default:
+		// 1xx/3xx: treat as success for health purposes.
+		return ErrNone
+	}
+}
+
+// countsAgainstHealth reports whether a class should affect the health state.
+func (c ErrorClass) countsAgainstHealth() bool {
+	switch c {
+	case ErrRateLimit, ErrServer, ErrTransport:
+		return true
+	default:
+		return false
+	}
+}
+
 // Backend represents a single upstream API endpoint with its HTTP client.
 type Backend struct {
 	Name            string
@@ -22,9 +85,10 @@ type Backend struct {
 	APIKey          string
 	Weight          int
 	client          *http.Client
-	errCount        atomic.Int64
+	state           atomic.Int32 // stateHealthy/stateDegraded/stateDisabled
+	consecErr       atomic.Int64 // consecutive health-impacting errors
+	consecOK        atomic.Int64 // consecutive successes (for degraded->healthy)
 	lastErr         atomic.Int64 // unix timestamp of last error
-	disabled        atomic.Bool
 	validationFailed atomic.Bool  // set on startup validation failure; never auto-recovered
 	quotaExhausted  atomic.Bool   // set by external check when daily quota is exceeded
 	quotaLimit      atomic.Int64  // hard_limit_usd * 100 (cents precision)
@@ -38,19 +102,83 @@ type Backend struct {
 // Client returns the backend's dedicated HTTP client.
 func (b *Backend) Client() *http.Client { return b.client }
 
-// RecordError increments the error counter and disables the backend after 5 consecutive errors.
-func (b *Backend) RecordError() {
-	b.errCount.Add(1)
-	b.lastErr.Store(time.Now().Unix())
-	if b.errCount.Load() >= 5 {
-		b.disabled.Store(true)
+// RecordResult updates the backend health state based on a classified outcome.
+//   - ErrNone: reset consecutive errors; if degraded, count successes toward recovery.
+//   - ErrClient: ignored entirely (caller's request was bad).
+//   - ErrAuth: disable immediately (backend key invalid).
+//   - ErrRateLimit/ErrServer/ErrTransport: count as an error and maybe degrade/disable.
+func (b *Backend) RecordResult(class ErrorClass) {
+	switch class {
+	case ErrClient:
+		// Not the backend's fault — leave health untouched.
+		return
+	case ErrNone:
+		b.consecErr.Store(0)
+		// Promote degraded -> healthy after enough consecutive successes.
+		if b.state.Load() == stateDegraded {
+			if b.consecOK.Add(1) >= consecOKToHealthy {
+				b.state.Store(stateHealthy)
+				b.consecOK.Store(0)
+				log.Printf("[backend:%s] recovered: degraded -> healthy", b.Name)
+			}
+		} else {
+			b.consecOK.Store(0)
+		}
+		return
+	case ErrAuth:
+		b.lastErr.Store(time.Now().Unix())
+		b.consecOK.Store(0)
+		if b.state.Swap(stateDisabled) != stateDisabled {
+			log.Printf("[backend:%s] disabled: auth failure (401/403)", b.Name)
+		}
+		return
+	default: // ErrRateLimit, ErrServer, ErrTransport
+		b.lastErr.Store(time.Now().Unix())
+		b.consecOK.Store(0)
+		n := b.consecErr.Add(1)
+		switch {
+		case n >= consecErrToDisable:
+			if b.state.Swap(stateDisabled) != stateDisabled {
+				log.Printf("[backend:%s] disabled: %d consecutive errors", b.Name, n)
+			}
+		case n >= consecErrToDegrade:
+			if b.state.CompareAndSwap(stateHealthy, stateDegraded) {
+				log.Printf("[backend:%s] degraded: %d consecutive errors", b.Name, n)
+			}
+		}
 	}
 }
 
-// RecordSuccess resets the error counter and re-enables the backend.
-func (b *Backend) RecordSuccess() {
-	b.errCount.Store(0)
-	b.disabled.Store(false)
+// SetState forces the backend into a specific health state (used by active probes).
+func (b *Backend) SetState(s int32) {
+	b.state.Store(s)
+	if s == stateHealthy {
+		b.consecErr.Store(0)
+		b.consecOK.Store(0)
+	}
+}
+
+// State returns the current health state.
+func (b *Backend) State() int32 { return b.state.Load() }
+
+// effectiveWeight returns the selection weight after applying the health state.
+// Returns 0 when the backend must not be selected.
+func (b *Backend) effectiveWeight() int {
+	if b.validationFailed.Load() || b.quotaExhausted.Load() {
+		return 0
+	}
+	switch b.state.Load() {
+	case stateDisabled:
+		return 0
+	case stateDegraded:
+		w := b.Weight / degradedWeightDivisor
+		if w < 1 {
+			w = 1 // keep a sliver of traffic to allow passive recovery
+		}
+		return w
+	default:
+		return b.Weight
+	}
 }
 
 // RecordStatusCode records a status code for the last N requests tracking.
@@ -117,8 +245,10 @@ type BackendInfo struct {
 	Name            string      `json:"name"`
 	URL             string      `json:"url"`
 	Weight          int         `json:"weight"`
-	Disabled        bool        `json:"disabled"`
-	ErrCount        int64       `json:"err_count"`
+	State           string      `json:"state"`     // "healthy" | "degraded" | "disabled"
+	EffectiveWeight int         `json:"effective_weight"`
+	Disabled        bool        `json:"disabled"`  // kept for backward compat: true when not selectable
+	ErrCount        int64       `json:"err_count"` // consecutive health-impacting errors
 	StatusCodeDist  map[int]int `json:"status_code_dist"`
 	StatusCodes     []int       `json:"status_codes"`
 	ErrorRate       float64     `json:"error_rate"`
@@ -128,6 +258,18 @@ type BackendInfo struct {
 	QuotaCheckedAt  int64       `json:"quota_checked_at"`
 }
 
+// stateName converts a numeric state to its string label.
+func stateName(s int32) string {
+	switch s {
+	case stateDegraded:
+		return "degraded"
+	case stateDisabled:
+		return "disabled"
+	default:
+		return "healthy"
+	}
+}
+
 // GetBackends returns all backends with their status info.
 func (lb *LoadBalancer) GetBackends() []BackendInfo {
 	lb.mu.RLock()
@@ -135,19 +277,22 @@ func (lb *LoadBalancer) GetBackends() []BackendInfo {
 
 	result := make([]BackendInfo, 0, len(lb.backends))
 	for _, b := range lb.backends {
+		ew := b.effectiveWeight()
 		result = append(result, BackendInfo{
-			Name:           b.Name,
-			URL:            b.URL,
-			Weight:         b.Weight,
-			Disabled:       b.disabled.Load(),
-			ErrCount:       b.errCount.Load(),
-			StatusCodeDist: b.GetStatusCodeDist(),
-			StatusCodes:    b.GetStatusCodes(),
-			ErrorRate:      b.GetErrorRate(),
-			QuotaExhausted: b.quotaExhausted.Load(),
-			QuotaLimit:     float64(b.quotaLimit.Load()) / 100,
-			QuotaUsage:     float64(b.quotaUsage.Load()) / 100,
-			QuotaCheckedAt: b.quotaCheckedAt.Load(),
+			Name:            b.Name,
+			URL:             b.URL,
+			Weight:          b.Weight,
+			State:           stateName(b.state.Load()),
+			EffectiveWeight: ew,
+			Disabled:        ew == 0,
+			ErrCount:        b.consecErr.Load(),
+			StatusCodeDist:  b.GetStatusCodeDist(),
+			StatusCodes:     b.GetStatusCodes(),
+			ErrorRate:       b.GetErrorRate(),
+			QuotaExhausted:  b.quotaExhausted.Load(),
+			QuotaLimit:      float64(b.quotaLimit.Load()) / 100,
+			QuotaUsage:      float64(b.quotaUsage.Load()) / 100,
+			QuotaCheckedAt:  b.quotaCheckedAt.Load(),
 		})
 	}
 	return result
@@ -183,7 +328,6 @@ func NewLoadBalancer(cfgs []config.BackendAPI) *LoadBalancer {
 			},
 		})
 	}
-	go lb.recoveryLoop()
 	go lb.quotaResetLoop()
 	return lb
 }
@@ -195,12 +339,10 @@ func (lb *LoadBalancer) Pick() *Backend {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 
-	// First pass: compute total weight of healthy backends
+	// First pass: compute total effective weight of selectable backends
 	totalWeight := 0
 	for _, b := range lb.backends {
-		if !b.disabled.Load() && !b.validationFailed.Load() && !b.quotaExhausted.Load() {
-			totalWeight += b.Weight
-		}
+		totalWeight += b.effectiveWeight()
 	}
 	if totalWeight == 0 {
 		return nil
@@ -209,38 +351,32 @@ func (lb *LoadBalancer) Pick() *Backend {
 	// Second pass: weighted selection
 	r := rand.Intn(totalWeight)
 	for _, b := range lb.backends {
-		if b.disabled.Load() || b.validationFailed.Load() || b.quotaExhausted.Load() {
+		w := b.effectiveWeight()
+		if w == 0 {
 			continue
 		}
-		r -= b.Weight
+		r -= w
 		if r < 0 {
 			return b
 		}
 	}
-	// Fallback: return last healthy backend (handles rounding edge cases)
+	// Fallback: return last selectable backend (handles rounding edge cases)
 	for i := len(lb.backends) - 1; i >= 0; i-- {
-		b := lb.backends[i]
-		if !b.disabled.Load() && !b.validationFailed.Load() && !b.quotaExhausted.Load() {
-			return b
+		if lb.backends[i].effectiveWeight() > 0 {
+			return lb.backends[i]
 		}
 	}
 	return nil
 }
 
-// recoveryLoop re-enables backends that have been quiet for 30 seconds.
+// recoveryLoop previously auto-revived disabled backends after 30s of silence.
+// That behavior is removed: disabled backends now recover ONLY via the external
+// active health probe (SetHealthStatus), and degraded backends recover passively
+// through consecutive successful requests. This loop is retained as a no-op hook
+// point and currently does nothing; recovery is event-driven.
 func (lb *LoadBalancer) recoveryLoop() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		now := time.Now().Unix()
-		lb.mu.RLock()
-		for _, b := range lb.backends {
-			if b.disabled.Load() && !b.validationFailed.Load() && now-b.lastErr.Load() > 30 {
-				b.RecordSuccess()
-			}
-		}
-		lb.mu.RUnlock()
-	}
+	// intentionally empty: recovery is driven by RecordResult (passive) and
+	// SetHealthStatus (active probe). Kept for symmetry with quotaResetLoop.
 }
 
 // PickForPerfTest selects a healthy backend and returns its connection details for perf testing.
@@ -362,6 +498,54 @@ func validateBackend(b *Backend) bool {
 
 	log.Printf("[backend:%s] validate: OK — %d model(s) available", b.Name, len(result.Data))
 	return true
+}
+
+// SetHealthStatus is called by the external active health probe to report
+// whether a backend is reachable. State transitions:
+//   - healthy=true, disabled  -> degraded (half-recovered, low weight to verify)
+//   - healthy=true, degraded  -> healthy  (fully recovered)
+//   - healthy=false, healthy  -> degraded
+//   - healthy=false, degraded -> disabled
+func (lb *LoadBalancer) SetHealthStatus(name string, healthy bool, latencyMs int64) bool {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	for _, b := range lb.backends {
+		if b.Name != name {
+			continue
+		}
+		cur := b.state.Load()
+		if healthy {
+			switch cur {
+			case stateDisabled:
+				b.state.Store(stateDegraded)
+				b.consecErr.Store(0)
+				b.consecOK.Store(0)
+				log.Printf("[backend:%s] probe OK: disabled -> degraded (latency=%dms)", b.Name, latencyMs)
+			case stateDegraded:
+				b.state.Store(stateHealthy)
+				b.consecErr.Store(0)
+				b.consecOK.Store(0)
+				log.Printf("[backend:%s] probe OK: degraded -> healthy (latency=%dms)", b.Name, latencyMs)
+			default:
+				// already healthy, nothing to do
+			}
+		} else {
+			switch cur {
+			case stateHealthy:
+				b.state.Store(stateDegraded)
+				b.consecOK.Store(0)
+				log.Printf("[backend:%s] probe FAIL: healthy -> degraded", b.Name)
+			case stateDegraded:
+				b.state.Store(stateDisabled)
+				b.consecOK.Store(0)
+				log.Printf("[backend:%s] probe FAIL: degraded -> disabled", b.Name)
+			default:
+				// already disabled, nothing to do
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // SetQuotaStatus updates the quota state for a named backend.

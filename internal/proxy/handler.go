@@ -328,7 +328,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	} else {
 		resp, err = h.doRequest(c, backend, upstreamPath, targetURL, body)
 		if err != nil {
-			backend.RecordError()
+			backend.RecordResult(ClassifyError(0, err))
 			logger.Errorf("backend %s error: %v", backend.Name, err)
 
 			// Try downgrade if enabled and this is the first attempt
@@ -351,7 +351,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	}
 
 	defer resp.Body.Close()
-	backend.RecordSuccess()
+	backend.RecordResult(ClassifyError(resp.StatusCode, nil))
 	backend.RecordStatusCode(resp.StatusCode)
 
 	// Check if we need to retry with downgrade (response indicates failure)

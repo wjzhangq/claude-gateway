@@ -29,10 +29,18 @@ type quotaBackend struct {
 	Usage     float64 `json:"usage"`
 }
 
+type healthBackend struct {
+	Name      string `json:"name"`
+	Healthy   bool   `json:"healthy"`
+	LatencyMs int64  `json:"latency_ms"`
+	Error     string `json:"error,omitempty"`
+}
+
 func main() {
 	cfgPath := flag.String("config", "config.yaml", "path to config.yaml")
 	enableGlob := flag.String("enable", "", "glob pattern to mark matching backends as available (e.g. 'aws-*')")
 	disableGlob := flag.String("disable", "", "glob pattern to mark matching backends as exhausted (e.g. 'aws-*')")
+	health := flag.Bool("health", false, "run active health probe (GET /v1/models) and sync state to gateway")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -42,6 +50,12 @@ func main() {
 
 	gatewayURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Server.Port)
 	client := &http.Client{Timeout: 15 * time.Second}
+
+	// Active health probe mode: check each backend's reachability and sync.
+	if *health {
+		runHealthProbe(client, cfg, gatewayURL)
+		return
+	}
 
 	// Handle --enable / --disable glob overrides without running quota checks.
 	if *enableGlob != "" || *disableGlob != "" {
@@ -109,6 +123,76 @@ func main() {
 		log.Fatalf("sync to server: %v", err)
 	}
 	log.Println("quota sync complete")
+}
+
+// runHealthProbe actively probes each enabled backend with GET /v1/models,
+// measures latency, and syncs the result to the gateway.
+func runHealthProbe(client *http.Client, cfg *config.Config, gatewayURL string) {
+	var results []healthBackend
+	for _, b := range cfg.Backends {
+		if !b.Enabled {
+			continue
+		}
+		baseURL := strings.TrimRight(b.URL, "/")
+		start := time.Now()
+		err := probeModels(client, baseURL, b.APIKey)
+		latency := time.Since(start).Milliseconds()
+		if err != nil {
+			log.Printf("[%s] health FAIL (%dms): %v", b.Name, latency, err)
+			results = append(results, healthBackend{Name: b.Name, Healthy: false, LatencyMs: latency, Error: err.Error()})
+		} else {
+			log.Printf("[%s] health OK (%dms)", b.Name, latency)
+			results = append(results, healthBackend{Name: b.Name, Healthy: true, LatencyMs: latency})
+		}
+	}
+
+	if len(results) == 0 {
+		log.Println("no backends to probe")
+		return
+	}
+
+	if err := syncHealthToServer(client, gatewayURL, cfg.Auth.SessionSecret, results); err != nil {
+		log.Fatalf("sync health to server: %v", err)
+	}
+	log.Println("health sync complete")
+}
+
+// probeModels performs a GET /v1/models and returns an error if unreachable/non-200.
+func probeModels(client *http.Client, baseURL, apiKey string) error {
+	_, err := doGet(client, baseURL+"/v1/models", apiKey)
+	return err
+}
+
+// syncHealthToServer posts health probe results to the gateway.
+func syncHealthToServer(client *http.Client, gatewayURL, secret string, backends []healthBackend) error {
+	body, err := json.Marshal(map[string]any{"backends": backends})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/admin/api/backends/health", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secret)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var buf bytes.Buffer
+		buf.ReadFrom(resp.Body)
+		return fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, buf.String())
+	}
+
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	log.Printf("server response: %v", result)
+	return nil
 }
 
 func fetchBilling(client *http.Client, baseURL, apiKey string) (usage, limit float64, err error) {

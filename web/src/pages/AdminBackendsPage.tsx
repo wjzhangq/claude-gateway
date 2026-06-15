@@ -15,6 +15,8 @@ interface BackendStatus {
   name: string
   url: string
   weight: number
+  state: 'healthy' | 'degraded' | 'disabled'
+  effective_weight: number
   disabled: boolean
   err_count: number
   status_code_dist: Record<number, number>
@@ -259,9 +261,27 @@ export default function AdminBackendsPage() {
               <tr><td colSpan={5} className="px-4 py-10 text-center text-sm text-gray-400">无数据</td></tr>
             ) : (
               backendStatus.map((b) => {
-                const isHealthy = !b.disabled && !b.quota_exhausted
-                const statusLabel = b.disabled ? '已禁用' : b.quota_exhausted ? '额度耗尽' : '正常'
-                const statusColor = b.disabled ? 'bg-red-50 text-red-700 ring-red-100' : b.quota_exhausted ? 'bg-orange-50 text-orange-700 ring-orange-100' : 'bg-green-50 text-green-700 ring-green-100'
+                // Status priority: quota exhausted (external) overrides health state display.
+                let statusLabel: string
+                let statusColor: string
+                let dotColor: string
+                if (b.quota_exhausted) {
+                  statusLabel = '额度耗尽'
+                  statusColor = 'bg-orange-50 text-orange-700 ring-orange-100'
+                  dotColor = 'bg-orange-500'
+                } else if (b.state === 'disabled') {
+                  statusLabel = '已禁用'
+                  statusColor = 'bg-red-50 text-red-700 ring-red-100'
+                  dotColor = 'bg-red-500'
+                } else if (b.state === 'degraded') {
+                  statusLabel = '降级中'
+                  statusColor = 'bg-yellow-50 text-yellow-700 ring-yellow-100'
+                  dotColor = 'bg-yellow-500'
+                } else {
+                  statusLabel = '正常'
+                  statusColor = 'bg-green-50 text-green-700 ring-green-100'
+                  dotColor = 'bg-green-500'
+                }
                 const quotaStr = b.quota_limit > 0
                   ? `$${b.quota_usage.toFixed(2)} / $${b.quota_limit.toFixed(2)}`
                   : '—'
@@ -274,11 +294,20 @@ export default function AdminBackendsPage() {
                     <td className="px-4 py-3.5 font-mono text-xs font-semibold text-gray-700">{b.name}</td>
                     <td className="px-4 py-3.5">
                       <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${statusColor}`}>
-                        <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${isHealthy ? 'bg-green-500' : b.disabled ? 'bg-red-500' : 'bg-orange-500'}`} />
+                        <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${dotColor}`} />
                         {statusLabel}
                       </span>
                     </td>
-                    <td className="px-4 py-3.5 text-gray-700">{b.weight}</td>
+                    <td className="px-4 py-3.5 text-gray-700">
+                      {b.state === 'degraded' ? (
+                        <span className="tabular-nums">
+                          {b.effective_weight}
+                          <span className="text-xs text-gray-400"> / {b.weight}</span>
+                        </span>
+                      ) : (
+                        b.weight
+                      )}
+                    </td>
                     <td className="px-4 py-3.5">
                       {b.quota_limit > 0 ? (
                         <div className="flex items-center gap-2">
