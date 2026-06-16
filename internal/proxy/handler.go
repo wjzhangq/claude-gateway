@@ -21,6 +21,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
+	"github.com/wjzhangq/claude-gateway/internal/tokenest"
 )
 
 // Handler forwards requests to upstream Claude backends.
@@ -534,6 +535,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	flusher, canFlush := c.Writer.(http.Flusher)
 	ctx := c.Request.Context()
 	var lastIn, lastOut int
+	var outCounts tokenest.Counts
 	buf := make([]byte, streamReadBufSize)
 	// partial holds bytes of an incomplete SSE line across reads
 	var partial []byte
@@ -570,6 +572,9 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 				if i, o := parseBodyTokens(payload); i > 0 || o > 0 {
 					lastIn, lastOut = i, o
 				}
+				if t := tokenest.ExtractDeltaText(payload); t != "" {
+					outCounts.Add(t)
+				}
 			}
 		}
 		if err != nil {
@@ -577,10 +582,18 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 	}
 
+	rawZero := lastIn == 0 && lastOut == 0
+	if lastIn == 0 {
+		lastIn = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
+	}
+	if lastOut == 0 {
+		lastOut = outCounts.Estimate(tokenest.Default)
+	}
+
 	latency := time.Since(start)
 	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
 
-	if statusCode >= 400 || (lastIn == 0 && lastOut == 0) {
+	if statusCode >= 400 || rawZero {
 		msg := "backend zero tokens"
 		if statusCode >= 400 {
 			msg = "backend error response"
@@ -607,10 +620,17 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 
 	in, out := parseBodyTokens(respBody)
+	rawZero := in == 0 && out == 0
+	if in == 0 {
+		in = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
+	}
+	if out == 0 {
+		out = tokenest.EstimateString(tokenest.ExtractResponseText(respBody), tokenest.Default)
+	}
 	latency := time.Since(start)
 	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
 
-	if statusCode >= 400 || (in == 0 && out == 0) {
+	if statusCode >= 400 || rawZero {
 		msg := "backend zero tokens"
 		if statusCode >= 400 {
 			msg = "backend error response"

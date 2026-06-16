@@ -16,6 +16,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
+	"github.com/wjzhangq/claude-gateway/internal/tokenest"
 )
 
 // Handler transparently forwards requests to public third-party providers
@@ -139,9 +140,9 @@ func (h *Handler) Forward(c *gin.Context, path string, body []byte, model string
 	// Stream or buffer
 	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	if isStream {
-		h.streamResponse(c, resp, provider, model, keyInfo, keyStr, resp.StatusCode, start)
+		h.streamResponse(c, resp, provider, model, keyInfo, keyStr, resp.StatusCode, start, body)
 	} else {
-		h.bufferResponse(c, resp, provider, model, keyInfo, keyStr, resp.StatusCode, start)
+		h.bufferResponse(c, resp, provider, model, keyInfo, keyStr, resp.StatusCode, start, body)
 	}
 }
 
@@ -171,7 +172,7 @@ func (h *Handler) Models() []gin.H {
 }
 
 func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *config.PublicProvider,
-	model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time) {
+	model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, reqBody []byte) {
 
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -181,6 +182,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 	ctx := c.Request.Context()
 
 	var totalIn, totalOut int
+	var outCounts tokenest.Counts
 	// linesBuf accumulates bytes until a complete SSE line is formed
 	var linesBuf []byte
 	buf := make([]byte, 4096)
@@ -199,14 +201,21 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 			}
 			linesBuf = append(linesBuf, buf[:n]...)
 			// parse complete lines from linesBuf, keep remainder
-			linesBuf = consumeSSELines(linesBuf, &totalIn, &totalOut)
+			linesBuf = consumeSSELines(linesBuf, &totalIn, &totalOut, &outCounts)
 		}
 		if err != nil {
 			break
 		}
 	}
 	// parse any remaining bytes
-	consumeSSELines(linesBuf, &totalIn, &totalOut)
+	consumeSSELines(linesBuf, &totalIn, &totalOut, &outCounts)
+
+	if totalIn == 0 {
+		totalIn = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
+	}
+	if totalOut == 0 {
+		totalOut = outCounts.Estimate(tokenest.Default)
+	}
 
 	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, totalIn, totalOut, time.Since(start))
 }
@@ -214,7 +223,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 // consumeSSELines parses complete newline-terminated SSE lines from data,
 // updating in/out token counters on every data: event that contains usage.
 // Returns the unconsumed remainder (partial last line).
-func consumeSSELines(data []byte, in, out *int) []byte {
+func consumeSSELines(data []byte, in, out *int, outCounts *tokenest.Counts) []byte {
 	for {
 		idx := bytes.IndexByte(data, '\n')
 		if idx < 0 {
@@ -237,12 +246,15 @@ func consumeSSELines(data []byte, in, out *int) []byte {
 		if o > 0 {
 			*out = o
 		}
+		if t := tokenest.ExtractDeltaText(payload); t != "" {
+			outCounts.Add(t)
+		}
 	}
 	return data
 }
 
 func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *config.PublicProvider,
-	model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time) {
+	model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, reqBody []byte) {
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -252,6 +264,12 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *
 	c.Writer.Write(respBody)
 
 	in, out := parseBodyTokens(respBody)
+	if in == 0 {
+		in = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
+	}
+	if out == 0 {
+		out = tokenest.EstimateString(tokenest.ExtractResponseText(respBody), tokenest.Default)
+	}
 	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, in, out, time.Since(start))
 }
 
