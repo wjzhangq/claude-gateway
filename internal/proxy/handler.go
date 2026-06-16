@@ -292,7 +292,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 
 	// Apply locked model override: if the key has a locked model set, force it
 	if info, ok := keyInfo.(*auth.KeyInfo); ok && info.LockedModel != "" {
-		body = replaceModelInBody(body, reqModel, info.LockedModel)
+		body = ReplaceModelInBody(body, reqModel, info.LockedModel)
 		reqModel = info.LockedModel
 	}
 
@@ -302,7 +302,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	h.mu.RUnlock()
 	for pattern, replacement := range replacements {
 		if strings.Contains(reqModel, pattern) {
-			body = replaceModelInBody(body, reqModel, replacement)
+			body = ReplaceModelInBody(body, reqModel, replacement)
 			reqModel = replacement
 			break
 		}
@@ -848,9 +848,11 @@ func (h *Handler) UpdateConfig(cfg *config.Config) {
 	h.mu.Unlock()
 }
 
-// replaceModelInBody replaces the model field value in a JSON request body.
-// Handles both "model":"value" and "model": "value" forms.
-func replaceModelInBody(body []byte, oldModel, newModel string) []byte {
+// ReplaceModelInBody rewrites the "model" field in a JSON request body from
+// oldModel to newModel. Handles both "model":"value" and "model": "value" forms.
+// It is idempotent: when oldModel == newModel (or oldModel is absent) the body
+// is returned unchanged.
+func ReplaceModelInBody(body []byte, oldModel, newModel string) []byte {
 	body = bytes.Replace(body, []byte(`"model":"`+oldModel+`"`), []byte(`"model":"`+newModel+`"`), 1)
 	body = bytes.Replace(body, []byte(`"model": "`+oldModel+`"`), []byte(`"model": "`+newModel+`"`), 1)
 	return body

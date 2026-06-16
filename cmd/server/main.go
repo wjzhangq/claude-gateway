@@ -270,6 +270,19 @@ func main() {
 					Model string `json:"model"`
 				}
 				if json.Unmarshal(body, &reqJSON) == nil && reqJSON.Model != "" {
+					// Apply the key's locked model BEFORE public-provider routing,
+					// so a locked model (e.g. a public Kimi model) can be matched and
+					// routed to its provider. Without this, the lock only takes effect
+					// inside the backend channel handler — too late to reach the public
+					// provider routing below. ReplaceModelInBody is idempotent.
+					if ki, ok := c.Get(middleware.CtxKeyInfo); ok {
+						if info, ok := ki.(*auth.KeyInfo); ok && info.LockedModel != "" && info.LockedModel != reqJSON.Model {
+							logger.Infof("applying locked model %s (was %s) before routing", info.LockedModel, reqJSON.Model)
+							body = proxy.ReplaceModelInBody(body, reqJSON.Model, info.LockedModel)
+							reqJSON.Model = info.LockedModel
+						}
+					}
+
 					if provider := publicH.MatchModel(reqJSON.Model); provider != nil {
 						logger.Infof("routing to public provider %s for model %s", provider.Name, reqJSON.Model)
 						publicH.Forward(c, path, body, reqJSON.Model, provider)
