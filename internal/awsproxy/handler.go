@@ -250,8 +250,11 @@ func (h *Handler) Messages(c *gin.Context) {
 		return
 	}
 
-	// Prepare body: remove model, add anthropic_version
-	bedrockBody := prepareAnthropicBody(body)
+	// Prepare body: remove model, add anthropic_version.
+	// Pass requestModel too: when bedrockModel is an inference-profile ARN it
+	// does not contain the model family (e.g. "opus-4"), so adaptive-thinking
+	// detection must also consider the original requested model name.
+	bedrockBody := prepareAnthropicBody(body, bedrockModel, requestModel)
 
 	keyInfo, keyStr := extractKeyInfo(c)
 	start := time.Now()
@@ -945,7 +948,17 @@ func stripOrphanedToolPairs(messages []interface{}, strippedToolNames map[string
 // fields that Bedrock does not accept: "model" and "stream".
 // It also ensures max_tokens > thinking.budget_tokens when extended thinking is used,
 // and strips cache_control.scope which Bedrock does not support.
-func prepareAnthropicBody(body []byte) []byte {
+//
+// bedrockModel is the resolved Bedrock model/inference-profile identifier. Newer
+// models (Opus 4.x and later) reject the legacy thinking.type="enabled" form and
+// require thinking.type="adaptive" together with output_config.effort; for those
+// models the body is converted accordingly instead of stripping output_config.
+//
+// requestModel is the original requested model name (e.g.
+// "global.anthropic.claude-opus-4-8"). It is consulted in addition to bedrockModel
+// because bedrockModel may be an inference-profile ARN that does not contain the
+// model family, in which case adaptive-thinking detection would otherwise fail.
+func prepareAnthropicBody(body []byte, bedrockModel, requestModel string) []byte {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
@@ -954,7 +967,10 @@ func prepareAnthropicBody(body []byte) []byte {
 	delete(m, "stream")            // Bedrock rejects this field: "Extra inputs are not permitted"
 	delete(m, "context_management") // Bedrock does not support context_management (added by Claude Code CLI)
 	delete(m, "metadata")          // Bedrock does not support metadata field
-	delete(m, "output_config")     // Bedrock does not support output_config (e.g. effort, format fields)
+	adaptiveThinking := modelUsesAdaptiveThinking(bedrockModel) || modelUsesAdaptiveThinking(requestModel)
+	if !adaptiveThinking {
+		delete(m, "output_config") // legacy models do not support output_config (e.g. effort, format fields)
+	}
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
 
 	// Filter out non-standard tool types that Bedrock doesn't support
@@ -1027,8 +1043,15 @@ func prepareAnthropicBody(body []byte) []byte {
 		}
 	}
 
-	// Enforce max_tokens > thinking.budget_tokens (Bedrock requirement).
-	if thinkingRaw, ok := m["thinking"]; ok {
+	// Thinking config handling.
+	//
+	// Newer Bedrock models (Opus 4.x+) reject thinking.type="enabled" and the
+	// budget_tokens field; they require thinking.type="adaptive" plus an
+	// output_config.effort level. Convert the legacy form into the new one.
+	if adaptiveThinking {
+		convertThinkingToAdaptive(m)
+	} else if thinkingRaw, ok := m["thinking"]; ok {
+		// Legacy models: enforce max_tokens > thinking.budget_tokens (Bedrock requirement).
 		var thinking struct {
 			BudgetTokens int `json:"budget_tokens"`
 		}
@@ -1055,7 +1078,72 @@ func prepareAnthropicBody(body []byte) []byte {
 	return body
 }
 
-// parseAnthropicUsage extracts token counts from any Anthropic JSON payload.
+// modelUsesAdaptiveThinking reports whether the resolved Bedrock model requires
+// the newer adaptive thinking configuration (thinking.type="adaptive" +
+// output_config.effort) rather than the legacy thinking.type="enabled" +
+// budget_tokens form. This applies to Opus 4.x and later models.
+func modelUsesAdaptiveThinking(bedrockModel string) bool {
+	s := strings.ToLower(bedrockModel)
+	// Opus 4.x (4-6, 4-7, 4-8, …) and any future opus-4-N use the adaptive format.
+	return strings.Contains(s, "opus-4")
+}
+
+// convertThinkingToAdaptive rewrites a legacy extended-thinking request into the
+// form newer Bedrock models accept: thinking.type="adaptive" and an
+// output_config.effort level derived from the original budget_tokens. It also
+// drops budget_tokens (rejected by these models) and removes any obsolete
+// max_tokens-vs-budget adjustment need. No-op if "thinking" is absent.
+func convertThinkingToAdaptive(m map[string]json.RawMessage) {
+	thinkingRaw, ok := m["thinking"]
+	if !ok {
+		return
+	}
+	var thinking struct {
+		Type         string `json:"type"`
+		BudgetTokens int    `json:"budget_tokens"`
+	}
+	if err := json.Unmarshal(thinkingRaw, &thinking); err != nil {
+		return
+	}
+	// Only rewrite enabled/legacy thinking. If a caller already sent "adaptive"
+	// or "disabled", leave it untouched (but still ensure output_config exists
+	// for the adaptive case below).
+	if thinking.Type != "" && thinking.Type != "enabled" && thinking.Type != "adaptive" {
+		return
+	}
+
+	// Map budget_tokens to an effort level. These thresholds mirror Claude Code's
+	// default budgets (low ~4k, medium ~10k, high ~32k+).
+	effort := "high"
+	switch {
+	case thinking.BudgetTokens > 0 && thinking.BudgetTokens <= 4096:
+		effort = "low"
+	case thinking.BudgetTokens > 4096 && thinking.BudgetTokens <= 16384:
+		effort = "medium"
+	default:
+		effort = "high"
+	}
+
+	// Replace thinking with the adaptive form (no budget_tokens).
+	m["thinking"] = json.RawMessage(`{"type":"adaptive"}`)
+
+	// Merge effort into output_config, preserving any other fields the client sent.
+	var oc map[string]interface{}
+	if ocRaw, ok := m["output_config"]; ok {
+		_ = json.Unmarshal(ocRaw, &oc)
+	}
+	if oc == nil {
+		oc = map[string]interface{}{}
+	}
+	if _, set := oc["effort"]; !set {
+		oc["effort"] = effort
+	}
+	if b, err := json.Marshal(oc); err == nil {
+		m["output_config"] = b
+	}
+}
+
+
 func parseAnthropicUsage(data []byte) (input, output, cacheRead, cacheWrite int) {
 	var r struct {
 		Usage struct {
