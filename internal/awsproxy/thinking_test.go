@@ -3,6 +3,14 @@ package awsproxy
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/wjzhangq/claude-gateway/config"
+)
+
+// capsAdaptive / capsLegacy are the two capability rules used across tests.
+var (
+	capsAdaptive = config.ModelCapability{Thinking: "adaptive", OutputConfig: true}
+	capsLegacy   = config.ModelCapability{Thinking: "legacy", OutputConfig: false}
 )
 
 // decode unmarshals the prepared body for assertions.
@@ -24,7 +32,7 @@ func TestPrepareAnthropicBody_AdaptiveThinkingForOpus4(t *testing.T) {
 		"messages": [{"role": "user", "content": "hi"}]
 	}`)
 
-	out := prepareAnthropicBody(body, "global.anthropic.claude-opus-4-8", "global.anthropic.claude-opus-4-8")
+	out := prepareAnthropicBody(body, capsAdaptive, config.AWSConfig{}.BodyFieldAllowlist())
 	m := decode(t, out)
 
 	// thinking must be converted to adaptive, with budget_tokens removed.
@@ -67,7 +75,7 @@ func TestPrepareAnthropicBody_LegacyThinkingUnchanged(t *testing.T) {
 		"messages": [{"role": "user", "content": "hi"}]
 	}`)
 
-	out := prepareAnthropicBody(body, "anthropic.claude-3-5-sonnet-20241022-v2:0", "anthropic.claude-3-5-sonnet-20241022-v2:0")
+	out := prepareAnthropicBody(body, capsLegacy, config.AWSConfig{}.BodyFieldAllowlist())
 	m := decode(t, out)
 
 	// Legacy models: output_config must be stripped.
@@ -108,16 +116,12 @@ func TestPrepareAnthropicBody_EffortMapping(t *testing.T) {
 		{0, "high"},
 	}
 	for _, tc := range cases {
-		body, _ := json.Marshal(map[string]interface{}{
-			"thinking":    map[string]interface{}{"type": "enabled", "budget_tokens": tc.budget},
-			"max_tokens":  32000,
-			"messages":    []interface{}{map[string]interface{}{"role": "user", "content": "hi"}},
+		body, _ := json.Marshal(map[string]any{
+			"thinking":   map[string]any{"type": "enabled", "budget_tokens": tc.budget},
+			"max_tokens": 32000,
+			"messages":   []any{map[string]any{"role": "user", "content": "hi"}},
 		})
-		// bedrockModel is an inference-profile ARN with no model family in it;
-		// detection must fall back to requestModel ("...opus-4-8").
-		out := prepareAnthropicBody(body,
-			"arn:aws:bedrock:us-west-2:123:application-inference-profile/abc123",
-			"global.anthropic.claude-opus-4-8")
+		out := prepareAnthropicBody(body, capsAdaptive, config.AWSConfig{}.BodyFieldAllowlist())
 		m := decode(t, out)
 		var oc struct {
 			Effort string `json:"effort"`
@@ -129,25 +133,127 @@ func TestPrepareAnthropicBody_EffortMapping(t *testing.T) {
 	}
 }
 
-func TestModelUsesAdaptiveThinking(t *testing.T) {
-	adaptive := []string{
-		"global.anthropic.claude-opus-4-8",
-		"claude-opus-4-6-v1",
-		"anthropic.claude-opus-4-7",
-	}
-	legacy := []string{
-		"anthropic.claude-3-5-sonnet-20241022-v2:0",
-		"claude-3-7-sonnet",
-		"claude-sonnet-4-5",
-	}
-	for _, s := range adaptive {
-		if !modelUsesAdaptiveThinking(s) {
-			t.Errorf("modelUsesAdaptiveThinking(%q) = false, want true", s)
+// TestPrepareAnthropicBody_StripsUnknownFields reproduces the production
+// "diagnostics: Extra inputs are not permitted" ValidationException and verifies
+// the whitelist strips all non-allowlisted top-level fields.
+func TestPrepareAnthropicBody_StripsUnknownFields(t *testing.T) {
+	body := []byte(`{
+		"model": "claude-sonnet-4-6",
+		"stream": true,
+		"diagnostics": {"previous_message_id": null},
+		"metadata": {"user_id": "abc"},
+		"context_management": {"foo": "bar"},
+		"max_tokens": 4000,
+		"messages": [{"role": "user", "content": "hi"}]
+	}`)
+
+	out := prepareAnthropicBody(body, capsLegacy, config.AWSConfig{}.BodyFieldAllowlist())
+	m := decode(t, out)
+
+	for _, banned := range []string{"diagnostics", "stream", "metadata", "context_management", "model"} {
+		if _, ok := m[banned]; ok {
+			t.Errorf("field %q must be stripped, but it survived", banned)
 		}
 	}
-	for _, s := range legacy {
-		if modelUsesAdaptiveThinking(s) {
-			t.Errorf("modelUsesAdaptiveThinking(%q) = true, want false", s)
+
+	// Allowlisted fields must survive, and anthropic_version must be set.
+	for _, kept := range []string{"messages", "max_tokens", "anthropic_version"} {
+		if _, ok := m[kept]; !ok {
+			t.Errorf("allowlisted field %q must be present", kept)
+		}
+	}
+	var ver string
+	_ = json.Unmarshal(m["anthropic_version"], &ver)
+	if ver != "bedrock-2023-05-31" {
+		t.Errorf("anthropic_version = %q, want bedrock-2023-05-31", ver)
+	}
+}
+
+func TestCapsFor(t *testing.T) {
+	cfg := &config.AWSConfig{
+		ModelCapabilities: []config.ModelCapability{
+			{Match: "opus-4", Thinking: "adaptive", OutputConfig: true},
+			{Match: "sonnet-4", Thinking: "legacy", OutputConfig: false},
+			{Match: "haiku-4", Thinking: "legacy", OutputConfig: false},
+		},
+	}
+
+	cases := []struct {
+		name         string
+		bedrock      string
+		request      string
+		wantThinking string
+	}{
+		{"opus-4-8 direct", "global.anthropic.claude-opus-4-8", "global.anthropic.claude-opus-4-8", "adaptive"},
+		{"sonnet-4-6 direct", "global.anthropic.claude-sonnet-4-6", "global.anthropic.claude-sonnet-4-6", "legacy"},
+		// bedrock is an inference-profile ARN with no model family — must fall back to requestModel.
+		{"ARN + opus request", "arn:aws:bedrock:us-west-2:123:application-inference-profile/abc", "global.anthropic.claude-opus-4-8", "adaptive"},
+		// no rule matches -> safe legacy default.
+		{"unknown model", "some-future-model", "some-future-model", "legacy"},
+	}
+	for _, tc := range cases {
+		got := cfg.CapsFor(tc.bedrock, tc.request)
+		if got.Thinking != tc.wantThinking {
+			t.Errorf("%s: CapsFor.Thinking = %q, want %q", tc.name, got.Thinking, tc.wantThinking)
+		}
+	}
+}
+
+func TestBodyFieldAllowlist_DefaultWhenEmpty(t *testing.T) {
+	cfg := config.AWSConfig{} // no AllowedBodyFields configured
+	allow := cfg.BodyFieldAllowlist()
+	if len(allow) == 0 {
+		t.Fatal("BodyFieldAllowlist returned empty for unconfigured AWSConfig")
+	}
+	set := map[string]bool{}
+	for _, f := range allow {
+		set[f] = true
+	}
+	// metadata must NOT be in the default allowlist (per decision).
+	if set["metadata"] {
+		t.Error("default allowlist must not contain metadata")
+	}
+	// core fields must be present.
+	for _, must := range []string{"messages", "max_tokens", "system", "anthropic_version"} {
+		if !set[must] {
+			t.Errorf("default allowlist missing required field %q", must)
+		}
+	}
+}
+
+func TestBodyFieldAllowlist_UsesConfiguredWhenSet(t *testing.T) {
+	cfg := config.AWSConfig{AllowedBodyFields: []string{"messages", "max_tokens"}}
+	allow := cfg.BodyFieldAllowlist()
+	if len(allow) != 2 {
+		t.Fatalf("expected configured allowlist of 2, got %d", len(allow))
+	}
+}
+
+// TestConvertOAIThenPrepare verifies the OpenAI path now flows through the same
+// prepareAnthropicBody pipeline: anthropic_version must be correctly set (not the
+// empty string the struct serializes by default) and the converted fields survive.
+func TestConvertOAIThenPrepare(t *testing.T) {
+	ar := convertOAIToAnthropic(openAIChatRequest{
+		Model:     "claude-sonnet-4-6",
+		MaxTokens: 4000,
+		Messages:  []openAIMsg{{Role: "user", Content: "hi"}},
+	})
+	raw, err := json.Marshal(ar)
+	if err != nil {
+		t.Fatalf("marshal converted request: %v", err)
+	}
+
+	out := prepareAnthropicBody(raw, capsLegacy, config.AWSConfig{}.BodyFieldAllowlist())
+	m := decode(t, out)
+
+	var ver string
+	_ = json.Unmarshal(m["anthropic_version"], &ver)
+	if ver != "bedrock-2023-05-31" {
+		t.Errorf("anthropic_version = %q, want bedrock-2023-05-31 (must be injected by prepareAnthropicBody)", ver)
+	}
+	for _, must := range []string{"messages", "max_tokens"} {
+		if _, ok := m[must]; !ok {
+			t.Errorf("converted field %q must survive prepareAnthropicBody", must)
 		}
 	}
 }

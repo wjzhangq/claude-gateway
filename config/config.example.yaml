@@ -88,3 +88,29 @@ backends:
 #     claude-3-5-sonnet-20241022: arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0
 #   model_default:
 #     "claude-3-5-*": claude-3-5-sonnet-20241022
+#   # 模型能力表（可热加载，SIGHUP 生效）
+#   # 按顺序匹配 match 子串（不区分大小写，同时匹配 ARN 与请求模型名）：
+#   #   thinking: "adaptive" -> 新模型，thinking.type=enabled 自动转为 adaptive + output_config.effort
+#   #   thinking: "legacy"   -> 旧模型，保留 enabled 写法
+#   #   output_config: true  -> 允许透传 output_config（仅 adaptive 模型）
+#   # 未命中回退安全默认：legacy + output_config 不透传。
+#   model_capabilities:
+#     - { match: "opus-4",   thinking: "adaptive", output_config: true }
+#     - { match: "sonnet-4", thinking: "legacy",   output_config: false }
+#     - { match: "haiku-4",  thinking: "legacy",   output_config: false }
+#   # 顶层字段白名单（可热加载）——只转发列出的字段，其余剥离，
+#   # 防止 diagnostics/stream/context_management 等触发 Bedrock 校验错误。
+#   # 留空使用内置默认（同下列表）。metadata/model 故意不在白名单内。
+#   allowed_body_fields:
+#     - anthropic_version
+#     - messages
+#     - system
+#     - max_tokens
+#     - temperature
+#     - top_p
+#     - top_k
+#     - stop_sequences
+#     - tools
+#     - tool_choice
+#     - thinking
+#     - output_config

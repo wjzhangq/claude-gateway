@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -107,6 +108,26 @@ type AWSConfig struct {
 	ModelReplace    map[string]string            `yaml:"model_replace"`   // exact: upstream name -> Bedrock ARN
 	ModelDefault    map[string]string            `yaml:"model_default"` // glob pattern -> upstream name
 	ModelPricing    map[string]ModelPricingEntry `yaml:"model_pricing"` // glob pattern -> pricing
+	// ModelCapabilities is an ordered list of per-model-family capability rules.
+	// The first entry whose Match substring appears (case-insensitive) in either
+	// the resolved Bedrock model or the requested model name wins. It controls how
+	// the request body is adapted (thinking mode, output_config support) so that new
+	// model families can be onboarded by editing config instead of changing code.
+	ModelCapabilities []ModelCapability `yaml:"model_capabilities"`
+	// AllowedBodyFields is the whitelist of top-level fields that may be forwarded
+	// to Bedrock. Any field not listed is stripped before the request is sent,
+	// which prevents Claude-Code-injected fields (e.g. "diagnostics", "stream",
+	// "context_management") from triggering Bedrock "Extra inputs are not permitted"
+	// ValidationExceptions. When empty, a safe built-in default is used.
+	AllowedBodyFields []string `yaml:"allowed_body_fields"`
+}
+
+// ModelCapability describes how the request body should be adapted for a family
+// of models, matched by a case-insensitive substring of the model name.
+type ModelCapability struct {
+	Match        string `yaml:"match"`         // case-insensitive substring, e.g. "opus-4"
+	Thinking     string `yaml:"thinking"`      // "adaptive" | "legacy"
+	OutputConfig bool   `yaml:"output_config"` // whether output_config may be forwarded
 }
 
 // ModelPricingEntry holds per-model pricing in USD per 1M tokens.
@@ -115,6 +136,58 @@ type ModelPricingEntry struct {
 	Output     float64 `yaml:"output"`
 	CacheRead  float64 `yaml:"cache_read"`
 	CacheWrite float64 `yaml:"cache_write"`
+}
+
+// defaultBodyFieldAllowlist is the built-in set of top-level request fields that
+// are safe to forward to Bedrock's Anthropic Messages API. Used when
+// AWSConfig.AllowedBodyFields is empty. Note: "metadata", "stream", "model",
+// "diagnostics" and "context_management" are intentionally excluded — Bedrock
+// either rejects them or they must not be forwarded.
+var defaultBodyFieldAllowlist = []string{
+	"anthropic_version",
+	"messages",
+	"system",
+	"max_tokens",
+	"temperature",
+	"top_p",
+	"top_k",
+	"stop_sequences",
+	"tools",
+	"tool_choice",
+	"thinking",
+	"output_config",
+}
+
+// CapsFor returns the capability rule for the given model. Both the resolved
+// Bedrock model identifier and the original requested model name are consulted,
+// because bedrockModel may be an inference-profile ARN that does not contain the
+// model family. The first rule whose Match substring (case-insensitive) appears
+// in either name wins. If no rule matches, a safe default is returned: legacy
+// thinking with output_config disabled (equivalent to the pre-table behaviour for
+// non-adaptive models).
+func (c AWSConfig) CapsFor(bedrockModel, requestModel string) ModelCapability {
+	b := strings.ToLower(bedrockModel)
+	r := strings.ToLower(requestModel)
+	for _, mc := range c.ModelCapabilities {
+		if mc.Match == "" {
+			continue
+		}
+		m := strings.ToLower(mc.Match)
+		if strings.Contains(b, m) || strings.Contains(r, m) {
+			return mc
+		}
+	}
+	return ModelCapability{Thinking: "legacy", OutputConfig: false}
+}
+
+// BodyFieldAllowlist returns the configured top-level field whitelist, or the
+// built-in default when none is configured. The returned slice must not be
+// mutated by callers.
+func (c AWSConfig) BodyFieldAllowlist() []string {
+	if len(c.AllowedBodyFields) > 0 {
+		return c.AllowedBodyFields
+	}
+	return defaultBodyFieldAllowlist
 }
 
 // Load reads and parses the YAML config file at path.

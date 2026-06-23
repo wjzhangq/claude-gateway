@@ -250,11 +250,12 @@ func (h *Handler) Messages(c *gin.Context) {
 		return
 	}
 
-	// Prepare body: remove model, add anthropic_version.
-	// Pass requestModel too: when bedrockModel is an inference-profile ARN it
-	// does not contain the model family (e.g. "opus-4"), so adaptive-thinking
-	// detection must also consider the original requested model name.
-	bedrockBody := prepareAnthropicBody(body, bedrockModel, requestModel)
+	// Prepare body: keep only whitelisted top-level fields, add anthropic_version,
+	// and adapt thinking config according to the model's capability rule.
+	// Both the resolved bedrockModel (may be an inference-profile ARN without the
+	// model family) and the original requestModel are consulted by CapsFor.
+	caps := cfg.CapsFor(bedrockModel, requestModel)
+	bedrockBody := prepareAnthropicBody(body, caps, cfg.BodyFieldAllowlist())
 
 	keyInfo, keyStr := extractKeyInfo(c)
 	start := time.Now()
@@ -397,13 +398,18 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// Convert OpenAI format to Anthropic format
+	// Convert OpenAI format to Anthropic format, then run it through the same
+	// body-preparation pipeline as the native Anthropic path so the field
+	// whitelist and thinking/output_config adaptation apply uniformly to both
+	// channels (single source of truth, no divergence).
 	anthropicReq := convertOAIToAnthropic(oaiReq)
-	bedrockBody, err := json.Marshal(anthropicReq)
+	rawBody, err := json.Marshal(anthropicReq)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "marshal failed"})
 		return
 	}
+	caps := cfg.CapsFor(bedrockModel, requestModel)
+	bedrockBody := prepareAnthropicBody(rawBody, caps, cfg.BodyFieldAllowlist())
 
 	keyInfo, keyStr := extractKeyInfo(c)
 	start := time.Now()
@@ -572,14 +578,15 @@ type anthropicMessageResponse struct {
 }
 
 // convertOAIToAnthropic converts an OpenAI chat completions request to Anthropic Messages format.
+// Note: anthropic_version is deliberately omitted — it is always injected by
+// prepareAnthropicBody which is called on the serialized output of this function.
 func convertOAIToAnthropic(req openAIChatRequest) anthropicRequest {
 	ar := anthropicRequest{
-		AnthropicVersion: "bedrock-2023-05-31",
-		MaxTokens:        req.MaxTokens,
-		Temperature:      req.Temperature,
-		TopP:             req.TopP,
-		Stop:             req.Stop,
-		System:           req.System,
+		MaxTokens:   req.MaxTokens,
+		Temperature: req.Temperature,
+		TopP:        req.TopP,
+		Stop:        req.Stop,
+		System:      req.System,
 	}
 	if ar.MaxTokens <= 0 {
 		ar.MaxTokens = 4096 // default
@@ -944,41 +951,50 @@ func stripOrphanedToolPairs(messages []interface{}, strippedToolNames map[string
 	return messages
 }
 
-// prepareAnthropicBody sets anthropic_version to "bedrock-2023-05-31" and removes
-// fields that Bedrock does not accept: "model" and "stream".
-// It also ensures max_tokens > thinking.budget_tokens when extended thinking is used,
-// and strips cache_control.scope which Bedrock does not support.
+// prepareAnthropicBody adapts the incoming request body so it conforms to what
+// Bedrock's Anthropic Messages API accepts. It:
+//   1. Keeps only top-level fields listed in `allow` (the whitelist), stripping
+//      unknown fields like "diagnostics", "stream", "model", etc.
+//   2. Forces anthropic_version to "bedrock-2023-05-31".
+//   3. For adaptive-thinking models (determined by `caps`), converts the legacy
+//      thinking.type="enabled" form into thinking.type="adaptive" + output_config.effort.
+//   4. Performs field-level cleaning on retained fields: non-standard tool types,
+//      cache_control.scope, empty text blocks, system-role hoisting, thinking blocks.
 //
-// bedrockModel is the resolved Bedrock model/inference-profile identifier. Newer
-// models (Opus 4.x and later) reject the legacy thinking.type="enabled" form and
-// require thinking.type="adaptive" together with output_config.effort; for those
-// models the body is converted accordingly instead of stripping output_config.
-//
-// requestModel is the original requested model name (e.g.
-// "global.anthropic.claude-opus-4-8"). It is consulted in addition to bedrockModel
-// because bedrockModel may be an inference-profile ARN that does not contain the
-// model family, in which case adaptive-thinking detection would otherwise fail.
-func prepareAnthropicBody(body []byte, bedrockModel, requestModel string) []byte {
+// `caps` is resolved by AWSConfig.CapsFor() from the model capability table.
+// `allow` is resolved by AWSConfig.BodyFieldAllowlist() (built-in default when empty).
+func prepareAnthropicBody(body []byte, caps config.ModelCapability, allow []string) []byte {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
 	}
-	delete(m, "model")
-	delete(m, "stream")            // Bedrock rejects this field: "Extra inputs are not permitted"
-	delete(m, "context_management") // Bedrock does not support context_management (added by Claude Code CLI)
-	delete(m, "metadata")          // Bedrock does not support metadata field
-	adaptiveThinking := modelUsesAdaptiveThinking(bedrockModel) || modelUsesAdaptiveThinking(requestModel)
-	if !adaptiveThinking {
-		delete(m, "output_config") // legacy models do not support output_config (e.g. effort, format fields)
+
+	// ── Step 1: Whitelist top-level fields ──
+	// Build an allow-set for O(1) lookup.
+	allowSet := make(map[string]bool, len(allow))
+	for _, f := range allow {
+		allowSet[f] = true
 	}
+	for key := range m {
+		if !allowSet[key] {
+			delete(m, key)
+		}
+	}
+
+	// ── Step 2: Capability-driven output_config handling ──
+	// Models that don't support output_config must have it stripped even if
+	// it was in the allowlist (the allowlist is the same for all models).
+	adaptiveThinking := caps.Thinking == "adaptive"
+	if !adaptiveThinking {
+		delete(m, "output_config")
+	}
+
+	// Force the required Bedrock anthropic_version.
 	m["anthropic_version"] = json.RawMessage(`"bedrock-2023-05-31"`)
 
-	// Filter out non-standard tool types that Bedrock doesn't support
-	// (e.g. web_search_20250305, code_execution). Only keep tools with
-	// type "custom" or with an "input_schema" (standard function-call tools).
-	// Track stripped tool names so we can also remove their tool_use/tool_result
-	// blocks from message history — Bedrock returns TOOL_USE_RESULT_MISMATCH
-	// when a tool_use block exists with no corresponding tool_result.
+	// ── Step 3: Filter non-standard tool types ──
+	// Bedrock rejects tool types like web_search_20250305, code_execution.
+	// Track stripped tool names to also remove orphaned tool_use/tool_result blocks.
 	strippedToolNames := map[string]bool{}
 	if toolsRaw, ok := m["tools"]; ok {
 		var tools []map[string]interface{}
@@ -986,7 +1002,6 @@ func prepareAnthropicBody(body []byte, bedrockModel, requestModel string) []byte
 			var filtered []map[string]interface{}
 			for _, tool := range tools {
 				toolType, _ := tool["type"].(string)
-				// Standard tools have type="" (omitted), "custom", or have input_schema
 				_, hasInputSchema := tool["input_schema"]
 				if toolType == "" || toolType == "custom" || hasInputSchema {
 					filtered = append(filtered, tool)
@@ -1008,10 +1023,9 @@ func prepareAnthropicBody(body []byte, bedrockModel, requestModel string) []byte
 		}
 	}
 
-	// Strip cache_control.scope from system/messages — Bedrock does not support it.
-	// Also strip empty text content blocks from messages — Bedrock rejects them.
-	// Also hoist any "system"-role messages out of the messages array into the
-	// top-level system field — Bedrock rejects system as an in-array role.
+	// ── Step 4: Field-level cleaning ──
+	// Strip cache_control.scope, empty text blocks, hoist system-role messages,
+	// strip thinking blocks from message history.
 	for _, key := range []string{"system", "messages"} {
 		if raw, ok := m[key]; ok {
 			var parsed interface{}
@@ -1021,7 +1035,6 @@ func prepareAnthropicBody(body []byte, bedrockModel, requestModel string) []byte
 					if msgs, ok := cleaned.([]interface{}); ok {
 						msgs, systemText := hoistSystemMessages(msgs)
 						if systemText != "" {
-							// Merge into top-level system field (append if already set)
 							var existing string
 							if sysRaw, ok := m["system"]; ok {
 								_ = json.Unmarshal(sysRaw, &existing)
@@ -1043,11 +1056,7 @@ func prepareAnthropicBody(body []byte, bedrockModel, requestModel string) []byte
 		}
 	}
 
-	// Thinking config handling.
-	//
-	// Newer Bedrock models (Opus 4.x+) reject thinking.type="enabled" and the
-	// budget_tokens field; they require thinking.type="adaptive" plus an
-	// output_config.effort level. Convert the legacy form into the new one.
+	// ── Step 5: Thinking config adaptation ──
 	if adaptiveThinking {
 		convertThinkingToAdaptive(m)
 	} else if thinkingRaw, ok := m["thinking"]; ok {
@@ -1061,7 +1070,6 @@ func prepareAnthropicBody(body []byte, bedrockModel, requestModel string) []byte
 				_ = json.Unmarshal(maxRaw, &maxTokens)
 			}
 			if maxTokens <= thinking.BudgetTokens {
-				// Set max_tokens to budget_tokens + 1024 to leave headroom for output.
 				newMax := thinking.BudgetTokens + 1024
 				if raw, err := json.Marshal(newMax); err == nil {
 					m["max_tokens"] = raw
@@ -1076,16 +1084,6 @@ func prepareAnthropicBody(body []byte, bedrockModel, requestModel string) []byte
 		return out
 	}
 	return body
-}
-
-// modelUsesAdaptiveThinking reports whether the resolved Bedrock model requires
-// the newer adaptive thinking configuration (thinking.type="adaptive" +
-// output_config.effort) rather than the legacy thinking.type="enabled" +
-// budget_tokens form. This applies to Opus 4.x and later models.
-func modelUsesAdaptiveThinking(bedrockModel string) bool {
-	s := strings.ToLower(bedrockModel)
-	// Opus 4.x (4-6, 4-7, 4-8, …) and any future opus-4-N use the adaptive format.
-	return strings.Contains(s, "opus-4")
 }
 
 // convertThinkingToAdaptive rewrites a legacy extended-thinking request into the
