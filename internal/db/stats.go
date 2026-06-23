@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -30,16 +31,18 @@ func (d *DB) BatchInsertUsageLogs(logs []*model.UsageLog) error {
 	if len(logs) == 0 {
 		return nil
 	}
-	tx, err := d.Begin()
+	ctx, cancel := context.WithTimeout(context.Background(), txTimeout)
+	defer cancel()
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	stmt, err := tx.Prepare(
+	defer tx.Rollback() // 兜底：Commit 成功后为 no-op；任何错误路径都保证清理事务，避免连接残留事务
+	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO usage_logs
 		 (user_id, group_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
-		tx.Rollback()
 		return fmt.Errorf("prepare stmt: %w", err)
 	}
 	defer stmt.Close()
@@ -49,13 +52,12 @@ func (d *DB) BatchInsertUsageLogs(logs []*model.UsageLog) error {
 		if !log.CreatedAt.IsZero() {
 			ts = log.CreatedAt
 		}
-		if _, err := stmt.Exec(
+		if _, err := stmt.ExecContext(ctx,
 			log.UserID, log.GroupID, log.APIKeyID, log.Model, log.Backend,
 			log.InputTokens, log.OutputTokens, log.TotalTokens,
 			log.CostUSD, log.StatusCode, log.Latency,
 			log.IsOpenClaw, log.IsDowngraded, log.UA, ts,
 		); err != nil {
-			tx.Rollback()
 			return fmt.Errorf("exec insert: %w", err)
 		}
 	}
@@ -68,19 +70,20 @@ func (d *DB) BatchUpdateKeyLastUsedAt(keyTimes map[int64]time.Time) error {
 	if len(keyTimes) == 0 {
 		return nil
 	}
-	tx, err := d.Begin()
+	ctx, cancel := context.WithTimeout(context.Background(), txTimeout)
+	defer cancel()
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	stmt, err := tx.Prepare(`UPDATE api_keys SET last_used_at=? WHERE id=?`)
+	defer tx.Rollback() // 兜底：Commit 成功后为 no-op；任何错误路径都保证清理事务，避免连接残留事务
+	stmt, err := tx.PrepareContext(ctx, `UPDATE api_keys SET last_used_at=? WHERE id=?`)
 	if err != nil {
-		tx.Rollback()
 		return fmt.Errorf("prepare stmt: %w", err)
 	}
 	defer stmt.Close()
 	for keyID, t := range keyTimes {
-		if _, err := stmt.Exec(t, keyID); err != nil {
-			tx.Rollback()
+		if _, err := stmt.ExecContext(ctx, t, keyID); err != nil {
 			return fmt.Errorf("exec update: %w", err)
 		}
 	}
@@ -99,25 +102,26 @@ func (d *DB) BatchUpdateKeyCosts(updates []KeyCostUpdate) error {
 	if len(updates) == 0 {
 		return nil
 	}
-	tx, err := d.Begin()
+	ctx, cancel := context.WithTimeout(context.Background(), txTimeout)
+	defer cancel()
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	stmt, err := tx.Prepare(
+	defer tx.Rollback() // 兜底：Commit 成功后为 no-op；任何错误路径都保证清理事务，避免连接残留事务
+	stmt, err := tx.PrepareContext(ctx,
 		`UPDATE api_keys
 		 SET backend_cost_usd = backend_cost_usd + ?,
 		     aws_cost_usd     = aws_cost_usd     + ?,
 		     total_cost_usd   = total_cost_usd   + ?
 		 WHERE id = ?`)
 	if err != nil {
-		tx.Rollback()
 		return fmt.Errorf("prepare stmt: %w", err)
 	}
 	defer stmt.Close()
 	for _, u := range updates {
 		total := u.BackendCostAdd + u.AWSCostAdd
-		if _, err := stmt.Exec(u.BackendCostAdd, u.AWSCostAdd, total, u.KeyID); err != nil {
-			tx.Rollback()
+		if _, err := stmt.ExecContext(ctx, u.BackendCostAdd, u.AWSCostAdd, total, u.KeyID); err != nil {
 			return fmt.Errorf("exec update: %w", err)
 		}
 	}

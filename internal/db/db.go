@@ -16,7 +16,7 @@ type DB struct {
 
 // Init opens (or creates) the SQLite database at path and runs migrations.
 func Init(path string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on")
+	sqlDB, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -28,7 +28,7 @@ func Init(path string) (*DB, error) {
 	}
 
 	// Separate read-only connection for DB Explorer queries — enforced at driver level.
-	roDB, err := sql.Open("sqlite", path+"?mode=ro&_journal_mode=WAL")
+	roDB, err := sql.Open("sqlite", path+"?mode=ro&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("open sqlite (readonly): %w", err)
