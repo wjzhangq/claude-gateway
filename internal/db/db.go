@@ -91,6 +91,9 @@ var migrations = []migration{
 	{30, `CREATE INDEX IF NOT EXISTS idx_aws_daily_stats_user_date ON aws_daily_stats(user_id, date)`},
 	{31, perfTestSchema},
 	{32, `ALTER TABLE api_keys ADD COLUMN locked_model TEXT NOT NULL DEFAULT ''`},
+	{33, `ALTER TABLE users ADD COLUMN department TEXT NOT NULL DEFAULT ''`},
+	{34, `ALTER TABLE users ADD COLUMN role_tag TEXT NOT NULL DEFAULT '未分类'`},
+	{35, `ALTER TABLE users ADD COLUMN org_note TEXT NOT NULL DEFAULT ''`},
 }
 
 const perfTestSchema = `

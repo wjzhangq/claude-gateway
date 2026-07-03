@@ -25,6 +25,9 @@ import AdminPublicStatsPage from './pages/AdminPublicStatsPage'
 import AdminPublicUsagePage from './pages/AdminPublicUsagePage'
 import AdminQuotaPage from './pages/AdminQuotaPage'
 import AdminPerfTestPage from './pages/AdminPerfTestPage'
+import AdminInsightRankingPage from './pages/AdminInsightRankingPage'
+import AdminInsightUserPage from './pages/AdminInsightUserPage'
+import AdminInsightOrgPage from './pages/AdminInsightOrgPage'
 import PlaygroundPage from './pages/PlaygroundPage'
 
 export default function App() {
@@ -55,6 +58,10 @@ export default function App() {
                 <Route path="/admin/user-daily" element={<AdminUserDailyPage />} />
                 <Route path="/admin/quota" element={<AdminQuotaPage />} />
                 <Route path="/admin/perftest" element={<AdminPerfTestPage />} />
+                <Route path="/admin/insight/ranking" element={<AdminInsightRankingPage />} />
+                <Route path="/admin/insight/user" element={<AdminInsightUserPage />} />
+                <Route path="/admin/insight/user/:id" element={<AdminInsightUserPage />} />
+                <Route path="/admin/insight/org" element={<AdminInsightOrgPage />} />
                 <Route path="/admin/aws/users" element={<AdminAWSUsersPage />} />
                 <Route path="/admin/aws/usage" element={<AdminAWSUsagePage />} />
                 <Route path="/admin/aws/user-daily" element={<AdminAWSUserDailyPage />} />

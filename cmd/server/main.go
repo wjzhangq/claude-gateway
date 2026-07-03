@@ -206,6 +206,7 @@ func main() {
 	appH := handler.NewApplicationHandler(database, keyStore)
 	awsStatsH := handler.NewAWSStatsHandler(database, cfg, keyStore)
 	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore)
+	insightH := handler.NewInsightHandler(database)
 	configH := handler.NewConfigHandler(cfgPath, cfg, func() error {
 		newCfg, err := config.Load(cfgPath)
 		if err != nil {
@@ -385,6 +386,13 @@ func main() {
 		adminAPI.GET("/perftest/runs", perfTestH.ListRuns)
 		adminAPI.GET("/perftest/options", perfTestH.GetOptions)
 		adminAPI.DELETE("/perftest/run/:id", perfTestH.CancelRun)
+
+		// Insight: usage ranking, per-user report, org tagging (migrated from sky-insight)
+		adminAPI.GET("/insight/ranking", insightH.GetRanking)
+		adminAPI.GET("/insight/user/:id", insightH.GetUserInsight)
+		adminAPI.GET("/insight/org", insightH.GetOrgList)
+		adminAPI.PUT("/insight/org/:id", insightH.UpdateOrgTag)
+		adminAPI.POST("/insight/org/batch", insightH.BatchUpdateOrgTags)
 	}
 
 	// Admin AWS API

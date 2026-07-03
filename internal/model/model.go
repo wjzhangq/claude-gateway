@@ -13,6 +13,9 @@ type User struct {
 	DailyQuotaUSD    float64   `db:"daily_quota_usd"   json:"daily_quota_usd"`
 	AWSDailyQuotaUSD float64   `db:"aws_daily_quota_usd" json:"aws_daily_quota_usd"`
 	AWSEnabled       bool      `db:"aws_enabled"       json:"aws_enabled"`
+	Department       string    `db:"department"        json:"department"`
+	RoleTag          string    `db:"role_tag"          json:"role_tag"` // 研发 | 非研发 | 未分类
+	OrgNote          string    `db:"org_note"          json:"org_note"`
 	CreatedAt        time.Time `db:"created_at"        json:"created_at"`
 	UpdatedAt        time.Time `db:"updated_at"        json:"updated_at"`
 }

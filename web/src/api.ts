@@ -190,3 +190,57 @@ export const adminCancelPerfTest = (id: number) =>
 
 export const adminGetPerfTestOptions = () =>
   api.get('/admin/api/perftest/options')
+
+// ===== Admin Insight (migrated from sky-insight) =====
+export interface InsightRankingUser {
+  user_id: number
+  itcode: string
+  name: string
+  status: string
+  channels: string[]
+  backend_tokens: number
+  backend_input: number
+  backend_output: number
+  aws_tokens: number
+  aws_input: number
+  aws_output: number
+  all_tokens: number
+  backend_cost: number
+  aws_cost: number
+  total_cost: number
+  total_requests: number
+  department: string
+  role_tag: string
+}
+
+export interface InsightRankingResponse {
+  ranking: InsightRankingUser[]
+  total_users: number
+  registered_total: number
+  data_updated_at: string
+  server_time: string
+}
+
+export interface OrgUser {
+  user_id: number
+  itcode: string
+  name: string
+  status: string
+  department: string
+  role_tag: string
+  note: string
+}
+
+export const adminGetInsightRanking = (params?: { days?: number; limit?: number }) =>
+  api.get<InsightRankingResponse>('/admin/api/insight/ranking', { params })
+export const adminGetUserInsight = (userId: number) =>
+  api.get(`/admin/api/insight/user/${userId}`)
+export const adminGetOrgList = () =>
+  api.get<{ users: OrgUser[]; total: number }>('/admin/api/insight/org')
+export const adminUpdateOrgTag = (
+  userId: number,
+  tag: { department?: string; role_tag?: string; note?: string }
+) => api.put(`/admin/api/insight/org/${userId}`, tag)
+export const adminBatchUpdateOrgTags = (
+  updates: { user_id: number; department?: string; role_tag?: string; note?: string }[]
+) => api.post('/admin/api/insight/org/batch', { updates })

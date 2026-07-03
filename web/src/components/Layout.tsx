@@ -28,6 +28,12 @@ const adminNav = [
   { to: '/admin/perftest', label: '性能测试' },
 ]
 
+const insightNav = [
+  { to: '/admin/insight/ranking', label: '用量排名' },
+  { to: '/admin/insight/user', label: '用户洞察' },
+  { to: '/admin/insight/org', label: '组织管理' },
+]
+
 const awsAdminNav = [
   { to: '/admin/aws/users', label: 'AWS 用户' },
   { to: '/admin/aws/usage', label: 'AWS 使用统计' },
@@ -95,6 +101,14 @@ export default function Layout() {
               <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">管理员</p>
               <div className="space-y-0.5">
                 {adminNav.map((item) => (
+                  <NavLink key={item.to} to={item.to} className={navLinkClass}>
+                    {item.label}
+                  </NavLink>
+                ))}
+              </div>
+              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">Insight</p>
+              <div className="space-y-0.5">
+                {insightNav.map((item) => (
                   <NavLink key={item.to} to={item.to} className={navLinkClass}>
                     {item.label}
                   </NavLink>
