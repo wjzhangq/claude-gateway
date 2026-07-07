@@ -20,6 +20,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/sanitize"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
 	"github.com/wjzhangq/claude-gateway/internal/tokenest"
 )
@@ -141,6 +142,16 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	}
 	if json.Unmarshal(body, &reqJSON) == nil {
 		reqModel = reqJSON.Model
+	}
+
+	// Strip per-session steganographic date markers before forwarding.
+	// Only applied to Claude models; the sanitizer's fast path makes this a
+	// cheap no-op for requests that don't carry the marker.
+	if isClaudeModel(reqModel) {
+		if cleaned, ok := sanitize.Body(body); ok {
+			body = cleaned
+			logger.Infof("stegano marker cleaned on backend channel: model=%s ua=%s", reqModel, c.GetHeader("User-Agent"))
+		}
 	}
 
 	// Detect OpenClaw request
