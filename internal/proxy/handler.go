@@ -95,6 +95,21 @@ func isClaudeModel(model string) bool {
 		strings.Contains(m, "haiku")
 }
 
+// stripThinkingSuffix maps a "-thinking" model pseudo-variant to its base model
+// name. claude-cli appends "-thinking" (e.g. claude-sonnet-4-5-20250929-thinking)
+// to signal extended thinking, but upstream distributors only register the base
+// model, so the variant resolves to "No available channel" (503). Extended
+// thinking is driven by the request's "thinking" body field, not the model name,
+// so dropping the suffix preserves behaviour while routing to a real channel.
+// Returns (base, true) when the suffix was present, else ("", false).
+func stripThinkingSuffix(model string) (string, bool) {
+	const suffix = "-thinking"
+	if strings.HasSuffix(strings.ToLower(model), suffix) {
+		return model[:len(model)-len(suffix)], true
+	}
+	return "", false
+}
+
 // parseUA extracts the UA product name from User-Agent header.
 // - Takes the part before "/" (if exists)
 // - Truncates to max 12 characters
@@ -123,6 +138,17 @@ func parseUA(userAgent string, isOpenClaw, isHermes bool) string {
 
 // forward is the shared proxy logic for both OpenAI and Anthropic style endpoints.
 func (h *Handler) forward(c *gin.Context, upstreamPath string) {
+	// Fast-path: /v1/messages/count_tokens is answered locally with a token
+	// estimate instead of being forwarded. Most upstream distributors don't
+	// implement this endpoint and reply "Invalid URL (POST
+	// /v1/messages/count_tokens)" (a 404), which claude-cli calls before every
+	// message — the single biggest source of avoidable backend errors. Serving
+	// it here removes that class entirely.
+	if strings.HasSuffix(upstreamPath, "/count_tokens") {
+		h.handleCountTokens(c)
+		return
+	}
+
 	backend := h.lb.Pick()
 	if backend == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available backend"})
@@ -308,6 +334,18 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		reqModel = info.LockedModel
 	}
 
+	// Normalize "-thinking" model variants to their base model. Upstream
+	// distributors register the base model (e.g. claude-sonnet-4-5-20250929) but
+	// not the "-thinking" pseudo-variant claude-cli sends, so the variant returns
+	// "No available channel for model ...-thinking" (503). Stripping the suffix
+	// here routes to the real channel; the request's own "thinking" body field is
+	// left untouched, so extended thinking still works when the model supports it.
+	if base, ok := stripThinkingSuffix(reqModel); ok {
+		body = ReplaceModelInBody(body, reqModel, base)
+		logger.Infof("thinking variant mapped to base model: %s -> %s", reqModel, base)
+		reqModel = base
+	}
+
 	// Apply model replacements: if request model contains a configured pattern, replace it
 	h.mu.RLock()
 	replacements := h.modelReplacements
@@ -338,7 +376,62 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			reqModel = fbModel
 		}
 	} else {
-		resp, err = h.doRequest(c, backend, upstreamPath, targetURL, body)
+		// Normal path with quota failover. If a backend returns an upstream
+		// "insufficient balance" / account-suspended 429, circuit-break it and
+		// retry the same request on a different backend. This converts the single
+		// largest error class (exceeded_current_quota_error) into transparent
+		// failover instead of a user-facing 429.
+		tried := map[string]bool{backend.Name: true}
+		failovers := 0
+		for {
+			resp, err = h.doRequest(c, backend, upstreamPath, targetURL, body)
+
+			// Client aborted the request (context canceled/deadline): this is not
+			// a backend fault. Don't count it against backend health and don't log
+			// it as an error — there is no client left to serve.
+			if err != nil && IsClientCanceled(err) {
+				backend.RecordResult(ErrCanceled)
+				logger.Infof("client canceled request: backend=%s model=%s", backend.Name, reqModel)
+				return
+			}
+
+			if err != nil {
+				break // genuine transport error: handled by the block below
+			}
+
+			// Detect an upstream quota-exhaustion 429 and fail over to another
+			// backend. The error body is tiny, so reading it fully is cheap.
+			if resp.StatusCode == http.StatusTooManyRequests {
+				peek, isQuota := peekQuotaExhausted(resp)
+				if isQuota {
+					// Release the abandoned backend's connection back to the pool
+					// before we drop the response and retry elsewhere.
+					resp.Body.Close()
+					h.lb.MarkQuotaExhausted(backend.Name)
+					failovers++
+					next := h.lb.PickExcluding(tried)
+					if next == nil || failovers > maxQuotaFailovers {
+						// No alternate left: hand the original 429 back to the client.
+						resp.Body = io.NopCloser(bytes.NewReader(peek))
+						logger.Warnf("quota failover exhausted (backend=%s failovers=%d): returning 429", backend.Name, failovers)
+						break // keep this response; recorded once below
+					}
+					// Abandon this backend: record its failure now, then retry.
+					backend.RecordResult(ClassifyError(resp.StatusCode, nil))
+					backend.RecordStatusCode(resp.StatusCode)
+					logger.Warnf("backend %s quota exhausted (insufficient balance): failing over to %s", backend.Name, next.Name)
+					backend = next
+					tried[backend.Name] = true
+					targetURL = strings.TrimRight(backend.URL, "/") + upstreamPath
+					continue
+				}
+				// Non-quota 429 (e.g. genuine rate limit): rebuild the body we
+				// consumed so the downstream handler can forward it to the client.
+				resp.Body = io.NopCloser(bytes.NewReader(peek))
+			}
+			break
+		}
+
 		if err != nil {
 			backend.RecordResult(ClassifyError(0, err))
 			logger.Errorf("backend %s error: %v", backend.Name, err)
@@ -419,6 +512,28 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	} else {
 		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded, body)
 	}
+}
+
+// handleCountTokens answers POST /v1/messages/count_tokens locally with an
+// estimated input token count, matching Anthropic's response shape
+// ({"input_tokens": N}). It never touches an upstream backend. The estimate
+// reuses the same tokenest heuristic used as the usage fallback elsewhere, so
+// counts are consistent with what we bill.
+func (h *Handler) handleCountTokens(c *gin.Context) {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"type":  "error",
+			"error": gin.H{"type": "invalid_request_error", "message": "read request body failed"},
+		})
+		return
+	}
+	n := tokenest.EstimateString(tokenest.ExtractRequestText(body), tokenest.Default)
+	if n < 1 {
+		n = 1
+	}
+	c.Header("X-Gateway-Count-Tokens", "estimated")
+	c.JSON(http.StatusOK, gin.H{"input_tokens": n})
 }
 
 // doRequest performs the actual HTTP request to the backend
@@ -534,6 +649,31 @@ func (h *Handler) replaceModelInBody(body []byte, oldModel, newModel string) []b
 		return nil
 	}
 	return newBody
+}
+
+// maxQuotaFailovers caps how many alternate backends a single request will try
+// after hitting an upstream quota-exhaustion 429, bounding worst-case latency.
+const maxQuotaFailovers = 2
+
+// peekQuotaExhausted reads the (small) error body of a 429 response and reports
+// whether it is an upstream account-suspended / insufficient-balance error
+// (Anthropic/new-api type "exceeded_current_quota_error"). It returns the bytes
+// it consumed so the caller can restore resp.Body. Detection is intentionally
+// broad: it matches either the structured error type or the balance phrasing,
+// so it survives minor upstream wording changes.
+func peekQuotaExhausted(resp *http.Response) ([]byte, bool) {
+	const maxPeek = 8192
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPeek))
+	if err != nil {
+		return body, false
+	}
+	s := strings.ToLower(string(body))
+	if strings.Contains(s, "exceeded_current_quota_error") ||
+		strings.Contains(s, "insufficient balance") ||
+		strings.Contains(s, "suspended due to") {
+		return body, true
+	}
+	return body, false
 }
 
 const streamReadBufSize = 4096

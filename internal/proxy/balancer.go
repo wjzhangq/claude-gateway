@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"math/rand"
 	"strings"
@@ -43,12 +45,33 @@ const (
 	ErrRateLimit                   // 429: transient, counts as error
 	ErrServer                      // 5xx: upstream fault, counts as error
 	ErrTransport                   // connection-level failure, counts as error
+	ErrCanceled                    // client aborted the request: not the backend's fault, ignored
 )
+
+// IsClientCanceled reports whether err is the result of the *client* aborting
+// the request (context canceled / deadline propagated from the inbound request),
+// as opposed to a genuine upstream transport failure. These are not the
+// backend's fault and must not count against its health.
+func IsClientCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// http.Client wraps the context error in a *url.Error whose message ends in
+	// "context canceled"; errors.Is above catches the common case, this is a
+	// defensive fallback for wrapped strings that lose the sentinel.
+	return strings.Contains(err.Error(), "context canceled")
+}
 
 // ClassifyError maps an HTTP status code and/or transport error to an ErrorClass.
 // A non-nil transportErr always takes precedence (no usable status code).
 func ClassifyError(statusCode int, transportErr error) ErrorClass {
 	if transportErr != nil {
+		if IsClientCanceled(transportErr) {
+			return ErrCanceled
+		}
 		return ErrTransport
 	}
 	switch {
@@ -104,13 +127,14 @@ func (b *Backend) Client() *http.Client { return b.client }
 
 // RecordResult updates the backend health state based on a classified outcome.
 //   - ErrNone: reset consecutive errors; if degraded, count successes toward recovery.
-//   - ErrClient: ignored entirely (caller's request was bad).
+//   - ErrClient/ErrCanceled: ignored entirely (caller's request was bad or aborted).
 //   - ErrAuth: disable immediately (backend key invalid).
 //   - ErrRateLimit/ErrServer/ErrTransport: count as an error and maybe degrade/disable.
 func (b *Backend) RecordResult(class ErrorClass) {
 	switch class {
-	case ErrClient:
-		// Not the backend's fault — leave health untouched.
+	case ErrClient, ErrCanceled:
+		// Not the backend's fault (bad request, or the client aborted mid-flight)
+		// — leave health untouched.
 		return
 	case ErrNone:
 		b.consecErr.Store(0)
@@ -369,6 +393,48 @@ func (lb *LoadBalancer) Pick() *Backend {
 	return nil
 }
 
+// PickExcluding is like Pick but skips any backend whose name is in exclude.
+// Used by quota failover to route around a backend that just reported an
+// upstream "insufficient balance" error. Returns nil when every remaining
+// backend is unselectable.
+func (lb *LoadBalancer) PickExcluding(exclude map[string]bool) *Backend {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+
+	totalWeight := 0
+	for _, b := range lb.backends {
+		if exclude[b.Name] {
+			continue
+		}
+		totalWeight += b.effectiveWeight()
+	}
+	if totalWeight == 0 {
+		return nil
+	}
+
+	r := rand.Intn(totalWeight)
+	for _, b := range lb.backends {
+		if exclude[b.Name] {
+			continue
+		}
+		w := b.effectiveWeight()
+		if w == 0 {
+			continue
+		}
+		r -= w
+		if r < 0 {
+			return b
+		}
+	}
+	for i := len(lb.backends) - 1; i >= 0; i-- {
+		b := lb.backends[i]
+		if !exclude[b.Name] && b.effectiveWeight() > 0 {
+			return b
+		}
+	}
+	return nil
+}
+
 // recoveryLoop previously auto-revived disabled backends after 30s of silence.
 // That behavior is removed: disabled backends now recover ONLY via the external
 // active health probe (SetHealthStatus), and degraded backends recover passively
@@ -544,6 +610,25 @@ func (lb *LoadBalancer) SetHealthStatus(name string, healthy bool, latencyMs int
 			}
 		}
 		return true
+	}
+	return false
+}
+
+// MarkQuotaExhausted circuit-breaks a backend that reported an upstream
+// "insufficient balance"/account-suspended error at request time. The backend
+// becomes unselectable until the daily quotaResetLoop clears it (or an external
+// quota probe re-enables it). Returns false if no backend matches name.
+func (lb *LoadBalancer) MarkQuotaExhausted(name string) bool {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	for _, b := range lb.backends {
+		if b.Name == name {
+			if !b.quotaExhausted.Swap(true) {
+				b.quotaCheckedAt.Store(time.Now().Unix())
+				log.Printf("[backend:%s] quota exhausted (insufficient balance): circuit-broken until daily reset", b.Name)
+			}
+			return true
+		}
 	}
 	return false
 }
