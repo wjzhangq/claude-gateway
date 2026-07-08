@@ -418,7 +418,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 					}
 					// Abandon this backend: record its failure now, then retry.
 					backend.RecordResult(ClassifyError(resp.StatusCode, nil))
-					backend.RecordStatusCode(resp.StatusCode)
+					backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
 					logger.Warnf("backend %s quota exhausted (insufficient balance): failing over to %s", backend.Name, next.Name)
 					backend = next
 					tried[backend.Name] = true
@@ -427,6 +427,34 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 				}
 				// Non-quota 429 (e.g. genuine rate limit): rebuild the body we
 				// consumed so the downstream handler can forward it to the client.
+				resp.Body = io.NopCloser(bytes.NewReader(peek))
+			}
+
+			// Detect a 403 that is a pre-charge quota failure (e.g. new-api
+			// "预扣费额度失败 / Please run /login") rather than a bad API key.
+			// These must not trigger ErrAuth (permanent disable) — instead
+			// circuit-break via quotaExhausted and failover like a 429 quota error.
+			if resp.StatusCode == http.StatusForbidden {
+				peek, isLoginQuota := peekLoginQuotaError(resp)
+				if isLoginQuota {
+					resp.Body.Close()
+					h.lb.MarkQuotaExhausted(backend.Name)
+					failovers++
+					next := h.lb.PickExcluding(tried)
+					if next == nil || failovers > maxQuotaFailovers {
+						resp.Body = io.NopCloser(bytes.NewReader(peek))
+						logger.Warnf("login-quota failover exhausted (backend=%s failovers=%d): returning 403", backend.Name, failovers)
+						break
+					}
+					backend.RecordResult(ErrRateLimit) // counts against health but not auth-disable
+					backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
+					logger.Warnf("backend %s pre-charge quota failure (403): failing over to %s", backend.Name, next.Name)
+					backend = next
+					tried[backend.Name] = true
+					targetURL = strings.TrimRight(backend.URL, "/") + upstreamPath
+					continue
+				}
+				// Genuine 403 (bad key): restore body and let ErrAuth handle it.
 				resp.Body = io.NopCloser(bytes.NewReader(peek))
 			}
 			break
@@ -457,12 +485,12 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 
 	defer resp.Body.Close()
 	backend.RecordResult(ClassifyError(resp.StatusCode, nil))
-	backend.RecordStatusCode(resp.StatusCode)
+	backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
 
 	// Check if we need to retry with downgrade (response indicates failure)
 	if autoDowngrade && !isDowngraded && resp.StatusCode >= 400 {
 		resp.Body.Close()
-		backend.RecordStatusCode(resp.StatusCode) // record the failure first
+		backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds()) // record the failure first
 
 		logger.Infof("received error status %d, attempting auto-downgrade for model %s, isOpenClaw=%v, isHermes=%v", resp.StatusCode, reqModel, isOpenClaw, isHermes)
 		respNew, fbModel, errNew := h.doRequestWithDowngrade(c, backend, upstreamPath, body, reqModel, isOpenClaw, isHermes)
@@ -671,6 +699,27 @@ func peekQuotaExhausted(resp *http.Response) ([]byte, bool) {
 	if strings.Contains(s, "exceeded_current_quota_error") ||
 		strings.Contains(s, "insufficient balance") ||
 		strings.Contains(s, "suspended due to") {
+		return body, true
+	}
+	return body, false
+}
+
+// peekLoginQuotaError reads the (small) body of a 403 response and reports
+// whether it is a pre-charge quota failure from new-api style backends
+// (e.g. "预扣费额度失败" / "Please run /login"). These look like auth errors
+// by status code but are actually transient balance issues, so they must not
+// trigger the permanent ErrAuth disable path.
+func peekLoginQuotaError(resp *http.Response) ([]byte, bool) {
+	const maxPeek = 8192
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPeek))
+	if err != nil {
+		return body, false
+	}
+	s := string(body)
+	if strings.Contains(s, "预扣费") ||
+		strings.Contains(s, "/login") ||
+		strings.Contains(s, "API Error: 403") ||
+		strings.Contains(s, "用户剩余额度") {
 		return body, true
 	}
 	return body, false

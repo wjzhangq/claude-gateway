@@ -15,7 +15,14 @@ import (
 	"github.com/wjzhangq/claude-gateway/config"
 )
 
-const maxStatusCodes = 50
+const minStatusCodes = 50
+
+// StatusEntry records a single request outcome with timestamp for display.
+type StatusEntry struct {
+	Code      int   `json:"code"`
+	LatencyMs int64 `json:"latency_ms"`
+	Timestamp int64 `json:"timestamp"` // unix timestamp in seconds
+}
 
 // Backend health states. The backend moves between them based on classified
 // request outcomes and external health probes.
@@ -112,13 +119,15 @@ type Backend struct {
 	consecErr       atomic.Int64 // consecutive health-impacting errors
 	consecOK        atomic.Int64 // consecutive successes (for degraded->healthy)
 	lastErr         atomic.Int64 // unix timestamp of last error
+	lastLatencyMs   atomic.Int64 // latency of the most recent request in ms
 	validationFailed atomic.Bool  // set on startup validation failure; never auto-recovered
 	quotaExhausted  atomic.Bool   // set by external check when daily quota is exceeded
 	quotaLimit      atomic.Int64  // hard_limit_usd * 100 (cents precision)
 	quotaUsage      atomic.Int64  // total_usage * 100 (cents precision)
 	quotaCheckedAt  atomic.Int64  // unix timestamp of last quota check
-	statusCodes     []int         // last 50 status codes
-	statusCodeDist  map[int]int   // distribution of status codes
+	statusEntries   []StatusEntry // ring buffer of recent requests (code + latency + timestamp)
+	statusCodeDist  map[int]int   // distribution of status codes within the ring buffer
+	statusCapacity  int           // dynamic capacity: max(50, 10 * backends_count)
 	statusMu        sync.Mutex
 }
 
@@ -205,39 +214,59 @@ func (b *Backend) effectiveWeight() int {
 	}
 }
 
-// RecordStatusCode records a status code for the last N requests tracking.
-func (b *Backend) RecordStatusCode(code int) {
+// RecordRequest records a request outcome (status code + latency) in the ring buffer.
+// It replaces the old RecordStatusCode and also tracks request timestamps.
+func (b *Backend) RecordRequest(code int, latencyMs int64) {
+	b.lastLatencyMs.Store(latencyMs)
 	b.statusMu.Lock()
 	defer b.statusMu.Unlock()
-	b.statusCodes = append(b.statusCodes, code)
-	if len(b.statusCodes) > maxStatusCodes {
-		// Remove old code from distribution
-		oldCode := b.statusCodes[0]
+	cap := b.statusCapacity
+	if cap < minStatusCodes {
+		cap = minStatusCodes
+	}
+	if b.statusCodeDist == nil {
+		b.statusCodeDist = make(map[int]int)
+	}
+	b.statusEntries = append(b.statusEntries, StatusEntry{
+		Code:      code,
+		LatencyMs: latencyMs,
+		Timestamp: time.Now().Unix(),
+	})
+	if len(b.statusEntries) > cap {
+		// Evict oldest entry and update distribution
+		oldCode := b.statusEntries[0].Code
 		if b.statusCodeDist[oldCode] > 0 {
 			b.statusCodeDist[oldCode]--
 			if b.statusCodeDist[oldCode] == 0 {
 				delete(b.statusCodeDist, oldCode)
 			}
 		}
-		b.statusCodes = b.statusCodes[1:]
-	}
-	// Add to distribution
-	if b.statusCodeDist == nil {
-		b.statusCodeDist = make(map[int]int)
+		b.statusEntries = b.statusEntries[1:]
 	}
 	b.statusCodeDist[code]++
 }
 
-// GetStatusCodes returns the last N status codes.
-func (b *Backend) GetStatusCodes() []int {
+// RecordStatusCode is kept for call sites that don't yet have latency available.
+// It delegates to RecordRequest with latency=0.
+func (b *Backend) RecordStatusCode(code int) {
+	b.RecordRequest(code, 0)
+}
+
+// GetStatusEntries returns a copy of the ring buffer (code + latency + timestamp).
+func (b *Backend) GetStatusEntries() []StatusEntry {
 	b.statusMu.Lock()
 	defer b.statusMu.Unlock()
-	result := make([]int, len(b.statusCodes))
-	copy(result, b.statusCodes)
+	result := make([]StatusEntry, len(b.statusEntries))
+	copy(result, b.statusEntries)
 	return result
 }
 
-// GetStatusCodeDist returns the distribution of status codes.
+// GetRecentLatencyMs returns the latency of the most recent request.
+func (b *Backend) GetRecentLatencyMs() int64 {
+	return b.lastLatencyMs.Load()
+}
+
+// GetStatusCodeDist returns the distribution of status codes within the ring buffer.
 func (b *Backend) GetStatusCodeDist() map[int]int {
 	b.statusMu.Lock()
 	defer b.statusMu.Unlock()
@@ -248,38 +277,39 @@ func (b *Backend) GetStatusCodeDist() map[int]int {
 	return result
 }
 
-// GetErrorRate returns the non-2xx error rate from the last N status codes.
+// GetErrorRate returns the non-2xx error rate from the ring buffer.
 func (b *Backend) GetErrorRate() float64 {
 	b.statusMu.Lock()
 	defer b.statusMu.Unlock()
-	if len(b.statusCodes) == 0 {
+	if len(b.statusEntries) == 0 {
 		return 0
 	}
 	non2xx := 0
-	for _, code := range b.statusCodes {
-		if code < 200 || code >= 300 {
+	for _, e := range b.statusEntries {
+		if e.Code < 200 || e.Code >= 300 {
 			non2xx++
 		}
 	}
-	return float64(non2xx) / float64(len(b.statusCodes)) * 100
+	return float64(non2xx) / float64(len(b.statusEntries)) * 100
 }
 
 // BackendInfo represents backend status info for API responses.
 type BackendInfo struct {
-	Name            string      `json:"name"`
-	URL             string      `json:"url"`
-	Weight          int         `json:"weight"`
-	State           string      `json:"state"`     // "healthy" | "degraded" | "disabled"
-	EffectiveWeight int         `json:"effective_weight"`
-	Disabled        bool        `json:"disabled"`  // kept for backward compat: true when not selectable
-	ErrCount        int64       `json:"err_count"` // consecutive health-impacting errors
-	StatusCodeDist  map[int]int `json:"status_code_dist"`
-	StatusCodes     []int       `json:"status_codes"`
-	ErrorRate       float64     `json:"error_rate"`
-	QuotaExhausted  bool        `json:"quota_exhausted"`
-	QuotaLimit      float64     `json:"quota_limit"`
-	QuotaUsage      float64     `json:"quota_usage"`
-	QuotaCheckedAt  int64       `json:"quota_checked_at"`
+	Name            string        `json:"name"`
+	URL             string        `json:"url"`
+	Weight          int           `json:"weight"`
+	State           string        `json:"state"`     // "healthy" | "degraded" | "disabled"
+	EffectiveWeight int           `json:"effective_weight"`
+	Disabled        bool          `json:"disabled"`  // kept for backward compat: true when not selectable
+	ErrCount        int64         `json:"err_count"` // consecutive health-impacting errors
+	StatusCodeDist  map[int]int   `json:"status_code_dist"`
+	StatusEntries   []StatusEntry `json:"status_entries"`    // ring buffer: code + latency + timestamp
+	RecentLatencyMs int64         `json:"recent_latency_ms"` // latency of the last request
+	ErrorRate       float64       `json:"error_rate"`
+	QuotaExhausted  bool          `json:"quota_exhausted"`
+	QuotaLimit      float64       `json:"quota_limit"`
+	QuotaUsage      float64       `json:"quota_usage"`
+	QuotaCheckedAt  int64         `json:"quota_checked_at"`
 }
 
 // stateName converts a numeric state to its string label.
@@ -311,7 +341,8 @@ func (lb *LoadBalancer) GetBackends() []BackendInfo {
 			Disabled:        ew == 0,
 			ErrCount:        b.consecErr.Load(),
 			StatusCodeDist:  b.GetStatusCodeDist(),
-			StatusCodes:     b.GetStatusCodes(),
+			StatusEntries:   b.GetStatusEntries(),
+			RecentLatencyMs: b.GetRecentLatencyMs(),
 			ErrorRate:       b.GetErrorRate(),
 			QuotaExhausted:  b.quotaExhausted.Load(),
 			QuotaLimit:      float64(b.quotaLimit.Load()) / 100,
@@ -352,8 +383,27 @@ func NewLoadBalancer(cfgs []config.BackendAPI) *LoadBalancer {
 			},
 		})
 	}
+	lb.updateCapacities()
 	go lb.quotaResetLoop()
 	return lb
+}
+
+// updateCapacities sets each backend's ring-buffer capacity to max(minStatusCodes, 10*backends_count).
+// Must be called after lb.backends is populated (without holding the write lock).
+func (lb *LoadBalancer) updateCapacities() {
+	count := len(lb.backends)
+	if count == 0 {
+		count = 1
+	}
+	cap := 10 * count
+	if cap < minStatusCodes {
+		cap = minStatusCodes
+	}
+	for _, b := range lb.backends {
+		b.statusMu.Lock()
+		b.statusCapacity = cap
+		b.statusMu.Unlock()
+	}
 }
 
 // Pick selects a healthy backend using weighted random selection.
@@ -522,6 +572,7 @@ func (lb *LoadBalancer) UpdateBackends(cfgs []config.BackendAPI) {
 	lb.backends = newBackends
 	lb.mu.Unlock()
 
+	lb.updateCapacities()
 	lb.ValidateBackends()
 }
 
