@@ -206,7 +206,7 @@ func main() {
 	appH := handler.NewApplicationHandler(database, keyStore)
 	awsStatsH := handler.NewAWSStatsHandler(database, cfg, keyStore)
 	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore)
-	insightH := handler.NewInsightHandler(database)
+	insightH := handler.NewInsightHandler(database, cfg)
 	configH := handler.NewConfigHandler(cfgPath, cfg, func() error {
 		newCfg, err := config.Load(cfgPath)
 		if err != nil {
@@ -218,6 +218,7 @@ func main() {
 		publicH.UpdateConfig(newCfg)
 		statsH.UpdateConfig(newCfg)
 		awsStatsH.UpdateConfig(newCfg)
+		insightH.UpdateConfig(newCfg)
 		if awsProxyH != nil {
 			awsProxyH.UpdateConfig(&newCfg.AWS)
 			awsProxyH.SetRootConfig(newCfg)
@@ -492,7 +493,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP)
 	go handleReload(sigCh, cfgPath, collector, awsCollector, aggregator, awsAggregator,
-		lb, proxyH, awsProxyH, publicH, statsH, awsStatsH, database, keyStore, cfg)
+		lb, proxyH, awsProxyH, publicH, statsH, awsStatsH, insightH, database, keyStore, cfg)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Infof("Claude Gateway listening on %s", addr)
@@ -559,6 +560,7 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 	lb *proxy.LoadBalancer, proxyH *proxy.Handler, awsProxyH *awsproxy.Handler,
 	publicH *publicproxy.Handler,
 	statsH *handler.StatsHandler, awsStatsH *handler.AWSStatsHandler,
+	insightH *handler.InsightHandler,
 	database *db.DB, keyStore *auth.KeyStore, currentCfg *config.Config) {
 
 	for range sigCh {
@@ -593,6 +595,7 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 		publicH.UpdateConfig(newCfg)
 		statsH.UpdateConfig(newCfg)
 		awsStatsH.UpdateConfig(newCfg)
+		insightH.UpdateConfig(newCfg)
 		if awsProxyH != nil {
 			awsProxyH.UpdateConfig(&newCfg.AWS)
 			awsProxyH.SetRootConfig(newCfg)

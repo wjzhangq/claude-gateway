@@ -39,6 +39,7 @@ type Config struct {
 	PublicProviders         []PublicProvider             `yaml:"public_providers"`           // third-party model providers accessible from all channels
 	BackendModelPricing     map[string]ModelPricingEntry `yaml:"backend_model_pricing"`      // glob pattern -> pricing for backend channel
 	ValidateBackends        bool                         `yaml:"validate_backends"`          // check backend /v1/models on startup (default: false)
+	RankingHiddenItcodes    []string                     `yaml:"ranking_hidden_itcodes"`     // itcodes hidden from ranking / user-daily lists (still counted in totals)
 }
 
 // PublicProvider represents a third-party model provider (e.g. Kimi, MiniMax)

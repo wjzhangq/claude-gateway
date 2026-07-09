@@ -7,17 +7,24 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 )
 
 // InsightHandler serves usage ranking, per-user insight, and org tagging endpoints.
 // Migrated from the standalone sky-insight service into the gateway admin API.
 type InsightHandler struct {
-	db *db.DB
+	db  *db.DB
+	cfg *config.Config
 }
 
-func NewInsightHandler(database *db.DB) *InsightHandler {
-	return &InsightHandler{db: database}
+func NewInsightHandler(database *db.DB, cfg *config.Config) *InsightHandler {
+	return &InsightHandler{db: database, cfg: cfg}
+}
+
+// UpdateConfig replaces the config reference (used during reload).
+func (h *InsightHandler) UpdateConfig(cfg *config.Config) {
+	h.cfg = cfg
 }
 
 // GetRanking godoc: GET /admin/api/insight/ranking
@@ -26,7 +33,7 @@ func (h *InsightHandler) GetRanking(c *gin.Context) {
 	days, _ := strconv.Atoi(c.DefaultQuery("days", "0"))
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "500"))
 
-	ranking, err := h.db.GetUsageRanking(days, limit)
+	ranking, err := h.db.GetUsageRanking(days, limit, h.cfg.RankingHiddenItcodes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

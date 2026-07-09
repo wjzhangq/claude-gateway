@@ -2,8 +2,25 @@ package db
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
+
+// hiddenItcodeClause builds a SQL fragment excluding the given itcodes for the
+// column referenced by col (e.g. "u.itcode"). Returns "" and nil args when the
+// list is empty. Values are passed as bound parameters to avoid injection.
+func hiddenItcodeClause(col string, hidden []string) (string, []interface{}) {
+	if len(hidden) == 0 {
+		return "", nil
+	}
+	placeholders := make([]string, len(hidden))
+	args := make([]interface{}, len(hidden))
+	for i, it := range hidden {
+		placeholders[i] = "?"
+		args[i] = it
+	}
+	return fmt.Sprintf(" AND %s NOT IN (%s)", col, strings.Join(placeholders, ",")), args
+}
 
 // --- Org tag mutations ---
 
@@ -123,7 +140,7 @@ type RankingUser struct {
 
 // GetUsageRanking returns users ranked by total tokens across backend and aws channels.
 // days=0 means all-time; otherwise the last N days (with +8h offset to match CST日界).
-func (d *DB) GetUsageRanking(days, limit int) ([]*RankingUser, error) {
+func (d *DB) GetUsageRanking(days, limit int, hidden []string) ([]*RankingUser, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
@@ -131,6 +148,7 @@ func (d *DB) GetUsageRanking(days, limit int) ([]*RankingUser, error) {
 	if days > 0 {
 		dateFilter = fmt.Sprintf("WHERE date >= date('now', '+8 hours', '-%d days')", days)
 	}
+	hiddenClause, hiddenArgs := hiddenItcodeClause("u.itcode", hidden)
 	sql := fmt.Sprintf(`
 	SELECT u.id, u.itcode, COALESCE(u.name, ''), u.status,
 	  COALESCE(b.total_tokens, 0) as backend_tokens,
@@ -158,11 +176,11 @@ func (d *DB) GetUsageRanking(days, limit int) ([]*RankingUser, error) {
 	         SUM(cost_usd) as cost, SUM(requests) as requests
 	  FROM aws_daily_stats %s GROUP BY user_id
 	) a ON u.id = a.user_id
-	WHERE COALESCE(b.total_tokens, 0) + COALESCE(a.total_tokens, 0) > 0
+	WHERE COALESCE(b.total_tokens, 0) + COALESCE(a.total_tokens, 0) > 0%s
 	ORDER BY all_tokens DESC
-	LIMIT %d`, dateFilter, dateFilter, limit)
+	LIMIT %d`, dateFilter, dateFilter, hiddenClause, limit)
 
-	rows, err := d.Query(sql)
+	rows, err := d.Query(sql, hiddenArgs...)
 	if err != nil {
 		return nil, err
 	}

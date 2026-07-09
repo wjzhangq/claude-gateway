@@ -381,7 +381,7 @@ func (h *StatsHandler) GetUserDailyCostRanking(c *gin.Context) {
 	}
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
 
-	result, err := h.db.GetUserDailyCostRanking(date, limit)
+	result, err := h.db.GetUserDailyCostRanking(date, limit, h.config.RankingHiddenItcodes)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

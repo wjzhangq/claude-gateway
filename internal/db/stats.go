@@ -259,12 +259,17 @@ type UserDailyCostResult struct {
 }
 
 // GetUserDailyCostRanking returns top N users by cost for a given date, plus totals.
-func (d *DB) GetUserDailyCostRanking(date string, limit int) (*UserDailyCostResult, error) {
+func (d *DB) GetUserDailyCostRanking(date string, limit int, hidden []string) (*UserDailyCostResult, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 
+	hiddenClause, hiddenArgs := hiddenItcodeClause("u.itcode", hidden)
+
 	// Top N users
+	listArgs := []interface{}{date}
+	listArgs = append(listArgs, hiddenArgs...)
+	listArgs = append(listArgs, limit)
 	rows, err := d.Query(
 		`SELECT l.user_id, COALESCE(u.itcode, ''), COUNT(*) as requests,
 		        SUM(l.total_tokens) as total_tokens,
@@ -272,10 +277,10 @@ func (d *DB) GetUserDailyCostRanking(date string, limit int) (*UserDailyCostResu
 		        SUM(CASE WHEN l.is_openclaw THEN l.cost_usd ELSE 0 END) as oc_cost_usd
 		 FROM usage_logs l
 		 LEFT JOIN users u ON u.id = l.user_id
-		 WHERE SUBSTR(l.created_at, 1, 10) = ?
+		 WHERE SUBSTR(l.created_at, 1, 10) = ?`+hiddenClause+`
 		 GROUP BY l.user_id
 		 ORDER BY cost_usd DESC
-		 LIMIT ?`, date, limit)
+		 LIMIT ?`, listArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("get user daily cost ranking: %w", err)
 	}
@@ -294,6 +299,7 @@ func (d *DB) GetUserDailyCostRanking(date string, limit int) (*UserDailyCostResu
 	}
 
 	// Totals
+	// Totals include hidden itcodes — they are only excluded from the ranked list.
 	var totalCost, ocCost float64
 	var totalReqs int
 	err = d.QueryRow(
