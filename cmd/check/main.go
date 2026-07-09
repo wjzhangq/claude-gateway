@@ -138,8 +138,20 @@ func runHealthProbe(client *http.Client, cfg *config.Config, gatewayURL string) 
 		err := probeModels(client, baseURL, b.APIKey)
 		latency := time.Since(start).Milliseconds()
 		if err != nil {
-			log.Printf("[%s] health FAIL (%dms): %v", b.Name, latency, err)
-			results = append(results, healthBackend{Name: b.Name, Healthy: false, LatencyMs: latency, Error: err.Error()})
+			// The /v1/models listing can fail (or be unsupported) even when the
+			// backend can still serve inference. Before declaring it unhealthy,
+			// confirm with a real message request against a known model.
+			log.Printf("[%s] models probe failed (%dms): %v — verifying with %s", b.Name, latency, err, healthCheckModel)
+			mStart := time.Now()
+			if mErr := probeMessages(client, baseURL, b.APIKey); mErr != nil {
+				latency = time.Since(start).Milliseconds()
+				log.Printf("[%s] health FAIL (%dms): models: %v; messages: %v", b.Name, latency, err, mErr)
+				results = append(results, healthBackend{Name: b.Name, Healthy: false, LatencyMs: latency, Error: mErr.Error()})
+			} else {
+				latency = time.Since(mStart).Milliseconds()
+				log.Printf("[%s] health OK via %s message probe (%dms)", b.Name, healthCheckModel, latency)
+				results = append(results, healthBackend{Name: b.Name, Healthy: true, LatencyMs: latency})
+			}
 		} else {
 			log.Printf("[%s] health OK (%dms)", b.Name, latency)
 			results = append(results, healthBackend{Name: b.Name, Healthy: true, LatencyMs: latency})
@@ -157,10 +169,71 @@ func runHealthProbe(client *http.Client, cfg *config.Config, gatewayURL string) 
 	log.Println("health sync complete")
 }
 
+// healthCheckModel is a real model used to verify a backend can actually serve
+// inference when the lightweight /v1/models probe fails.
+const healthCheckModel = "claude-sonnet-4-6"
+
 // probeModels performs a GET /v1/models and returns an error if unreachable/non-200.
 func probeModels(client *http.Client, baseURL, apiKey string) error {
 	_, err := doGet(client, baseURL+"/v1/models", apiKey)
 	return err
+}
+
+// probeMessages sends a minimal /v1/messages request with a real model and
+// verifies the backend returns a well-formed message response. This is a
+// stronger signal than /v1/models: it confirms the backend can actually route
+// and serve inference.
+func probeMessages(client *http.Client, baseURL, apiKey string) error {
+	reqBody, err := json.Marshal(map[string]any{
+		"model":      healthCheckModel,
+		"max_tokens": 16,
+		"messages": []map[string]any{
+			{"role": "user", "content": "ping"},
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/messages", bytes.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("x-api-key", apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	var buf bytes.Buffer
+	buf.ReadFrom(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(buf.String()))
+	}
+
+	// Validate the response is a proper message (type == "message") rather than
+	// an error payload returned with a 200 status.
+	var result struct {
+		Type    string `json:"type"`
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	if result.Type != "message" || len(result.Content) == 0 {
+		return fmt.Errorf("unexpected response shape (type=%q, content=%d)", result.Type, len(result.Content))
+	}
+
+	return nil
 }
 
 // syncHealthToServer posts health probe results to the gateway.
