@@ -23,10 +23,11 @@ func NewConfigHandler(cfgPath string, cfg *config.Config, reloadFn func() error)
 }
 
 type limitsResponse struct {
-	BackendDailyMax float64             `json:"backend_daily_max"`
-	AWSDailyMax     float64             `json:"aws_daily_max"`
-	AWSMonthlyMax   float64             `json:"aws_monthly_max"`
-	UserDailyLimits []userLimitResponse `json:"user_daily_limits"`
+	BackendDailyMax    float64                `json:"backend_daily_max"`
+	AWSDailyMax        float64                `json:"aws_daily_max"`
+	AWSMonthlyMax      float64                `json:"aws_monthly_max"`
+	UserDailyLimits    []userLimitResponse    `json:"user_daily_limits"`
+	BackendDailyLimits []backendLimitResponse `json:"backend_daily_limits"`
 }
 
 type userLimitResponse struct {
@@ -34,6 +35,11 @@ type userLimitResponse struct {
 	BackendDailyUSD float64 `json:"backend_daily_usd"`
 	AWSDailyUSD     float64 `json:"aws_daily_usd"`
 	AWSMonthlyUSD   float64 `json:"aws_monthly_usd"`
+}
+
+type backendLimitResponse struct {
+	Name     string  `json:"name"`
+	DailyUSD float64 `json:"daily_usd"`
 }
 
 func (h *ConfigHandler) GetLimits(c *gin.Context) {
@@ -46,11 +52,19 @@ func (h *ConfigHandler) GetLimits(c *gin.Context) {
 			AWSMonthlyUSD:   l.AWSMonthlyUSD,
 		}
 	}
+	backendLimits := make([]backendLimitResponse, len(h.cfg.BackendDailyLimits))
+	for i, l := range h.cfg.BackendDailyLimits {
+		backendLimits[i] = backendLimitResponse{
+			Name:     l.Name,
+			DailyUSD: l.DailyUSD,
+		}
+	}
 	c.JSON(http.StatusOK, limitsResponse{
-		BackendDailyMax: h.cfg.BackendDailyMax,
-		AWSDailyMax:     h.cfg.AWS.AWSDailyMax,
-		AWSMonthlyMax:   h.cfg.AWS.AWSMonthlyMax,
-		UserDailyLimits: limits,
+		BackendDailyMax:    h.cfg.BackendDailyMax,
+		AWSDailyMax:        h.cfg.AWS.AWSDailyMax,
+		AWSMonthlyMax:      h.cfg.AWS.AWSMonthlyMax,
+		UserDailyLimits:    limits,
+		BackendDailyLimits: backendLimits,
 	})
 }
 

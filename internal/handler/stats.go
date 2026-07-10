@@ -65,6 +65,23 @@ func (h *StatsHandler) GetDailyStats(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"stats": stats})
 }
 
+// backendStatWithLimit augments a db.BackendStat with the configured daily cap
+// and the used percentage. DailyLimit is 0 when unlimited; UsedPct is nil in that
+// case so the client can render the neutral "unlimited" treatment (FR-008, FR-010).
+type backendStatWithLimit struct {
+	*db.BackendStat
+	DailyLimit float64  `json:"daily_limit"`
+	UsedPct    *float64 `json:"used_pct"`
+}
+
+// fleetBudgetSummary is the top-level aggregate over all backends for the day.
+type fleetBudgetSummary struct {
+	DailyLimitTotal float64 `json:"daily_limit_total"` // sum of positive caps only (FR-004)
+	UsedTotal       float64 `json:"used_total"`        // sum of cost across all backends (FR-005)
+	UsedPct         float64 `json:"used_pct"`          // used_total / limit_total * 100, 0 when no caps
+	HasUnlimited    bool    `json:"has_unlimited"`     // true if any backend lacks a positive cap (FR-009)
+}
+
 // GetBackendStats godoc: GET /admin/api/backends/stats
 func (h *StatsHandler) GetBackendStats(c *gin.Context) {
 	start := c.Query("start_date")
@@ -75,7 +92,27 @@ func (h *StatsHandler) GetBackendStats(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"stats": stats})
+
+	rows := make([]backendStatWithLimit, len(stats))
+	var summary fleetBudgetSummary
+	for i, s := range stats {
+		limit := h.config.LookupBackendDailyLimit(s.Backend)
+		row := backendStatWithLimit{BackendStat: s, DailyLimit: limit}
+		if limit > 0 {
+			pct := s.CostUSD / limit * 100
+			row.UsedPct = &pct
+			summary.DailyLimitTotal += limit
+		} else {
+			summary.HasUnlimited = true
+		}
+		summary.UsedTotal += s.CostUSD
+		rows[i] = row
+	}
+	if summary.DailyLimitTotal > 0 {
+		summary.UsedPct = summary.UsedTotal / summary.DailyLimitTotal * 100
+	}
+
+	c.JSON(http.StatusOK, gin.H{"stats": rows, "summary": summary})
 }
 
 // GetMyUsage godoc: GET /api/usage  (user's own stats, session or API key auth)

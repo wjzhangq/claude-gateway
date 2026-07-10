@@ -19,6 +19,14 @@ type UserDailyLimit struct {
 	AWSMonthlyUSD   float64 `yaml:"aws_monthly_usd"`    // 0 = not overridden; >0 switches AWS to monthly billing
 }
 
+// BackendDailyLimit specifies a per-backend daily cost cap (display/monitoring only).
+// Keyed by backend name; DailyUSD is the ceiling in USD where 0 (or absent/negative)
+// means unlimited, following the project-wide "0 = unlimited" convention.
+type BackendDailyLimit struct {
+	Name     string  `yaml:"name"`
+	DailyUSD float64 `yaml:"daily_usd"` // 0 = unlimited
+}
+
 // Config is the root configuration structure.
 type Config struct {
 	Server            ServerConfig      `yaml:"server"`
@@ -33,6 +41,7 @@ type Config struct {
 	Fallback          string            `yaml:"fallback"`          // fallback model name from public_providers for auto-downgrade
 	BackendDailyMax         float64           `yaml:"backend_daily_max"`          // max backend spend per user per day in USD (0 = unlimited)
 	UserDailyLimits         []UserDailyLimit  `yaml:"user_daily_limits"`          // per-itcode daily spending overrides
+	BackendDailyLimits      []BackendDailyLimit `yaml:"backend_daily_limits"`     // per-backend daily cost caps (display only, 0 = unlimited)
 	LobsterAutoForward      bool                         `yaml:"lobster_auto_forward"`       // auto-forward lobster (openclaw/hermes) Claude requests to fallback
 	LobsterForwardWhitelist []string                     `yaml:"lobster_forward_whitelist"` // itcodes exempt from lobster forwarding
 	AWS                     AWSConfig                    `yaml:"aws"`
@@ -240,6 +249,22 @@ func (c *Config) LookupUserDailyLimit(itcode string) *UserDailyLimit {
 		}
 	}
 	return nil
+}
+
+// LookupBackendDailyLimit returns the configured daily cap (USD) for the given
+// backend name, or 0 when there is no matching entry or the cap is not positive.
+// A return of 0 means unlimited (FR-002), and callers can safely treat it as a
+// divide-by-zero guard for percentage math (FR-010).
+func (c *Config) LookupBackendDailyLimit(name string) float64 {
+	for i := range c.BackendDailyLimits {
+		if c.BackendDailyLimits[i].Name == name {
+			if c.BackendDailyLimits[i].DailyUSD > 0 {
+				return c.BackendDailyLimits[i].DailyUSD
+			}
+			return 0
+		}
+	}
+	return 0
 }
 
 // IsLobsterWhitelisted returns true if the itcode is exempt from lobster auto-forwarding.

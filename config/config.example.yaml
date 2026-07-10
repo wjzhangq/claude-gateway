@@ -35,6 +35,15 @@ usage_sync_time: 5m       # 使用量聚合间隔
 #     backend_daily_usd: 20.0
 #     aws_daily_usd: 30.0
 
+# 各 Backend 的每日费用上限（仅用于 /admin/backends 页面的展示与监控，不影响路由）
+# name 需与下方 backends[].name 对应；daily_usd 为 0 或缺省表示该后端不限额。
+# 未在此列出的后端视为无上限。
+# backend_daily_limits:
+#   - name: "claude-primary"
+#     daily_usd: 100.0
+#   - name: "claude-secondary"
+#     daily_usd: 50.0
+
 # 用户分组（用于费用统计和用户管理）
 groups:
   - id: 1

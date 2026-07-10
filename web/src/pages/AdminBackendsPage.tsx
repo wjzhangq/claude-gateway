@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from 'react'
 import { adminGetBackendStats, adminGetBackendStatus } from '../api'
 import { toDateStr } from '../utils/time'
+import { budgetColor, TIER_FILL, TIER_BADGE } from '../utils/budget'
 
 interface StatusEntry {
   code: number
@@ -15,6 +16,15 @@ interface BackendStat {
   cost_usd: number
   avg_latency_ms: number
   error_count: number
+  daily_limit: number
+  used_pct: number | null
+}
+
+interface FleetSummary {
+  daily_limit_total: number
+  used_total: number
+  used_pct: number
+  has_unlimited: boolean
 }
 
 interface BackendStatus {
@@ -105,6 +115,7 @@ function SkeletonCard() {
 export default function AdminBackendsPage() {
   const [date, setDate] = useState(() => toDateStr(new Date()))
   const [stats, setStats] = useState<BackendStat[]>([])
+  const [summary, setSummary] = useState<FleetSummary | null>(null)
   const [loading, setLoading] = useState(true)
   const [backendStatus, setBackendStatus] = useState<BackendStatus[]>([])
   const [statusLoading, setStatusLoading] = useState(true)
@@ -112,7 +123,10 @@ export default function AdminBackendsPage() {
   const load = (d: string) => {
     setLoading(true)
     adminGetBackendStats({ start_date: d, end_date: d })
-      .then((res) => setStats(res.data.stats || []))
+      .then((res) => {
+        setStats(res.data.stats || [])
+        setSummary(res.data.summary ?? null)
+      })
       .catch(() => {})
       .finally(() => setLoading(false))
   }
@@ -247,6 +261,29 @@ export default function AdminBackendsPage() {
         ) : null}
       </div>
 
+      {/* Fleet-wide daily budget bar */}
+      {!loading && summary && summary.daily_limit_total > 0 && (
+        <div className="bg-white rounded-xl border border-gray-100 px-6 py-5 shadow-sm mb-6">
+          <div className="flex items-baseline justify-between mb-2">
+            <h3 className="text-sm font-semibold text-gray-700">每日费用预算</h3>
+            <span className="text-sm text-gray-600 tabular-nums">
+              已用 ${summary.used_total.toFixed(2)} / 上限 ${summary.daily_limit_total.toFixed(2)}
+              {summary.has_unlimited && <span className="text-gray-400">+</span>}
+              <span className="ml-1 font-semibold text-gray-800">({summary.used_pct.toFixed(1)}%)</span>
+            </span>
+          </div>
+          <div className="w-full h-2.5 rounded-full bg-gray-100 overflow-hidden">
+            <div
+              className={`h-full rounded-full transition-all ${TIER_FILL[budgetColor(summary.used_pct, true)]}`}
+              style={{ width: `${Math.min(summary.used_pct, 100)}%` }}
+            />
+          </div>
+          {summary.has_unlimited && (
+            <p className="mt-2 text-xs text-gray-400">部分后端无上限，实际预算高于所示金额</p>
+          )}
+        </div>
+      )}
+
       {/* HTTP Status Code Distribution strip (global, all backends combined) */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden mb-6">
         <div className="px-4 py-3 border-b border-gray-50 flex items-center justify-between">
@@ -308,7 +345,7 @@ export default function AdminBackendsPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['Backend', '请求数', '总 Token', '费用', '平均延迟', '最近延迟', '错误数', '权重', '状态', '最近检查'].map((h) => (
+              {['Backend', '请求数', '总 Token', '费用', '每日上限', '平均延迟', '最近延迟', '错误数', '权重', '状态', '最近检查'].map((h) => (
                 <th key={h} className="px-3 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide whitespace-nowrap">
                   {h}
                 </th>
@@ -320,13 +357,13 @@ export default function AdminBackendsPage() {
               Array.from({ length: 3 }).map((_, i) => (
                 <Fragment key={i}>
                   <tr>
-                    {Array.from({ length: 10 }).map((_, j) => (
+                    {Array.from({ length: 11 }).map((_, j) => (
                       <td key={j} className="px-3 py-3"><div className="skeleton h-3.5 w-16 rounded" /></td>
                     ))}
                   </tr>
                   <tr className="border-b border-gray-50">
                     <td className="px-3 py-2" />
-                    <td colSpan={9} className="px-3 py-2">
+                    <td colSpan={10} className="px-3 py-2">
                       <div className="flex justify-end gap-0.5">
                         {Array.from({ length: 20 }).map((_, k) => (
                           <div key={k} className="w-5 h-5 rounded-sm skeleton" />
@@ -338,7 +375,7 @@ export default function AdminBackendsPage() {
               ))
             ) : backendList.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-4 py-10 text-center text-sm text-gray-400">无数据</td>
+                <td colSpan={11} className="px-4 py-10 text-center text-sm text-gray-400">无数据</td>
               </tr>
             ) : (
               backendList.map(({ status: b, stat, borderColor, dotColor }) => {
@@ -381,6 +418,22 @@ export default function AdminBackendsPage() {
                       <td className="px-3 py-3 text-gray-700 tabular-nums">
                         {stat ? `$${stat.cost_usd.toFixed(4)}` : '—'}
                       </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        {stat && stat.daily_limit > 0 && stat.used_pct != null ? (
+                          <div className="flex items-center gap-2">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold ring-1 tabular-nums ${TIER_BADGE[budgetColor(stat.used_pct, true)]}`}>
+                              {stat.used_pct.toFixed(0)}%
+                            </span>
+                            <span className="text-xs text-gray-400 tabular-nums">
+                              ${stat.cost_usd.toFixed(2)} / ${stat.daily_limit.toFixed(2)}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-50 text-gray-400 ring-1 ring-gray-100">
+                            无上限
+                          </span>
+                        )}
+                      </td>
                       <td className="px-3 py-3 text-gray-500 tabular-nums">
                         {stat ? `${Math.round(stat.avg_latency_ms)} ms` : '—'}
                       </td>
@@ -413,7 +466,7 @@ export default function AdminBackendsPage() {
                     {/* Row 2: status code squares (right-aligned, time-ordered) */}
                     <tr className="border-b border-gray-100">
                       <td className={`px-3 py-1.5 text-gray-300 text-xs border-l-4 ${borderColor}`}>—</td>
-                      <td colSpan={9} className="px-3 py-1.5">
+                      <td colSpan={10} className="px-3 py-1.5">
                         {entries.length === 0 ? (
                           <span className="text-xs text-gray-300 float-right">暂无记录</span>
                         ) : (
