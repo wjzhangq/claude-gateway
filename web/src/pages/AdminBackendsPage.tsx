@@ -43,6 +43,7 @@ interface BackendStatus {
   quota_limit: number
   quota_usage: number
   quota_checked_at: number
+  daily_limit: number
 }
 
 // Per-backend border accent colors (cycles by index)
@@ -419,15 +420,21 @@ export default function AdminBackendsPage() {
                         {stat ? `$${stat.cost_usd.toFixed(4)}` : '—'}
                       </td>
                       <td className="px-3 py-3 whitespace-nowrap">
-                        {stat && stat.daily_limit > 0 && stat.used_pct != null ? (
-                          <div className="flex items-center gap-2">
-                            <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold ring-1 tabular-nums ${TIER_BADGE[budgetColor(stat.used_pct, true)]}`}>
-                              {stat.used_pct.toFixed(0)}%
-                            </span>
-                            <span className="text-xs text-gray-400 tabular-nums">
-                              ${stat.cost_usd.toFixed(2)} / ${stat.daily_limit.toFixed(2)}
-                            </span>
-                          </div>
+                        {b.daily_limit > 0 ? (
+                          (() => {
+                            const used = stat?.cost_usd ?? 0
+                            const pct = (used / b.daily_limit) * 100
+                            return (
+                              <div className="flex items-center gap-2">
+                                <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold ring-1 tabular-nums ${TIER_BADGE[budgetColor(pct, true)]}`}>
+                                  {pct.toFixed(0)}%
+                                </span>
+                                <span className="text-xs text-gray-400 tabular-nums">
+                                  ${used.toFixed(2)} / ${b.daily_limit.toFixed(2)}
+                                </span>
+                              </div>
+                            )
+                          })()
                         ) : (
                           <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-50 text-gray-400 ring-1 ring-gray-100">
                             无上限

@@ -373,7 +373,11 @@ func main() {
 		adminAPI.GET("/usage/user-daily", statsH.GetUserDailyCostRanking)
 		adminAPI.GET("/backends/stats", statsH.GetBackendStats)
 		adminAPI.GET("/backends/status", func(c *gin.Context) {
-			c.JSON(200, lb.GetBackends())
+			backends := lb.GetBackends()
+			for i := range backends {
+				backends[i].DailyLimit = cfg.LookupBackendDailyLimit(backends[i].Name)
+			}
+			c.JSON(200, backends)
 		})
 		adminAPI.GET("/groups", statsH.GetGroups)
 		adminAPI.GET("/groups/stats", statsH.GetGroupStats)

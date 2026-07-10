@@ -101,12 +101,24 @@ func (h *StatsHandler) GetBackendStats(c *gin.Context) {
 		if limit > 0 {
 			pct := s.CostUSD / limit * 100
 			row.UsedPct = &pct
+		}
+		summary.UsedTotal += s.CostUSD
+		rows[i] = row
+	}
+
+	// Fleet limit total covers every enabled backend's configured cap, not just
+	// those with usage today — otherwise idle backends would drop out of the total
+	// and 总上限 would understate the real budget.
+	for i := range h.config.Backends {
+		b := &h.config.Backends[i]
+		if !b.Enabled {
+			continue
+		}
+		if limit := h.config.LookupBackendDailyLimit(b.Name); limit > 0 {
 			summary.DailyLimitTotal += limit
 		} else {
 			summary.HasUnlimited = true
 		}
-		summary.UsedTotal += s.CostUSD
-		rows[i] = row
 	}
 	if summary.DailyLimitTotal > 0 {
 		summary.UsedPct = summary.UsedTotal / summary.DailyLimitTotal * 100

@@ -20,11 +20,14 @@ type UserDailyLimit struct {
 }
 
 // BackendDailyLimit specifies a per-backend daily cost cap (display/monitoring only).
-// Keyed by backend name; DailyUSD is the ceiling in USD where 0 (or absent/negative)
-// means unlimited, following the project-wide "0 = unlimited" convention.
+// A limit matches a backend either by exact Name or by Prefix (e.g. "lianxiang-"
+// applies to lianxiang-sc031, lianxiang-sc032, ...). DailyUSD is the ceiling in USD
+// where 0 (or absent/negative) means unlimited, following the project-wide
+// "0 = unlimited" convention.
 type BackendDailyLimit struct {
-	Name     string  `yaml:"name"`
-	DailyUSD float64 `yaml:"daily_usd"` // 0 = unlimited
+	Name     string  `yaml:"name"`   // exact backend name (optional if Prefix is set)
+	Prefix   string  `yaml:"prefix"` // backend name prefix; applies to every backend whose name starts with it
+	DailyUSD float64 `yaml:"backend_daily_usd"` // 0 = unlimited
 }
 
 // Config is the root configuration structure.
@@ -255,14 +258,27 @@ func (c *Config) LookupUserDailyLimit(itcode string) *UserDailyLimit {
 // backend name, or 0 when there is no matching entry or the cap is not positive.
 // A return of 0 means unlimited (FR-002), and callers can safely treat it as a
 // divide-by-zero guard for percentage math (FR-010).
+//
+// An exact Name match always wins over a Prefix match. Among prefix entries the
+// longest matching prefix wins, so a more specific prefix can override a broader one.
 func (c *Config) LookupBackendDailyLimit(name string) float64 {
+	bestPrefixLen := -1
+	var bestPrefixUSD float64
 	for i := range c.BackendDailyLimits {
-		if c.BackendDailyLimits[i].Name == name {
-			if c.BackendDailyLimits[i].DailyUSD > 0 {
-				return c.BackendDailyLimits[i].DailyUSD
+		l := &c.BackendDailyLimits[i]
+		if l.Name != "" && l.Name == name {
+			if l.DailyUSD > 0 {
+				return l.DailyUSD
 			}
 			return 0
 		}
+		if l.Prefix != "" && strings.HasPrefix(name, l.Prefix) && len(l.Prefix) > bestPrefixLen {
+			bestPrefixLen = len(l.Prefix)
+			bestPrefixUSD = l.DailyUSD
+		}
+	}
+	if bestPrefixLen >= 0 && bestPrefixUSD > 0 {
+		return bestPrefixUSD
 	}
 	return 0
 }

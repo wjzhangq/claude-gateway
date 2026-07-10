@@ -39,7 +39,8 @@ type userLimitResponse struct {
 
 type backendLimitResponse struct {
 	Name     string  `json:"name"`
-	DailyUSD float64 `json:"daily_usd"`
+	Prefix   string  `json:"prefix"`
+	DailyUSD float64 `json:"backend_daily_usd"`
 }
 
 func (h *ConfigHandler) GetLimits(c *gin.Context) {
@@ -56,6 +57,7 @@ func (h *ConfigHandler) GetLimits(c *gin.Context) {
 	for i, l := range h.cfg.BackendDailyLimits {
 		backendLimits[i] = backendLimitResponse{
 			Name:     l.Name,
+			Prefix:   l.Prefix,
 			DailyUSD: l.DailyUSD,
 		}
 	}

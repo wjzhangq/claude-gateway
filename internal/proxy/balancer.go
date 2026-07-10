@@ -310,6 +310,7 @@ type BackendInfo struct {
 	QuotaLimit      float64       `json:"quota_limit"`
 	QuotaUsage      float64       `json:"quota_usage"`
 	QuotaCheckedAt  int64         `json:"quota_checked_at"`
+	DailyLimit      float64       `json:"daily_limit"` // configured per-backend daily cost cap (USD); 0 = unlimited
 }
 
 // stateName converts a numeric state to its string label.
