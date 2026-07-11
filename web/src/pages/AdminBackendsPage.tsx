@@ -31,10 +31,15 @@ interface BackendStatus {
   name: string
   url: string
   weight: number
-  state: 'healthy' | 'degraded' | 'disabled'
+  state: 'healthy' | 'degraded' | 'disabled' | 'isolated' | 'probing' | 'quarantine'
   effective_weight: number
   disabled: boolean
   err_count: number
+  consec_failures: number
+  ttl_until: number        // unix s; 0 = none
+  last_http_code: number
+  budget_factor: number
+  latency_factor: number
   status_code_dist: Record<number, number>
   status_entries: StatusEntry[]
   recent_latency_ms: number
@@ -380,19 +385,31 @@ export default function AdminBackendsPage() {
               </tr>
             ) : (
               backendList.map(({ status: b, stat, borderColor, dotColor }) => {
-                // State badge
-                let statusLabel: string
-                let statusColor: string
-                let statusDot: string
-                if (b.quota_exhausted) {
-                  statusLabel = '额度耗尽'; statusColor = 'bg-orange-50 text-orange-700 ring-orange-100'; statusDot = 'bg-orange-500'
-                } else if (b.state === 'disabled') {
-                  statusLabel = '已禁用'; statusColor = 'bg-red-50 text-red-700 ring-red-100'; statusDot = 'bg-red-500'
-                } else if (b.state === 'degraded') {
-                  statusLabel = '降级中'; statusColor = 'bg-yellow-50 text-yellow-700 ring-yellow-100'; statusDot = 'bg-yellow-500'
-                } else {
-                  statusLabel = '正常'; statusColor = 'bg-green-50 text-green-700 ring-green-100'; statusDot = 'bg-green-500'
-                }
+                // State badge — 5-state machine
+                type BadgeCfg = { label: string; color: string; dot: string; pulse?: boolean }
+                const badge: BadgeCfg = (() => {
+                  if (b.quota_exhausted)
+                    return { label: '额度耗尽', color: 'bg-orange-50 text-orange-700 ring-orange-100', dot: 'bg-orange-500' }
+                  switch (b.state) {
+                    case 'isolated':
+                      return { label: '隔离中', color: 'bg-red-50 text-red-700 ring-red-100', dot: 'bg-red-500', pulse: true }
+                    case 'quarantine':
+                      return { label: '熔断', color: 'bg-rose-100 text-rose-800 ring-rose-200', dot: 'bg-rose-600', pulse: true }
+                    case 'probing':
+                      return { label: '探活中', color: 'bg-blue-50 text-blue-700 ring-blue-100', dot: 'bg-blue-500', pulse: true }
+                    case 'degraded':
+                      return { label: '降级中', color: 'bg-yellow-50 text-yellow-700 ring-yellow-100', dot: 'bg-yellow-500' }
+                    case 'disabled':
+                      return { label: '已禁用', color: 'bg-gray-50 text-gray-500 ring-gray-200', dot: 'bg-gray-400' }
+                    default:
+                      return { label: '正常', color: 'bg-green-50 text-green-700 ring-green-100', dot: 'bg-green-500' }
+                  }
+                })()
+
+                // TTL countdown (only meaningful for isolated/quarantine/probing)
+                const nowSec = Math.floor(Date.now() / 1000)
+                const ttlRemaining = b.ttl_until > nowSec ? b.ttl_until - nowSec : 0
+                const showTTL = ttlRemaining > 0 && (b.state === 'isolated' || b.state === 'quarantine' || b.state === 'probing')
 
                 const checkedStr = b.quota_checked_at > 0
                   ? new Date(b.quota_checked_at * 1000).toLocaleTimeString()
@@ -457,15 +474,37 @@ export default function AdminBackendsPage() {
                         )}
                       </td>
                       <td className="px-3 py-3 text-gray-700 tabular-nums">
-                        {b.state === 'degraded' ? (
-                          <span>{b.effective_weight}<span className="text-xs text-gray-400"> / {b.weight}</span></span>
+                        {b.state === 'degraded' || b.state === 'probing' ? (
+                          <span title={`软权重因子 budget×${b.budget_factor?.toFixed(2) ?? '—'} latency×${b.latency_factor?.toFixed(2) ?? '—'}`}>
+                            {b.effective_weight}<span className="text-xs text-gray-400"> / {b.weight}</span>
+                          </span>
                         ) : b.weight}
                       </td>
-                      <td className="px-3 py-3">
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${statusColor}`}>
-                          <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${statusDot}`} />
-                          {statusLabel}
-                        </span>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <div className="flex flex-col gap-1">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${badge.color}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${badge.dot}${badge.pulse ? ' animate-pulse' : ''}`} />
+                            {badge.label}
+                          </span>
+                          {/* TTL countdown */}
+                          {showTTL && (
+                            <span className="text-xs text-gray-400 tabular-nums pl-0.5">
+                              冷却 {formatDuration(ttlRemaining)}
+                            </span>
+                          )}
+                          {/* consec failures */}
+                          {(b.consec_failures ?? 0) > 0 && (
+                            <span className="text-xs text-red-400 tabular-nums pl-0.5">
+                              连续失败 {b.consec_failures}
+                            </span>
+                          )}
+                          {/* last HTTP code if non-2xx */}
+                          {b.last_http_code > 0 && (b.last_http_code < 200 || b.last_http_code >= 300) && (
+                            <span className="text-xs text-gray-400 tabular-nums pl-0.5">
+                              上次 {b.last_http_code}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-3 text-xs text-gray-400 whitespace-nowrap">{checkedStr}</td>
                     </tr>

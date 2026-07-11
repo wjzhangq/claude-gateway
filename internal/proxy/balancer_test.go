@@ -49,7 +49,7 @@ func TestClassifyError(t *testing.T) {
 		{"client-400", 400, nil, proxy.ErrClient},
 		{"client-404", 404, nil, proxy.ErrClient},
 		{"auth-401", 401, nil, proxy.ErrAuth},
-		{"auth-403", 403, nil, proxy.ErrAuth},
+		{"forbidden-403", 403, nil, proxy.ErrForbidden},
 		{"ratelimit-429", 429, nil, proxy.ErrRateLimit},
 		{"server-500", 500, nil, proxy.ErrServer},
 		{"server-502", 502, nil, proxy.ErrServer},
@@ -65,120 +65,129 @@ func TestClassifyError(t *testing.T) {
 	}
 }
 
-func TestStateMachine_HealthyToDegradedToDisabled(t *testing.T) {
+// State constants mirrored from balancer.go for readable assertions.
+// (The package-internal enum is unexported; these must match its values.)
+const (
+	stHealthy    = 0
+	stDegraded   = 1
+	stIsolated   = 3
+	stProbing    = 4
+	stQuarantine = 5
+)
+
+func TestStateMachine_NodeErrorIsolatesImmediately(t *testing.T) {
 	lb := proxy.NewLoadBalancer(makeBackends(10))
 	b := lb.Pick()
 	if b == nil {
 		t.Fatal("expected backend")
 	}
-	if b.State() != 0 {
-		t.Fatalf("expected healthy(0), got %d", b.State())
+	if b.State() != stHealthy {
+		t.Fatalf("expected healthy(%d), got %d", stHealthy, b.State())
 	}
 
-	// 3 consecutive server errors -> degraded (state 1)
-	for i := 0; i < 3; i++ {
+	// A single node-level error (5xx) isolates within one request (SC-001).
+	b.RecordResult(proxy.ErrServer)
+	if b.State() != stIsolated {
+		t.Fatalf("expected isolated(%d) after one 5xx, got %d", stIsolated, b.State())
+	}
+	// Isolated is NOT routable.
+	if lb.Pick() != nil {
+		t.Fatal("expected nil after backend isolated")
+	}
+}
+
+func TestStateMachine_ConsecutiveFailuresQuarantine(t *testing.T) {
+	lb := proxy.NewLoadBalancer(makeBackends(10))
+	b := lb.Pick()
+	// 5 consecutive health-impacting failures escalate to Quarantine.
+	for i := 0; i < 5; i++ {
 		b.RecordResult(proxy.ErrServer)
 	}
-	if b.State() != 1 {
-		t.Fatalf("expected degraded(1) after 3 errors, got %d", b.State())
-	}
-	// degraded is still selectable (reduced weight)
-	if lb.Pick() == nil {
-		t.Fatal("expected degraded backend to still be selectable")
-	}
-
-	// 2 more (total 5) -> disabled (state 2)
-	b.RecordResult(proxy.ErrServer)
-	b.RecordResult(proxy.ErrServer)
-	if b.State() != 2 {
-		t.Fatalf("expected disabled(2) after 5 errors, got %d", b.State())
+	if b.State() != stQuarantine {
+		t.Fatalf("expected quarantine(%d) after 5 errors, got %d", stQuarantine, b.State())
 	}
 	if lb.Pick() != nil {
-		t.Fatal("expected nil after backend disabled")
+		t.Fatal("expected nil after backend quarantined")
 	}
 }
 
 func TestStateMachine_ClientErrorIgnored(t *testing.T) {
 	lb := proxy.NewLoadBalancer(makeBackends(10))
 	b := lb.Pick()
-	// Many 4xx client errors must NOT affect health.
+	// Many request-level 4xx (400/404/422) must NOT affect health (FR-008).
 	for i := 0; i < 20; i++ {
 		b.RecordResult(proxy.ErrClient)
 	}
-	if b.State() != 0 {
+	if b.State() != stHealthy {
 		t.Fatalf("client errors must not change state, got %d", b.State())
 	}
 }
 
-func TestStateMachine_AuthDisablesImmediately(t *testing.T) {
+func TestStateMachine_AuthQuarantines(t *testing.T) {
 	lb := proxy.NewLoadBalancer(makeBackends(10))
 	b := lb.Pick()
+	// 401 -> Quarantine (+ alert), not a transient isolation (FR-006).
 	b.RecordResult(proxy.ErrAuth)
-	if b.State() != 2 {
-		t.Fatalf("auth failure must disable immediately, got %d", b.State())
+	if b.State() != stQuarantine {
+		t.Fatalf("401 must quarantine, got %d", b.State())
 	}
 }
 
-func TestStateMachine_DegradedRecoversPassively(t *testing.T) {
+func TestStateMachine_ForbiddenIsolates(t *testing.T) {
 	lb := proxy.NewLoadBalancer(makeBackends(10))
 	b := lb.Pick()
-	// Degrade it
-	for i := 0; i < 3; i++ {
-		b.RecordResult(proxy.ErrServer)
-	}
-	if b.State() != 1 {
-		t.Fatalf("expected degraded, got %d", b.State())
-	}
-	// 3 consecutive successes -> healthy
-	for i := 0; i < 3; i++ {
-		b.RecordResult(proxy.ErrNone)
-	}
-	if b.State() != 0 {
-		t.Fatalf("expected healthy after 3 successes, got %d", b.State())
+	// 403 -> Isolated (transient), separate from 401 quarantine (FR-005).
+	b.RecordResult(proxy.ErrForbidden)
+	if b.State() != stIsolated {
+		t.Fatalf("403 must isolate (not quarantine), got %d", b.State())
 	}
 }
 
 func TestSetHealthStatus_ProbeRecovery(t *testing.T) {
 	lb := proxy.NewLoadBalancer(makeBackends(10))
 	b := lb.Pick()
-	// Drive to disabled
-	for i := 0; i < 5; i++ {
-		b.RecordResult(proxy.ErrServer)
-	}
-	if b.State() != 2 || lb.Pick() != nil {
-		t.Fatal("expected disabled and unselectable")
+	// Drive to Isolated with a single node-level error.
+	b.RecordResult(proxy.ErrServer)
+	if b.State() != stIsolated || lb.Pick() != nil {
+		t.Fatalf("expected isolated and unselectable, got %d", b.State())
 	}
 
-	// Probe OK: disabled -> degraded (selectable again at reduced weight)
+	// Probe OK: Isolated -> Probing (routable again at weight 1).
 	if !lb.SetHealthStatus("backend", true, 100) {
 		t.Fatal("SetHealthStatus should find the backend")
 	}
-	if b.State() != 1 {
-		t.Fatalf("expected degraded after probe OK, got %d", b.State())
+	if b.State() != stProbing {
+		t.Fatalf("expected probing(%d) after probe OK, got %d", stProbing, b.State())
 	}
 	if lb.Pick() == nil {
 		t.Fatal("expected selectable after probe recovery")
 	}
 
-	// Probe OK again: degraded -> healthy
+	// Probe OK again: Probing -> Degraded.
 	lb.SetHealthStatus("backend", true, 100)
-	if b.State() != 0 {
-		t.Fatalf("expected healthy after second probe OK, got %d", b.State())
+	if b.State() != stDegraded {
+		t.Fatalf("expected degraded(%d) after second probe OK, got %d", stDegraded, b.State())
+	}
+
+	// Probe OK a third time: Degraded -> Healthy.
+	lb.SetHealthStatus("backend", true, 100)
+	if b.State() != stHealthy {
+		t.Fatalf("expected healthy(%d) after third probe OK, got %d", stHealthy, b.State())
 	}
 }
 
-func TestSetHealthStatus_ProbeFailureDegrades(t *testing.T) {
+func TestSetHealthStatus_ProbeFailureDemotes(t *testing.T) {
 	lb := proxy.NewLoadBalancer(makeBackends(10))
 	b := lb.Pick()
 	// healthy -> degraded
 	lb.SetHealthStatus("backend", false, 0)
-	if b.State() != 1 {
+	if b.State() != stDegraded {
 		t.Fatalf("expected degraded after probe fail, got %d", b.State())
 	}
-	// degraded -> disabled
+	// degraded -> isolated
 	lb.SetHealthStatus("backend", false, 0)
-	if b.State() != 2 {
-		t.Fatalf("expected disabled after second probe fail, got %d", b.State())
+	if b.State() != stIsolated {
+		t.Fatalf("expected isolated after second probe fail, got %d", b.State())
 	}
 }
 

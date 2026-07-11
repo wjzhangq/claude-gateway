@@ -30,7 +30,7 @@ type Handler struct {
 	lb                *LoadBalancer
 	collector         *stats.Collector
 	keyStore          *auth.KeyStore
-	config           *config.Config
+	config            *config.Config
 	mu                sync.RWMutex
 	modelReplacements map[string]string
 	fallbackClient    *http.Client
@@ -41,7 +41,7 @@ func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.Key
 		lb:                lb,
 		collector:         collector,
 		keyStore:          keyStore,
-		config:           cfg,
+		config:            cfg,
 		modelReplacements: modelReplacements,
 		fallbackClient:    &http.Client{Timeout: 5 * time.Minute},
 	}
@@ -484,8 +484,16 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	}
 
 	defer resp.Body.Close()
-	backend.RecordResult(ClassifyError(resp.StatusCode, nil))
+	// Record the outcome. RecordRequest first so lastHTTPCode is fresh before the
+	// health accounting in RecordResultDetailed reads it. On a 429, parse the
+	// Retry-After response header into an absolute expiry so the TTL policy can
+	// honor it instead of the 30s base.
 	backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
+	var retryAfterUnix int64
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfterUnix = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+	}
+	backend.RecordResultDetailed(ClassifyError(resp.StatusCode, nil), retryAfterUnix, false)
 
 	// Check if we need to retry with downgrade (response indicates failure)
 	if autoDowngrade && !isDowngraded && resp.StatusCode >= 400 {
@@ -689,6 +697,31 @@ const maxQuotaFailovers = 2
 // it consumed so the caller can restore resp.Body. Detection is intentionally
 // broad: it matches either the structured error type or the balance phrasing,
 // so it survives minor upstream wording changes.
+// parseRetryAfter parses an HTTP Retry-After header into an absolute unix-second
+// expiry, supporting both the delta-seconds form ("Retry-After: 120") and the
+// HTTP-date form ("Retry-After: Fri, 31 Dec 2027 23:59:59 GMT"). Returns 0 when
+// the header is absent or unparseable, or resolves to a time in the past.
+func parseRetryAfter(header string, now time.Time) int64 {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return 0
+	}
+	// Delta-seconds form.
+	if secs, err := strconv.ParseInt(header, 10, 64); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return now.Unix() + secs
+	}
+	// HTTP-date form.
+	if t, err := http.ParseTime(header); err == nil {
+		if t.After(now) {
+			return t.Unix()
+		}
+	}
+	return 0
+}
+
 func peekQuotaExhausted(resp *http.Response) ([]byte, bool) {
 	const maxPeek = 8192
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPeek))
