@@ -112,6 +112,9 @@ interface UsageLog {
   ip: string
   city: string
   is_hq: boolean
+  task_type: string       // code | doc | other | '' (unanalyzed)
+  work_related: number    // 1=yes 0=no -1=undetermined
+  code_direction: string  // 前端/后端/... (code only)
   created_at: string
 }
 
@@ -133,10 +136,77 @@ function errorReasonLabel(code: string): string {
   return ERROR_REASON_LABELS[code] || code
 }
 
+// After a row is classified (feature 004), its error_reason column is reused to
+// hold the packed verdict "work:<reason>;doc:<activity>". isClassifyReason tells
+// that packed form apart from a genuine error code so a successful analyzed row
+// is not mistaken for a failure.
+function isClassifyReason(reason: string): boolean {
+  return reason.startsWith('work:') || reason.startsWith('doc:')
+}
+
+// parseClassifyReason pulls the work: / doc: segments back out of the packed
+// error_reason column.
+function parseClassifyReason(reason: string): { work: string; doc: string } {
+  let work = ''
+  let doc = ''
+  for (const seg of reason.split(';')) {
+    if (seg.startsWith('work:')) work = seg.slice(5)
+    else if (seg.startsWith('doc:')) doc = seg.slice(4)
+  }
+  return { work, doc }
+}
+
+// TASK_TYPE_META maps a task_type to its icon + label. The icon gives an at-a-glance
+// read; the label shows in the tooltip.
+const TASK_TYPE_META: Record<string, { icon: string; label: string }> = {
+  code: { icon: '⌨', label: '编码' },
+  doc: { icon: '📄', label: '文档' },
+  other: { icon: '💬', label: '其他' },
+}
+
+// CategoryCell renders the classification for one usage row: a work/non-work badge,
+// a task-type icon, and a hover tooltip carrying code_direction + what the task did.
+function CategoryCell({ log }: { log: UsageLog }) {
+  // work_related: 1=work, 0=non-work, -1/absent=undetermined. task_type empty ⇒
+  // the row was never analyzed (continuation, unanalyzed, or pre-feature).
+  const analyzed = !!log.task_type
+  if (!analyzed) {
+    return <span className="text-gray-300">—</span>
+  }
+
+  const { work, doc } = isClassifyReason(log.error_reason)
+    ? parseClassifyReason(log.error_reason)
+    : { work: '', doc: '' }
+  const meta = TASK_TYPE_META[log.task_type] || { icon: '•', label: log.task_type }
+
+  const tipLines: string[] = []
+  tipLines.push(`类型：${meta.label}`)
+  if (log.task_type === 'code' && log.code_direction) tipLines.push(`方向：${log.code_direction}`)
+  if (work) tipLines.push(`说明：${work}`)
+  if (doc) tipLines.push(`文档：${doc}`)
+  const tip = tipLines.join('\n')
+
+  const workBadge =
+    log.work_related === 1
+      ? { text: '工作', cls: 'bg-green-50 text-green-700 ring-green-100' }
+      : log.work_related === 0
+      ? { text: '非工作', cls: 'bg-amber-50 text-amber-700 ring-amber-100' }
+      : { text: '待定', cls: 'bg-gray-50 text-gray-500 ring-gray-100' }
+
+  return (
+    <span className="inline-flex items-center gap-1.5 cursor-default" title={tip}>
+      <span className="text-sm leading-none" aria-hidden>{meta.icon}</span>
+      <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ring-1 ${workBadge.cls}`}>
+        {workBadge.text}
+      </span>
+    </span>
+  )
+}
+
 function SkeletonRow() {
   return (
     <tr>
-      {[80, 130, 90, 80, 70, 60, 90, 60, 110].map((w, i) => (
+      {[80, 130, 90, 80, 70, 60, 90, 60, 110, 90].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -330,7 +400,7 @@ export default function AdminUsagePage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['用户', '模型', 'Backend', '城市', '总 Token', '费用', '状态', 'UA', '时间'].map((h) => (
+              {['用户', '模型', 'Backend', '城市', '总 Token', '费用', '状态', 'UA', '时间', '分类'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -342,11 +412,11 @@ export default function AdminUsagePage() {
               Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
             ) : logs.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-4 py-10 text-center text-sm text-gray-400">当天暂无数据</td>
+                <td colSpan={10} className="px-4 py-10 text-center text-sm text-gray-400">当天暂无数据</td>
               </tr>
             ) : (
               logs.map((log) => {
-                const isError = log.status_code >= 400 || !!log.error_reason
+                const isError = log.status_code >= 400 || (!!log.error_reason && !isClassifyReason(log.error_reason))
                 return (
                 <tr key={log.id} className={`transition-colors ${isError ? 'bg-red-50/40 hover:bg-red-50/70' : 'hover:bg-gray-50/50'}`}>
                   <td className="px-4 py-3.5">
@@ -381,7 +451,7 @@ export default function AdminUsagePage() {
                           ? 'bg-green-50 text-green-700 ring-green-100'
                           : 'bg-red-50 text-red-700 ring-red-100'
                       }`}
-                      title={log.error_reason ? errorReasonLabel(log.error_reason) : undefined}
+                      title={log.error_reason && !isClassifyReason(log.error_reason) ? errorReasonLabel(log.error_reason) : undefined}
                     >
                       {log.status_code}
                     </span>
@@ -389,6 +459,9 @@ export default function AdminUsagePage() {
                   <td className="px-4 py-3.5 text-gray-600 text-xs font-mono">{log.ua}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
                     {formatTime(log.created_at)}
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <CategoryCell log={log} />
                   </td>
                 </tr>
               )})

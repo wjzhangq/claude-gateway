@@ -41,14 +41,14 @@ func RequestRole(req Request) Role {
 
 // Extract scans the messages and distills a compressed Signal. It deliberately
 // drops the system prompt, tool schemas, historical assistant replies, and file
-// bodies — only intent text, touched file basenames, matched repo, command verbs,
-// and tool names survive.
-func Extract(req Request, cfg Config) Signal {
+// bodies — only intent text, touched file basenames, command verbs, and tool
+// names survive. cfg is currently unused but kept so future rule tables can
+// influence extraction without a signature change.
+func Extract(req Request, _ Config) Signal {
 	var sig Signal
 	files := map[string]bool{}
 	tools := map[string]bool{}
 	cmds := map[string]bool{}
-	var repoHit string
 
 	// Intent: the last user text block.
 	sig.Intent = truncate(lastUserText(req), intentMaxRunes)
@@ -63,15 +63,12 @@ func Extract(req Request, cfg Config) Signal {
 				tools[b.Name] = true
 			}
 			args := parseToolInput(b.Input)
-			// File-bearing tools: collect basename + repo hit.
+			// File-bearing tools: collect basename.
 			for _, fp := range []string{args.FilePath, args.Path, args.NotebookPath} {
 				if fp == "" {
 					continue
 				}
 				files[path.Base(fp)] = true
-				if repoHit == "" {
-					repoHit = matchRepo(fp, cfg.Repos)
-				}
 			}
 			// Bash: first verb of the command.
 			if b.Name == "Bash" && args.Command != "" {
@@ -85,7 +82,6 @@ func Extract(req Request, cfg Config) Signal {
 	sig.Files = sortedKeys(files)
 	sig.Tools = sortedKeys(tools)
 	sig.Cmds = sortedKeys(cmds)
-	sig.Repo = repoHit
 	return sig
 }
 
@@ -143,24 +139,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
-}
-
-// matchRepo returns the first repo name that appears as a path segment of fp
-// (case-insensitive), or "" if none match. Matching on segments avoids false
-// positives from substrings inside a longer filename.
-func matchRepo(fp string, repos []string) string {
-	lower := strings.ToLower(fp)
-	segs := strings.FieldsFunc(lower, func(r rune) bool { return r == '/' || r == '\\' })
-	segSet := make(map[string]bool, len(segs))
-	for _, s := range segs {
-		segSet[s] = true
-	}
-	for _, repo := range repos {
-		if segSet[strings.ToLower(repo)] {
-			return repo
-		}
-	}
-	return ""
 }
 
 // firstVerb returns the first whitespace-delimited token of a command, stripped

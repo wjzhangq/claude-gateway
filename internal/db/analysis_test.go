@@ -56,7 +56,7 @@ func TestPendingEnqueue_OnlySuccessfulUserInitiated(t *testing.T) {
 		t.Errorf("pending_analysis rows = %d, want 1 (only the eligible one)", got)
 	}
 
-	pend, err := d.ListPending(500, 3)
+	pend, err := d.ListPending(500, 3, false)
 	if err != nil {
 		t.Fatalf("list pending: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestWriteBackResults_UpdateDeleteAndRetry(t *testing.T) {
 	if err := d.BatchInsertUsageLogs(logs); err != nil {
 		t.Fatalf("batch insert: %v", err)
 	}
-	pend, err := d.ListPending(500, 3)
+	pend, err := d.ListPending(500, 3, false)
 	if err != nil {
 		t.Fatalf("list pending: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestWriteBackResults_UpdateDeleteAndRetry(t *testing.T) {
 	}
 
 	// Idempotency: re-listing returns only the still-pending (retried) row.
-	pend2, err := d.ListPending(500, 3)
+	pend2, err := d.ListPending(500, 3, false)
 	if err != nil {
 		t.Fatalf("list pending 2: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestListPending_RespectsRetryCeiling(t *testing.T) {
 	if err := d.BatchInsertUsageLogs(logs); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	pend, _ := d.ListPending(500, 3)
+	pend, _ := d.ListPending(500, 3, false)
 	// Retry it up to the ceiling.
 	for i := 0; i < 3; i++ {
 		if _, err := d.WriteBackResults([]*AnalysisResult{{PendingID: pend[0].ID, UsageLogID: pend[0].UsageLogID, Retry: true}}); err != nil {
@@ -167,7 +167,7 @@ func TestListPending_RespectsRetryCeiling(t *testing.T) {
 		}
 	}
 	// retry_count is now 3; with maxRetry=3 it must be excluded.
-	got, err := d.ListPending(500, 3)
+	got, err := d.ListPending(500, 3, false)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

@@ -34,22 +34,22 @@ func TestClassify_TieLeavesDirectionEmpty(t *testing.T) {
 	}
 }
 
-func TestClassify_RepoHitSetsWorkRelated(t *testing.T) {
+// A code task always defers work_related to Haiku now that the internal-repo
+// rule is gone: rules decide task_type/direction but never work_related.
+func TestClassify_CodeTaskDefersWorkRelated(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Repos = []string{"modelgate"}
 	req := mustParse(t, `{"messages":[{"role":"user","content":"edit"}]}`)
 
-	sig := Signal{Files: []string{"auth.go"}, Repo: "modelgate"}
+	sig := Signal{Files: []string{"auth.go"}}
 	res := Classify(req, sig, cfg)
-	if res.WorkRelated == nil || !*res.WorkRelated {
-		t.Fatalf("WorkRelated = %v, want true", res.WorkRelated)
+	if res.TaskType != "code" || res.CodeDirection != "后端" {
+		t.Errorf("verdict = %+v, want code/后端", res)
 	}
-	if res.WorkReason == "" {
-		t.Errorf("WorkReason empty, want a reason mentioning the repo")
+	if res.WorkRelated != nil {
+		t.Errorf("WorkRelated = %v, want nil (deferred to Haiku)", res.WorkRelated)
 	}
-	// code + direction (后端) + work_related all decided ⇒ no Haiku needed.
-	if res.NeedHaiku {
-		t.Errorf("NeedHaiku = true, want false (fully decided)")
+	if !res.NeedHaiku {
+		t.Errorf("NeedHaiku = false, want true (work_related undetermined)")
 	}
 }
 
@@ -62,7 +62,7 @@ func TestClassify_DocTask(t *testing.T) {
 	if res.TaskType != "doc" {
 		t.Errorf("TaskType = %q, want doc", res.TaskType)
 	}
-	// doc task with no repo hit ⇒ work_related undetermined ⇒ needs Haiku.
+	// doc task with no work evidence ⇒ work_related undetermined ⇒ needs Haiku.
 	if !res.NeedHaiku {
 		t.Errorf("NeedHaiku = false, want true (work_related undetermined)")
 	}

@@ -59,38 +59,28 @@ type Config struct {
 // AnalyzeConfig configures the offline traffic abuse analysis pipeline (feature 004).
 // The analyzer runs as a side-channel batch job (cmd/check --analyze): it pulls
 // pending signals from the gateway, classifies each with rules first and Haiku only
-// as a fallback, then writes the verdict back. Haiku is reached through this gateway's
-// own /v1/messages so the call is load-balanced, billed, and logged like any other.
+// as a fallback, then writes the verdict back. Haiku is reached through HaikuBaseURL
+// when set (typically this gateway itself, so the call is load-balanced, billed, and
+// logged); when empty the analyzer picks an available backend node and calls it
+// directly with that backend's own credentials.
 type AnalyzeConfig struct {
-	Enabled      bool         `yaml:"enabled"`        // master switch; when false the proxy skips signal extraction/enqueue
-	HaikuBaseURL string       `yaml:"haiku_base_url"` // base URL for the Haiku fallback (defaults to this gateway itself)
-	HaikuAPIKey  string       `yaml:"haiku_api_key"`  // gateway key used by the analyzer for its Haiku calls
-	HaikuModel   string       `yaml:"haiku_model"`    // model name for the fallback classification
-	AnalyzerUA   string       `yaml:"analyzer_ua"`    // UA the analyzer sends; the proxy skips enqueue for requests carrying it (anti-recursion)
-	BatchSize    int          `yaml:"batch_size"`     // pending records pulled per batch
-	MaxRetry     int          `yaml:"max_retry"`      // Haiku fallback retry ceiling before a record is skipped
-	Score        ScoreConfig  `yaml:"score"`          // abuse-score weights and thresholds
-	OffHours     OffHoursConfig `yaml:"off_hours"`    // non-working-hours window (gateway local time)
-	Repos        []string     `yaml:"repos"`          // internal repository names; a hit implies work-related
+	Enabled      bool        `yaml:"enabled"`        // master switch; when false the proxy skips signal extraction/enqueue
+	HaikuBaseURL string      `yaml:"haiku_base_url"` // base URL for the Haiku fallback (empty = hit an available backend node directly)
+	HaikuAPIKey  string      `yaml:"haiku_api_key"`  // gateway key used by the analyzer for its Haiku calls (ignored when haiku_base_url is empty; the backend's own key is used)
+	HaikuModel   string      `yaml:"haiku_model"`    // model name for the fallback classification
+	AnalyzerUA   string      `yaml:"analyzer_ua"`    // UA the analyzer sends; the proxy skips enqueue for requests carrying it (anti-recursion)
+	BatchSize    int         `yaml:"batch_size"`     // pending records pulled per batch
+	MaxRetry     int         `yaml:"max_retry"`      // Haiku fallback retry ceiling before a record is skipped
+	Score        ScoreConfig `yaml:"score"`          // abuse-score weights and thresholds
 }
 
 // ScoreConfig holds the abuse-score weights and thresholds. score is read-time
 // computed, so changing these takes effect on the next report without a rewrite.
 type ScoreConfig struct {
 	NonWork       float64 `yaml:"non_work"`       // weight of the non-work-task ratio
-	OffHours      float64 `yaml:"off_hours"`      // weight of the off-hours-task ratio
 	Volume        float64 `yaml:"volume"`         // weight of the over-baseline volume term
 	BaselineTasks int     `yaml:"baseline_tasks"` // logical-task baseline; only volume above it counts
 	Threshold     float64 `yaml:"threshold"`      // score at/above which a user enters the review queue
-}
-
-// OffHoursConfig defines the non-working-hours window in the gateway's local
-// timezone. StartHour is inclusive, EndHour exclusive; the window wraps midnight
-// when StartHour > EndHour (e.g. 22 → 8). WeekendOff treats all of Sat/Sun as off-hours.
-type OffHoursConfig struct {
-	StartHour  int  `yaml:"start_hour"`  // inclusive, 0-23
-	EndHour    int  `yaml:"end_hour"`    // exclusive, 0-23
-	WeekendOff bool `yaml:"weekend_off"` // whether weekends count as off-hours
 }
 
 // IPGeoConfig configures per-request IP geolocation tagging.
@@ -296,24 +286,18 @@ func defaultConfig() *Config {
 		UsageSync:     5 * time.Minute,
 		DowngradedTTL: 60 * time.Second,
 		Analyze: AnalyzeConfig{
-			HaikuBaseURL: "http://127.0.0.1:8080",
-			HaikuModel:   "claude-haiku-4-5-20251001",
+			// HaikuBaseURL empty by default: the analyzer picks an available backend
+			// node and calls it directly with that backend's own key.
+			HaikuModel: "claude-haiku-4-5-20251001",
 			AnalyzerUA:   "claude-gateway-analyzer",
 			BatchSize:    500,
 			MaxRetry:     3,
 			Score: ScoreConfig{
-				NonWork:       0.6,
-				OffHours:      0.15,
-				Volume:        0.25,
+				NonWork:       0.7,
+				Volume:        0.3,
 				BaselineTasks: 60,
 				Threshold:     0.5,
 			},
-			OffHours: OffHoursConfig{
-				StartHour:  22,
-				EndHour:    8,
-				WeekendOff: true,
-			},
-			Repos: []string{"teamai-iap", "modelgate", "kb-core", "thinkpet", "localclaw", "openclaw"},
 		},
 	}
 }

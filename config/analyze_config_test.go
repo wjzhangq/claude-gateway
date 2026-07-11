@@ -39,8 +39,8 @@ func TestAnalyzeConfig_Defaults(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	a := cfg.Analyze
-	if a.HaikuBaseURL != "http://127.0.0.1:8080" {
-		t.Errorf("HaikuBaseURL = %q, want default", a.HaikuBaseURL)
+	if a.HaikuBaseURL != "" {
+		t.Errorf("HaikuBaseURL = %q, want empty default (use backend node directly)", a.HaikuBaseURL)
 	}
 	if a.HaikuModel != "claude-haiku-4-5-20251001" {
 		t.Errorf("HaikuModel = %q, want default", a.HaikuModel)
@@ -54,17 +54,11 @@ func TestAnalyzeConfig_Defaults(t *testing.T) {
 	if a.MaxRetry != 3 {
 		t.Errorf("MaxRetry = %d, want 3", a.MaxRetry)
 	}
-	if a.Score.NonWork != 0.6 || a.Score.OffHours != 0.15 || a.Score.Volume != 0.25 {
+	if a.Score.NonWork != 0.7 || a.Score.Volume != 0.3 {
 		t.Errorf("Score weights = %+v, want defaults", a.Score)
 	}
 	if a.Score.BaselineTasks != 60 || a.Score.Threshold != 0.5 {
 		t.Errorf("Score baseline/threshold = %+v, want defaults", a.Score)
-	}
-	if a.OffHours.StartHour != 22 || a.OffHours.EndHour != 8 || !a.OffHours.WeekendOff {
-		t.Errorf("OffHours = %+v, want defaults", a.OffHours)
-	}
-	if len(a.Repos) == 0 {
-		t.Errorf("Repos = %v, want non-empty default", a.Repos)
 	}
 	if a.Enabled {
 		t.Errorf("Enabled = true, want false by default")
@@ -84,15 +78,9 @@ analyze:
   max_retry: 5
   score:
     non_work: 0.7
-    off_hours: 0.2
     volume: 0.1
     baseline_tasks: 40
     threshold: 0.8
-  off_hours:
-    start_hour: 20
-    end_hour: 6
-    weekend_off: false
-  repos: ["repo-a", "repo-b"]
 `
 	p := writeTempConfig(t, body)
 	cfg, err := Load(p)
@@ -121,16 +109,10 @@ analyze:
 	if a.MaxRetry != 5 {
 		t.Errorf("MaxRetry = %d, want 5", a.MaxRetry)
 	}
-	if a.Score.NonWork != 0.7 || a.Score.OffHours != 0.2 || a.Score.Volume != 0.1 {
+	if a.Score.NonWork != 0.7 || a.Score.Volume != 0.1 {
 		t.Errorf("Score weights = %+v", a.Score)
 	}
 	if a.Score.BaselineTasks != 40 || a.Score.Threshold != 0.8 {
 		t.Errorf("Score baseline/threshold = %+v", a.Score)
-	}
-	if a.OffHours.StartHour != 20 || a.OffHours.EndHour != 6 || a.OffHours.WeekendOff {
-		t.Errorf("OffHours = %+v", a.OffHours)
-	}
-	if len(a.Repos) != 2 || a.Repos[0] != "repo-a" || a.Repos[1] != "repo-b" {
-		t.Errorf("Repos = %v", a.Repos)
 	}
 }

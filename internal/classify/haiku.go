@@ -60,12 +60,18 @@ type haikuReqMsg struct {
 	Content string `json:"content"`
 }
 
-// haikuResp is the subset of the response we read: the first text content block.
+// haikuResp is the subset of the response we read: the text content blocks plus
+// the usage block so the analyzer can account for the tokens its Haiku fallback
+// spends (these calls bypass usage_logs when routed straight to a backend node).
 type haikuResp struct {
 	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
+	Usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	} `json:"usage"`
 }
 
 // haikuVerdict is the JSON we ask Haiku to return.
@@ -113,7 +119,10 @@ func (c *HaikuClient) Fill(ctx context.Context, sig Signal, res *Result) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Send both auth headers: the gateway reads Authorization: Bearer, while a raw
+	// backend node (used when haiku_base_url is empty) expects Anthropic's x-api-key.
 	req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	req.Header.Set("x-api-key", c.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 	if c.UA != "" {
 		req.Header.Set("User-Agent", c.UA)
@@ -146,6 +155,8 @@ func (c *HaikuClient) Fill(ctx context.Context, sig Signal, res *Result) error {
 
 	mergeVerdict(res, v)
 	res.FromHaiku = true
+	res.HaikuInTok = hr.Usage.InputTokens
+	res.HaikuOutTok = hr.Usage.OutputTokens
 	return nil
 }
 

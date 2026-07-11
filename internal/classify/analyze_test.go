@@ -24,29 +24,31 @@ func stubHaiku(t *testing.T, status int, respBody string) (*HaikuClient, *int32)
 	return hc, &calls
 }
 
-func TestAnalyze_RuleHitNoHaikuCall(t *testing.T) {
+func TestAnalyze_RulesDecideTypeHaikuFillsWork(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Repos = []string{"modelgate"}
-	// Edits a .go file inside an internal repo → code/后端/work_related all decided.
+	// Editing a .go file lets rules decide code/后端, but work_related is always
+	// deferred to Haiku now (no internal-repo rule), so Haiku is still consulted.
 	body := `{"messages":[
 		{"role":"user","content":"fix auth"},
-		{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/x/modelgate/auth.go"}}]}
+		{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/x/svc/auth.go"}}]}
 	]}`
 	req := mustParse(t, body)
 
-	hc, calls := stubHaiku(t, 200, `{"content":[{"type":"text","text":"{}"}]}`)
+	// Haiku fills only work_related; it must not override the rule's code/后端 hint.
+	resp := `{"content":[{"type":"text","text":"{\"work_related\":true,\"work_reason\":\"修复服务鉴权\"}"}]}`
+	hc, calls := stubHaiku(t, 200, resp)
 	res, err := Analyze(context.Background(), req, cfg, hc)
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
-	if *calls != 0 {
-		t.Errorf("Haiku calls = %d, want 0 (rules fully decided)", *calls)
-	}
-	if res.FromHaiku {
-		t.Errorf("FromHaiku = true, want false")
+	if *calls != 1 {
+		t.Errorf("Haiku calls = %d, want 1 (work_related deferred to Haiku)", *calls)
 	}
 	if res.TaskType != "code" || res.CodeDirection != "后端" {
-		t.Errorf("verdict = %+v, want code/后端", res)
+		t.Errorf("verdict = %+v, want code/后端 (rule hint preserved)", res)
+	}
+	if res.WorkRelated == nil || !*res.WorkRelated {
+		t.Errorf("WorkRelated = %v, want true (from Haiku)", res.WorkRelated)
 	}
 }
 

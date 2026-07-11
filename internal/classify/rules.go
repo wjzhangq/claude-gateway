@@ -3,8 +3,7 @@ package classify
 import "github.com/wjzhangq/claude-gateway/config"
 
 // DefaultConfig returns the built-in rule tables: the suffix → code-direction
-// map, the documentation-suffix set, and an empty repo whitelist (callers fill
-// Repos from config). Scoring/off-hours default to the same values as
+// map and the documentation-suffix set. Scoring defaults to the same values as
 // config.defaultConfig so a zero-config classify.Config is still usable in tests.
 func DefaultConfig() Config {
 	return Config{
@@ -30,11 +29,9 @@ func DefaultConfig() Config {
 			".md": true, ".markdown": true, ".txt": true, ".rst": true,
 			".adoc": true, ".doc": true, ".docx": true, ".pdf": true,
 		},
-		OffHours: OffHoursCfg{StartHour: 22, EndHour: 8, WeekendOff: true},
 		Score: ScoreWeights{
-			NonWork:       0.6,
-			OffHours:      0.15,
-			Volume:        0.25,
+			NonWork:       0.7,
+			Volume:        0.3,
 			BaselineTasks: 60,
 			Threshold:     0.5,
 		},
@@ -42,20 +39,12 @@ func DefaultConfig() Config {
 }
 
 // FromAnalyzeConfig builds a classify.Config from the gateway's AnalyzeConfig.
-// The suffix/doc tables come from DefaultConfig (not configurable); the repo
-// whitelist, scoring weights, and off-hours window come from config so an
-// operator can tune them without a rebuild.
+// The suffix/doc tables come from DefaultConfig (not configurable); the scoring
+// weights come from config so an operator can tune them without a rebuild.
 func FromAnalyzeConfig(a config.AnalyzeConfig) Config {
 	c := DefaultConfig()
-	c.Repos = a.Repos
-	c.OffHours = OffHoursCfg{
-		StartHour:  a.OffHours.StartHour,
-		EndHour:    a.OffHours.EndHour,
-		WeekendOff: a.OffHours.WeekendOff,
-	}
 	c.Score = ScoreWeights{
 		NonWork:       a.Score.NonWork,
-		OffHours:      a.Score.OffHours,
 		Volume:        a.Score.Volume,
 		BaselineTasks: a.Score.BaselineTasks,
 		Threshold:     a.Score.Threshold,

@@ -6,7 +6,7 @@ import "time"
 const maxNonWorkExamples = 10
 
 // Aggregate folds a user's already-tagged records (one time window) into a Rollup.
-// It counts physical rows vs logical tasks, work/non-work, off-hours, and samples
+// It counts physical rows vs logical tasks, work/non-work, and samples
 // non-work reasons. Only records with a non-empty task_type count as logical
 // tasks; work/non-work counts only consider work_related ∈ {0,1} (‑1 = undetermined
 // is ignored, invariant D).
@@ -41,9 +41,6 @@ func Aggregate(recs []Record, windowStart time.Time, cfg Config) Rollup {
 				r.NonWorkExample = append(r.NonWorkExample, rec.WorkReason)
 			}
 		}
-		if offHours(rec.CreatedAt, cfg.OffHours) {
-			r.OffHoursTasks++
-		}
 	}
 	r.AbuseScore = Score(r, cfg.Score)
 	return r
@@ -61,9 +58,8 @@ func userIDOf(recs []Record) int64 {
 // Score computes the 0..1 abuse score from a Rollup:
 //
 //	nonWork  = NonWorkTasks / LogicalTasks
-//	offHours = OffHoursTasks / LogicalTasks
 //	vol      = clamp((LogicalTasks - Baseline) / Baseline, 0, 1)   // only above baseline
-//	score    = clamp(w.NonWork*nonWork + w.OffHours*offHours + w.Volume*vol, 0, 1)
+//	score    = clamp(w.NonWork*nonWork + w.Volume*vol, 0, 1)
 //
 // LogicalTasks == 0 yields 0 (nothing to judge).
 func Score(r Rollup, w ScoreWeights) float64 {
@@ -72,39 +68,17 @@ func Score(r Rollup, w ScoreWeights) float64 {
 	}
 	lt := float64(r.LogicalTasks)
 	nonWork := float64(r.NonWorkTasks) / lt
-	offH := float64(r.OffHoursTasks) / lt
 	vol := 0.0
 	if w.BaselineTasks > 0 {
 		vol = clamp((lt-float64(w.BaselineTasks))/float64(w.BaselineTasks), 0, 1)
 	}
-	return clamp(w.NonWork*nonWork+w.OffHours*offH+w.Volume*vol, 0, 1)
+	return clamp(w.NonWork*nonWork+w.Volume*vol, 0, 1)
 }
 
 // NeedsReview reports whether a Rollup's score reaches the review threshold. This
 // only flags for human review — the system never auto-punishes (FR-021).
 func NeedsReview(r Rollup, w ScoreWeights) bool {
 	return Score(r, w) >= w.Threshold
-}
-
-// offHours reports whether t (in the gateway's local timezone) falls in the
-// non-working window. The hour window is [StartHour, EndHour); when StartHour >
-// EndHour it wraps midnight (e.g. 22 → 8 covers 22,23,0..7). Weekends are entirely
-// off-hours when WeekendOff is set.
-func offHours(t time.Time, cfg OffHoursCfg) bool {
-	if cfg.WeekendOff {
-		if wd := t.Weekday(); wd == time.Saturday || wd == time.Sunday {
-			return true
-		}
-	}
-	h := t.Hour()
-	if cfg.StartHour == cfg.EndHour {
-		return false // empty window
-	}
-	if cfg.StartHour < cfg.EndHour {
-		return h >= cfg.StartHour && h < cfg.EndHour
-	}
-	// Wrapping window: off if at/after start OR before end.
-	return h >= cfg.StartHour || h < cfg.EndHour
 }
 
 func clamp(v, lo, hi float64) float64 {

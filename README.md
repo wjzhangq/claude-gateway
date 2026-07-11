@@ -14,6 +14,7 @@
 - **USD 配额控制**：按用户每日 USD 花费限额，分 backend 和 AWS 独立控制
 - **使用统计**：记录每次请求的 Token 用量和费用，支持按用户/模型/日期查询
 - **IP 归属记录**：记录每次请求的客户端 IP、城市和是否公司总部（基于 CIDR 判定），城市通过本地缓存 + `check --ip2region` 异步解析
+- **流量离线滥用分析**：对每条成功请求离线打标（任务类型 / 代码方向 / 是否工作相关），规则优先、Haiku 兜底，按人聚合出滥用评分与人工复核队列；分析走旁路，不影响转发链路，且原始请求正文不落库
 - **热重载**：发送 SIGHUP 信号即可重载配置，自动刷写数据后更新后端和规则
 - **审批流程**：用户提交模型使用申请，管理员审批
 - **DB Explorer**：管理员在线执行只读 SQL 查询，实时查看数据库内容
@@ -135,9 +136,7 @@ aws:
 ip_geo:                        # 请求 IP → 城市 / 是否总部记录（backend + public 渠道）
   cache_file: data/ip2region.json  # IP → 城市本地缓存文件，服务器独占读写
   hq_cidrs:                    # 命中任一网段的 IP 标记为公司总部（is_hq=true）
-    - 111.205.43.224/27
-    - 106.38.1.112/28
-    - 111.198.161.0/24         # VPN 网段同样算总部
+    - 111.205.0.0/27
 ```
 
 ### send_code_url 接口规范
@@ -337,6 +336,49 @@ ip_geo:
 
 ---
 
+## 流量离线滥用分析
+
+对每条**成功**转发的 Claude Code 请求离线打标（任务类型 / 代码方向 / 是否工作相关），并按人聚合出滥用评分与人工复核队列。**只识别，不自动处罚。**
+
+设计要点：
+
+- **不阻塞热路径**：信号抽取在响应回写客户端**之后**、代理协程内完成，只处理内存中已有的请求正文，转发链路 P99 延迟无可测量增加。
+- **原始正文不落库**：持久层只存**压缩信号**（意图截断 ≤300 字 + 文件名 / 命中仓库 / 命令首动词 / 工具名），绝不含 system prompt、工具 schema、历史回复或文件正文；分析回写后即删信号。
+- **规则优先、Haiku 兜底**：后缀投票定代码方向、命中内部仓库判工作相关；规则拿不准才调用 Haiku（经本网关自身 `/v1/messages`，被计费与记账）。工具续跑 / 子代理轮不计逻辑任务、不调模型。
+- **只分析成功请求**：仅 `status_code < 400` 且为 `user_initiated` 的请求入待分析队列。
+
+```yaml
+analyze:
+  enabled: true
+  haiku_base_url: "http://127.0.0.1:8080"   # 默认指向本网关自身
+  haiku_api_key: "<内部分析专用网关 key>"     # 留空则纯规则模式，不做 Haiku 兜底
+  haiku_model: "claude-haiku-4-5-20251001"
+  analyzer_ua: "claude-gateway-analyzer"      # 代理据此识别分析器自身请求并跳过入队（防自递归）
+  batch_size: 500
+  max_retry: 3
+  score:                                       # 滥用评分权重（读时计算，改后即时生效）
+    non_work: 0.6
+    off_hours: 0.15
+    volume: 0.25
+    baseline_tasks: 60
+    threshold: 0.5                             # 评分 ≥ 阈值进复核队列
+```
+
+工作机制：
+
+1. **采集**：代理侧对成功的 `user_initiated` 请求抽取压缩信号，与 `usage_logs` 行在**同一事务**内写入 `pending_analysis` 队列（失败请求照常记账但不入队）。
+2. **分析**：运行 `check --analyze`，从网关分批拉取待分析队列，逐条规则分类（拿不准调 Haiku），结论回写 `usage_logs`（新增 `task_type` / `work_related` / `code_direction` 三列，理由复用 `error_reason`），回写成功即删除队列行。单条 Haiku 失败只标记重试、不中断整批。
+3. **报表**：`GET /admin/api/insight/abuse?window=day|week|month` 返回每人画像 + 滥用评分 + 复核队列（评分 ≥ 阈值，附非工作原因抽样）。
+
+```bash
+# 消费待分析队列并回写结论（网关需在运行中）
+./bin/check --analyze
+```
+
+`enabled: false`（默认）时代理侧完全跳过信号抽取与入队，零开销。与 `--ip2region` 一样，`check --analyze` 只通过 `session_secret` 鉴权的 HTTP 管理接口与网关交互，不直接开库，避免争抢 SQLite 写锁。建议配合 cron 定期执行。
+
+---
+
 ## 热重载
 
 支持通过 `SIGHUP` 信号触发配置热重载，无需重启服务。
@@ -366,6 +408,7 @@ kill -HUP <pid>
 - `lobster_auto_forward` — 龙虾自动转发开关
 - `lobster_forward_whitelist` — 龙虾转发白名单
 - `groups` — 用户分组
+- `analyze` — 离线滥用分析配置（评分权重 / 阈值 / 时间窗 / 内部仓库 / 重试上限）
 
 **不可热更新的配置项（需重启）：**
 

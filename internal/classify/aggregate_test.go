@@ -69,38 +69,15 @@ func TestAggregate_NonWorkExampleCap(t *testing.T) {
 	}
 }
 
-func TestOffHours(t *testing.T) {
-	cfg := OffHoursCfg{StartHour: 22, EndHour: 8, WeekendOff: true}
-	cases := []struct {
-		name string
-		t    time.Time
-		want bool
-	}{
-		{"weekday 23:00 off", time.Date(2026, 7, 8, 23, 0, 0, 0, time.Local), true},   // Wed night
-		{"weekday 03:00 off", time.Date(2026, 7, 8, 3, 0, 0, 0, time.Local), true},    // Wed early
-		{"weekday 12:00 on", time.Date(2026, 7, 8, 12, 0, 0, 0, time.Local), false},   // Wed noon
-		{"weekday 08:00 on (exclusive end)", time.Date(2026, 7, 8, 8, 0, 0, 0, time.Local), false},
-		{"weekday 22:00 off (inclusive start)", time.Date(2026, 7, 8, 22, 0, 0, 0, time.Local), true},
-		{"saturday noon off", time.Date(2026, 7, 11, 12, 0, 0, 0, time.Local), true}, // Saturday
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := offHours(tc.t, cfg); got != tc.want {
-				t.Errorf("offHours(%v) = %v, want %v", tc.t, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestScoreAndNeedsReview(t *testing.T) {
-	w := ScoreWeights{NonWork: 0.6, OffHours: 0.15, Volume: 0.25, BaselineTasks: 60, Threshold: 0.5}
+	w := ScoreWeights{NonWork: 0.7, Volume: 0.3, BaselineTasks: 60, Threshold: 0.5}
 
 	// Empty → 0.
 	if s := Score(Rollup{LogicalTasks: 0}, w); s != 0 {
 		t.Errorf("Score(empty) = %v, want 0", s)
 	}
 
-	// All non-work, at baseline volume → nonWork term dominates: 0.6*1 = 0.6 ≥ 0.5.
+	// All non-work, at baseline volume → nonWork term dominates: 0.7*1 = 0.7 ≥ 0.5.
 	high := Rollup{LogicalTasks: 60, NonWorkTasks: 60}
 	if s := Score(high, w); s < 0.5 {
 		t.Errorf("Score(all non-work) = %v, want >= 0.5", s)
@@ -117,7 +94,7 @@ func TestScoreAndNeedsReview(t *testing.T) {
 
 	// Volume clamps to 1 even far above baseline.
 	huge := Rollup{LogicalTasks: 10000, NonWorkTasks: 0}
-	if s := Score(huge, w); s > 0.25+1e-9 {
-		t.Errorf("Score(volume only) = %v, want <= 0.25 (volume weight)", s)
+	if s := Score(huge, w); s > 0.3+1e-9 {
+		t.Errorf("Score(volume only) = %v, want <= 0.3 (volume weight)", s)
 	}
 }

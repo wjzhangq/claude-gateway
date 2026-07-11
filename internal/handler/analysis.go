@@ -37,7 +37,10 @@ func (h *AnalysisHandler) SetMaxRetry(n int) {
 // Returns not-yet-analyzed records whose retry_count is under the ceiling.
 func (h *AnalysisHandler) GetPending(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "500"))
-	records, err := h.db.ListPending(limit, h.maxRetry)
+	// order=recent returns the newest records first; anything else keeps the
+	// default oldest-first queue order.
+	newestFirst := c.Query("order") == "recent"
+	records, err := h.db.ListPending(limit, h.maxRetry, newestFirst)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

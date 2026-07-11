@@ -25,7 +25,6 @@ const (
 type Signal struct {
 	Intent string   `json:"intent"`         // last user text, truncated to 300 runes
 	Files  []string `json:"files"`          // basenames touched via tool_use, deduped + sorted
-	Repo   string   `json:"repo,omitempty"` // matched internal repository name (empty = no hit)
 	Cmds   []string `json:"cmds,omitempty"` // first verb of each Bash command, deduped
 	Tools  []string `json:"tools"`          // tool_use names, deduped + sorted
 }
@@ -43,6 +42,8 @@ type Result struct {
 	DocActivity   string   `json:"doc_activity"`   // only for doc → error_reason (doc: segment)
 	NeedHaiku     bool     `json:"-"`              // internal: rules could not fully decide
 	FromHaiku     bool     `json:"from_haiku"`     // runtime: Haiku filled some field (for logging)
+	HaikuInTok    int      `json:"-"`              // runtime: Haiku call input tokens (0 if no call)
+	HaikuOutTok   int      `json:"-"`              // runtime: Haiku call output tokens (0 if no call)
 }
 
 // Record is one already-tagged usage_logs row, read back for aggregation.
@@ -68,7 +69,6 @@ type Rollup struct {
 	ToolCount      map[string]int `json:"tool_count"`      //
 	WorkTasks      int            `json:"work_tasks"`      // work_related = 1
 	NonWorkTasks   int            `json:"non_work_tasks"`  // work_related = 0
-	OffHoursTasks  int            `json:"off_hours_tasks"` // logical tasks created in the off-hours window
 	NonWorkExample []string       `json:"non_work_examples"`
 	AbuseScore     float64        `json:"abuse_score"`
 }
@@ -77,26 +77,16 @@ type Rollup struct {
 // classify package stays free of a config import.
 type ScoreWeights struct {
 	NonWork       float64
-	OffHours      float64
 	Volume        float64
 	BaselineTasks int
 	Threshold     float64
 }
 
-// OffHoursCfg mirrors config.OffHoursConfig for the same reason.
-type OffHoursCfg struct {
-	StartHour  int  // inclusive 0-23
-	EndHour    int  // exclusive 0-23
-	WeekendOff bool //
-}
-
-// Config bundles everything the pure classifier needs: the internal repo
-// whitelist, the suffix → code-direction map, the set of documentation suffixes,
-// plus the scoring/off-hours parameters used by aggregation.
+// Config bundles everything the pure classifier needs: the suffix → code-direction
+// map, the set of documentation suffixes, plus the scoring parameters used by
+// aggregation.
 type Config struct {
-	Repos       []string          // internal repository names (a path hit ⇒ work-related)
 	DirBySuffix map[string]string // file suffix (".go") → code direction ("后端")
 	DocSuffixes map[string]bool   // suffixes that mark a documentation task
-	OffHours    OffHoursCfg       //
 	Score       ScoreWeights      //
 }

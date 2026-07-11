@@ -1,7 +1,6 @@
 package classify
 
 import (
-	"fmt"
 	"path"
 	"strings"
 )
@@ -11,8 +10,7 @@ import (
 //
 //   - code_direction: majority vote of touched file suffixes; a tie leaves it empty.
 //   - task_type: code if any code suffix voted; doc if only doc suffixes; else "".
-//   - work_related: true if the request hit an internal repo (with a reason);
-//     otherwise left nil (undetermined) for Haiku.
+//   - work_related: always left nil (undetermined) for Haiku to decide.
 //
 // The verdict's Role and ToolUsed are copied straight from the inputs.
 func Classify(req Request, sig Signal, cfg Config) Result {
@@ -57,13 +55,7 @@ func classifyFromSignal(sig Signal, role Role, cfg Config) Result {
 		res.TaskType = "" // no file evidence — defer to Haiku
 	}
 
-	// Internal-repo hit ⇒ work-related, with a human-readable reason.
-	if sig.Repo != "" {
-		t := true
-		res.WorkRelated = &t
-		res.WorkReason = fmt.Sprintf("命中内部仓库 %s", sig.Repo)
-	}
-
+	// work_related is always deferred to Haiku: rules no longer decide it.
 	res.NeedHaiku = needHaiku(res)
 	return res
 }

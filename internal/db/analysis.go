@@ -22,19 +22,27 @@ type PendingRecord struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// ListPending returns up to limit not-yet-analyzed records ordered by id, skipping
-// those that already exhausted their retry budget (retry_count >= maxRetry). The
-// queue table itself is the incremental watermark: a successfully written-back row
-// is deleted, so repeated runs only ever see new work (SC-005).
-func (d *DB) ListPending(limit, maxRetry int) ([]*PendingRecord, error) {
+// ListPending returns up to limit not-yet-analyzed records, skipping those that
+// already exhausted their retry budget (retry_count >= maxRetry). newestFirst
+// controls the scan order: false (default) returns the oldest queued rows first
+// (ORDER BY id ASC) so a full drain processes the backlog in arrival order; true
+// returns the most recent rows first (ORDER BY id DESC), used by --analyze --recent
+// to sample just the latest batch. The queue table itself is the incremental
+// watermark: a successfully written-back row is deleted, so repeated full-drain
+// runs only ever see new work (SC-005).
+func (d *DB) ListPending(limit, maxRetry int, newestFirst bool) ([]*PendingRecord, error) {
 	if limit <= 0 {
 		limit = 500
+	}
+	order := "ORDER BY id ASC"
+	if newestFirst {
+		order = "ORDER BY id DESC"
 	}
 	rows, err := d.Query(
 		`SELECT id, usage_log_id, user_id, signal, retry_count, created_at
 		 FROM pending_analysis
 		 WHERE retry_count < ?
-		 ORDER BY id
+		 `+order+`
 		 LIMIT ?`, maxRetry, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list pending: %w", err)

@@ -53,7 +53,6 @@ func TestRequestRole(t *testing.T) {
 
 func TestExtract(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Repos = []string{"modelgate", "kb-core"}
 
 	body := `{"messages":[
 		{"role":"user","content":"please refactor the auth flow"},
@@ -73,9 +72,6 @@ func TestExtract(t *testing.T) {
 	wantFiles := []string{"README.md", "auth.go"}
 	if !reflect.DeepEqual(sig.Files, wantFiles) {
 		t.Errorf("Files = %v, want %v", sig.Files, wantFiles)
-	}
-	if sig.Repo != "modelgate" {
-		t.Errorf("Repo = %q, want modelgate", sig.Repo)
 	}
 	// first verb of the bash command, path stripped
 	wantCmds := []string{"go"}
