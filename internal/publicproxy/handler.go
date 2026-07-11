@@ -13,6 +13,7 @@ import (
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
@@ -27,6 +28,7 @@ type Handler struct {
 	mu        sync.RWMutex
 	cfg       *config.Config
 	client    *http.Client
+	ipGeo     *ipgeo.Store
 }
 
 // NewHandler creates a new public proxy handler.
@@ -40,6 +42,10 @@ func NewHandler(collector *stats.Collector, keyStore *auth.KeyStore, cfg *config
 		},
 	}
 }
+
+// SetIPGeo attaches an IP → city/HQ store used to tag usage records. Nil-safe:
+// when unset, usage records carry empty IP/city and is_hq=false.
+func (h *Handler) SetIPGeo(s *ipgeo.Store) { h.ipGeo = s }
 
 // UpdateConfig hot-swaps the config (used on SIGHUP reload).
 func (h *Handler) UpdateConfig(cfg *config.Config) {
@@ -217,7 +223,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 		totalOut = outCounts.Estimate(tokenest.Default)
 	}
 
-	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, totalIn, totalOut, time.Since(start))
+	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, totalIn, totalOut, time.Since(start), c.ClientIP())
 }
 
 // consumeSSELines parses complete newline-terminated SSE lines from data,
@@ -270,7 +276,7 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *
 	if out == 0 {
 		out = tokenest.EstimateString(tokenest.ExtractResponseText(respBody), tokenest.Default)
 	}
-	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, in, out, time.Since(start))
+	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, in, out, time.Since(start), c.ClientIP())
 }
 
 // parseBodyTokens extracts token counts from a non-streaming JSON response.
@@ -307,7 +313,7 @@ func costUSD(provider *config.PublicProvider, model string, inputTokens, outputT
 }
 
 func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config.PublicProvider,
-	model string, statusCode, inputTokens, outputTokens int, latency time.Duration) {
+	model string, statusCode, inputTokens, outputTokens int, latency time.Duration, clientIP string) {
 
 	if h.collector == nil || keyInfo == nil {
 		return
@@ -319,6 +325,12 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config
 
 	total := inputTokens + outputTokens
 	cost := costUSD(provider, model, inputTokens, outputTokens)
+
+	var city string
+	var isHQ bool
+	if h.ipGeo != nil {
+		city, isHQ = h.ipGeo.Observe(clientIP)
+	}
 
 	h.collector.Emit(stats.Record{
 		UserID:       info.UserID,
@@ -333,6 +345,9 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config
 		CostUSD:      cost,
 		StatusCode:   statusCode,
 		Latency:      latency,
+		IP:           clientIP,
+		City:         city,
+		IsHQ:         isHQ,
 	})
 
 	// Accumulate daily cost for per-user quota tracking

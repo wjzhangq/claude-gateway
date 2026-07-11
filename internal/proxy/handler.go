@@ -18,6 +18,7 @@ import (
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/sanitize"
@@ -34,6 +35,7 @@ type Handler struct {
 	mu                sync.RWMutex
 	modelReplacements map[string]string
 	fallbackClient    *http.Client
+	ipGeo             *ipgeo.Store
 }
 
 func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.KeyStore, cfg *config.Config, modelReplacements map[string]string) *Handler {
@@ -46,6 +48,10 @@ func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.Key
 		fallbackClient:    &http.Client{Timeout: 5 * time.Minute},
 	}
 }
+
+// SetIPGeo attaches an IP → city/HQ store used to tag usage records. Nil-safe:
+// when unset, usage records carry empty IP/city and is_hq=false.
+func (h *Handler) SetIPGeo(s *ipgeo.Store) { h.ipGeo = s }
 
 // detectOpenClaw checks if the request is from OpenClaw.
 // Criteria: User-Agent contains "OpenAI/JS" AND first 320 bytes of body
@@ -860,7 +866,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 
 	latency := time.Since(start)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP())
 
 	if statusCode >= 400 || rawZero {
 		msg := "backend zero tokens"
@@ -897,7 +903,7 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 		out = tokenest.EstimateString(tokenest.ExtractResponseText(respBody), tokenest.Default)
 	}
 	latency := time.Since(start)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"))
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP())
 
 	if statusCode >= 400 || rawZero {
 		msg := "backend zero tokens"
@@ -977,7 +983,7 @@ func resolvePricing(model string, pricing map[string]config.ModelPricingEntry) c
 	return config.ModelPricingEntry{Input: 3.0, Output: 15.0}
 }
 
-func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isHermes, isDowngraded bool, userAgent string) {
+func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isHermes, isDowngraded bool, userAgent, clientIP string) {
 	if h.collector == nil || keyInfo == nil {
 		return
 	}
@@ -997,6 +1003,13 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	ua := parseUA(userAgent, isOpenClaw, isHermes)
 	// For DB is_openclaw field: both openclaw and hermes count as lobster traffic
 	isLobster := isOpenClaw || isHermes
+	// Tag with geolocation: Observe counts the request and returns the known
+	// city (empty until check --ip2region resolves it) plus HQ classification.
+	var city string
+	var isHQ bool
+	if h.ipGeo != nil {
+		city, isHQ = h.ipGeo.Observe(clientIP)
+	}
 	h.collector.Emit(stats.Record{
 		UserID:       info.UserID,
 		GroupID:      info.GroupID,
@@ -1014,6 +1027,9 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 		IsDowngraded: isDowngraded,
 		UA:           ua,
 		ErrorReason:  reasonCode(ClassifyError(statusCode, nil), statusCode, false),
+		IP:           clientIP,
+		City:         city,
+		IsHQ:         isHQ,
 	})
 
 	// Accumulate backend daily cost for per-user quota tracking

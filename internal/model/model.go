@@ -57,6 +57,9 @@ type UsageLog struct {
 	IsDowngraded bool      `db:"is_downgraded" json:"is_downgraded"`
 	UA           string    `db:"ua"            json:"ua"`
 	ErrorReason  string    `db:"error_reason"  json:"error_reason"`
+	IP           string    `db:"ip"            json:"ip"`
+	City         string    `db:"city"          json:"city"`
+	IsHQ         bool      `db:"is_hq"         json:"is_hq"`
 	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
 }
 

@@ -13,6 +13,7 @@
 - **API Key 管理**：用户自助创建和管理 API Key，支持按渠道（backend/aws）分类
 - **USD 配额控制**：按用户每日 USD 花费限额，分 backend 和 AWS 独立控制
 - **使用统计**：记录每次请求的 Token 用量和费用，支持按用户/模型/日期查询
+- **IP 归属记录**：记录每次请求的客户端 IP、城市和是否公司总部（基于 CIDR 判定），城市通过本地缓存 + `check --ip2region` 异步解析
 - **热重载**：发送 SIGHUP 信号即可重载配置，自动刷写数据后更新后端和规则
 - **审批流程**：用户提交模型使用申请，管理员审批
 - **DB Explorer**：管理员在线执行只读 SQL 查询，实时查看数据库内容
@@ -130,6 +131,13 @@ aws:
   region: us-east-1
   access_key_id: ""
   secret_access_key: ""
+
+ip_geo:                        # 请求 IP → 城市 / 是否总部记录（backend + public 渠道）
+  cache_file: data/ip2region.json  # IP → 城市本地缓存文件，服务器独占读写
+  hq_cidrs:                    # 命中任一网段的 IP 标记为公司总部（is_hq=true）
+    - 111.205.43.224/27
+    - 106.38.1.112/28
+    - 111.198.161.0/24         # VPN 网段同样算总部
 ```
 
 ### send_code_url 接口规范
@@ -299,6 +307,33 @@ backends:
 
 - 启动时健康检查默认关闭，设置 `validate_backends: true` 后启用（对每个后端调用 `GET /v1/models` 验证可用性，失败的后端永久禁用，重启恢复）
 - 运行时连续 5 次请求失败后临时禁用，30 秒后自动恢复
+
+---
+
+## 请求 IP / 城市 / 是否总部记录
+
+backend 和 public 渠道的每次请求都会记录来源 IP、所属城市和是否公司总部（`usage_logs` 表的 `ip` / `city` / `is_hq` 字段）。AWS 渠道不在记录范围内。
+
+```yaml
+ip_geo:
+  cache_file: data/ip2region.json  # IP → 城市本地缓存文件
+  hq_cidrs:                        # 命中任一网段即标记 is_hq=true
+    - 111.205.43.224/27
+    - 111.198.161.0/24             # VPN 网段也算总部
+```
+
+工作机制：
+
+1. **是否总部**：请求 IP 落在 `hq_cidrs` 任一网段内则 `is_hq=true`，无需外部查询，实时判定。
+2. **城市**：网关维护一个进程内 IP → 城市缓存（周期性落盘到 `cache_file`），命中即回填城市。首次见到的 IP 城市为空，等待离线补全；内网 / 环回 / 保留地址不记录城市。
+3. **补全城市**：运行 `check --ip2region`，从网关拉取所有「城市为空」的公网 IP，逐个通过 [ip9.com.cn](https://ip9.com.cn) 查询城市（免 key），再回传给网关更新缓存。下次同 IP 的请求记录即可带上城市。
+
+```bash
+# 补全尚未解析城市的 IP（网关需在运行中）
+./bin/check --ip2region
+```
+
+建议配合 cron 定期执行（如每小时一次），让新出现的 IP 逐步补全城市。缓存文件由网关进程独占读写，`check` 只通过 HTTP 管理接口（`session_secret` 鉴权）与网关交互，避免多进程并发写文件。
 
 ---
 

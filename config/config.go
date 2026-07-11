@@ -52,6 +52,16 @@ type Config struct {
 	BackendModelPricing     map[string]ModelPricingEntry `yaml:"backend_model_pricing"`  // glob pattern -> pricing for backend channel
 	ValidateBackends        bool                         `yaml:"validate_backends"`      // check backend /v1/models on startup (default: false)
 	RankingHiddenItcodes    []string                     `yaml:"ranking_hidden_itcodes"` // itcodes hidden from ranking / user-daily lists (still counted in totals)
+	IPGeo                   IPGeoConfig                  `yaml:"ip_geo"`                 // per-request IP → city / HQ tagging
+}
+
+// IPGeoConfig configures per-request IP geolocation tagging.
+// CacheFile is where the in-memory IP → city cache is persisted (JSON).
+// HQCIDRs lists the company IP ranges (including VPN) that count as headquarters;
+// any request from an IP inside one of these ranges is tagged is_hq=true.
+type IPGeoConfig struct {
+	CacheFile string   `yaml:"cache_file"` // path to the IP → city cache file (empty = disabled persistence)
+	HQCIDRs   []string `yaml:"hq_cidrs"`   // CIDR ranges considered headquarters (incl. VPN)
 }
 
 // PublicProvider represents a third-party model provider (e.g. Kimi, MiniMax)

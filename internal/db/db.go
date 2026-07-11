@@ -95,6 +95,9 @@ var migrations = []migration{
 	{34, `ALTER TABLE users ADD COLUMN role_tag TEXT NOT NULL DEFAULT '未分类'`},
 	{35, `ALTER TABLE users ADD COLUMN org_note TEXT NOT NULL DEFAULT ''`},
 	{36, `ALTER TABLE usage_logs ADD COLUMN error_reason TEXT NOT NULL DEFAULT ''`},
+	{37, `ALTER TABLE usage_logs ADD COLUMN ip TEXT NOT NULL DEFAULT ''`},
+	{38, `ALTER TABLE usage_logs ADD COLUMN city TEXT NOT NULL DEFAULT ''`},
+	{39, `ALTER TABLE usage_logs ADD COLUMN is_hq INTEGER NOT NULL DEFAULT 0`},
 }
 
 const perfTestSchema = `

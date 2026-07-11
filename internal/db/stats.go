@@ -12,12 +12,13 @@ import (
 func (d *DB) InsertUsageLog(log *model.UsageLog) error {
 	_, err := d.Exec(
 		`INSERT INTO usage_logs
-		 (user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, error_reason, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, error_reason, ip, city, is_hq, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.UserID, log.APIKeyID, log.Model, log.Backend,
 		log.InputTokens, log.OutputTokens, log.TotalTokens,
 		log.CostUSD, log.StatusCode, log.Latency,
 		log.IsOpenClaw, log.IsDowngraded, log.UA, log.ErrorReason,
+		log.IP, log.City, log.IsHQ,
 		time.Now(),
 	)
 	if err != nil {
@@ -40,8 +41,8 @@ func (d *DB) BatchInsertUsageLogs(logs []*model.UsageLog) error {
 	defer tx.Rollback() // 兜底：Commit 成功后为 no-op；任何错误路径都保证清理事务，避免连接残留事务
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO usage_logs
-		 (user_id, group_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, error_reason, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 (user_id, group_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, error_reason, ip, city, is_hq, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare stmt: %w", err)
 	}
@@ -56,7 +57,8 @@ func (d *DB) BatchInsertUsageLogs(logs []*model.UsageLog) error {
 			log.UserID, log.GroupID, log.APIKeyID, log.Model, log.Backend,
 			log.InputTokens, log.OutputTokens, log.TotalTokens,
 			log.CostUSD, log.StatusCode, log.Latency,
-			log.IsOpenClaw, log.IsDowngraded, log.UA, log.ErrorReason, ts,
+			log.IsOpenClaw, log.IsDowngraded, log.UA, log.ErrorReason,
+			log.IP, log.City, log.IsHQ, ts,
 		); err != nil {
 			return fmt.Errorf("exec insert: %w", err)
 		}
@@ -173,7 +175,7 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backen
 	joinArgs := append(args, pageSize, offset)
 
 	rows, err := d.Query(
-		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.created_at
+		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+joinWhere+` ORDER BY l.created_at DESC LIMIT ? OFFSET ?`, joinArgs...)
 	if err != nil {
 		return nil, 0, err
@@ -185,7 +187,8 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backen
 		l := &model.UsageLog{}
 		if err := rows.Scan(&l.ID, &l.UserID, &l.Itcode, &l.APIKeyID, &l.Model, &l.Backend,
 			&l.InputTokens, &l.OutputTokens, &l.TotalTokens, &l.CostUSD,
-			&l.StatusCode, &l.Latency, &l.IsOpenClaw, &l.IsDowngraded, &l.UA, &l.ErrorReason, &l.CreatedAt); err != nil {
+			&l.StatusCode, &l.Latency, &l.IsOpenClaw, &l.IsDowngraded, &l.UA, &l.ErrorReason,
+			&l.IP, &l.City, &l.IsHQ, &l.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		logs = append(logs, l)
@@ -220,7 +223,7 @@ func (d *DB) ListUsageLogsAll(userID int64, startDate, endDate, modelFilter, bac
 	}
 
 	rows, err := d.Query(
-		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.created_at
+		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+where+` ORDER BY l.created_at ASC`, args...)
 	if err != nil {
 		return nil, err
@@ -232,7 +235,8 @@ func (d *DB) ListUsageLogsAll(userID int64, startDate, endDate, modelFilter, bac
 		l := &model.UsageLog{}
 		if err := rows.Scan(&l.ID, &l.UserID, &l.Itcode, &l.APIKeyID, &l.Model, &l.Backend,
 			&l.InputTokens, &l.OutputTokens, &l.TotalTokens, &l.CostUSD,
-			&l.StatusCode, &l.Latency, &l.IsOpenClaw, &l.IsDowngraded, &l.UA, &l.ErrorReason, &l.CreatedAt); err != nil {
+			&l.StatusCode, &l.Latency, &l.IsOpenClaw, &l.IsDowngraded, &l.UA, &l.ErrorReason,
+			&l.IP, &l.City, &l.IsHQ, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		logs = append(logs, l)

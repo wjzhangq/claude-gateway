@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wjzhangq/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
 	"github.com/wjzhangq/claude-gateway/internal/proxy"
 )
 
@@ -51,6 +52,7 @@ func main() {
 	enableGlob := flag.String("enable", "", "glob pattern to mark matching backends as available (e.g. 'aws-*')")
 	disableGlob := flag.String("disable", "", "glob pattern to mark matching backends as exhausted (e.g. 'aws-*')")
 	health := flag.Bool("health", false, "run active health probe (GET /v1/models) and sync state to gateway")
+	ip2region := flag.Bool("ip2region", false, "resolve city for usage-log IPs that have none yet (via ip9.com.cn) and update the gateway cache")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -64,6 +66,14 @@ func main() {
 	// Active health probe mode: check each backend's reachability and sync.
 	if *health {
 		runHealthProbe(client, cfg, gatewayURL)
+		return
+	}
+
+	// IP → city resolution mode: pull unresolved IPs from the gateway, look each
+	// up via ip9.com.cn, and push the discovered cities back so future request
+	// records carry a city.
+	if *ip2region {
+		runIP2Region(client, cfg, gatewayURL)
 		return
 	}
 
@@ -326,6 +336,117 @@ func syncToServer(client *http.Client, gatewayURL, secret string, backends []quo
 	}
 
 	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/admin/api/backends/quota", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+secret)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var buf bytes.Buffer
+		buf.ReadFrom(resp.Body)
+		return fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, buf.String())
+	}
+
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	log.Printf("server response: %v", result)
+	return nil
+}
+
+// runIP2Region pulls the gateway's list of city-less public IPs, resolves each
+// via ip9.com.cn, and posts the discovered cities back so future request records
+// carry a city. The gateway owns the cache file; check only talks HTTP to it.
+func runIP2Region(client *http.Client, cfg *config.Config, gatewayURL string) {
+	secret := cfg.Auth.SessionSecret
+
+	ips, err := fetchUnresolvedIPs(client, gatewayURL, secret)
+	if err != nil {
+		log.Fatalf("fetch unresolved IPs: %v", err)
+	}
+	if len(ips) == 0 {
+		log.Println("no unresolved IPs")
+		return
+	}
+	log.Printf("resolving %d unresolved IP(s) via ip9.com.cn", len(ips))
+
+	// ip9.com.cn has no published key but is rate-sensitive; space out lookups.
+	lookupClient := &http.Client{Timeout: 10 * time.Second}
+	resolved := make([]ipCity, 0, len(ips))
+	for _, ip := range ips {
+		city, err := ipgeo.LookupCity(lookupClient, ip)
+		if err != nil {
+			log.Printf("[%s] lookup failed: %v", ip, err)
+			continue
+		}
+		if city == "" {
+			log.Printf("[%s] no city (reserved/invalid/unknown)", ip)
+			continue
+		}
+		log.Printf("[%s] -> %s", ip, city)
+		resolved = append(resolved, ipCity{IP: ip, City: city})
+		time.Sleep(300 * time.Millisecond)
+	}
+
+	if len(resolved) == 0 {
+		log.Println("no cities resolved")
+		return
+	}
+	if err := postResolvedIPs(client, gatewayURL, secret, resolved); err != nil {
+		log.Fatalf("post resolved IPs: %v", err)
+	}
+	log.Printf("done: updated %d IP(s)", len(resolved))
+}
+
+// ipCity pairs an IP with its resolved city for the resolve request body.
+type ipCity struct {
+	IP   string `json:"ip"`
+	City string `json:"city"`
+}
+
+// fetchUnresolvedIPs GETs the gateway's list of public IPs that have no city yet.
+func fetchUnresolvedIPs(client *http.Client, gatewayURL, secret string) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, gatewayURL+"/admin/api/ipgeo/unresolved", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var buf bytes.Buffer
+		buf.ReadFrom(resp.Body)
+		return nil, fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, buf.String())
+	}
+
+	var out struct {
+		IPs []string `json:"ips"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return out.IPs, nil
+}
+
+// postResolvedIPs POSTs discovered ip->city pairs back to the gateway.
+func postResolvedIPs(client *http.Client, gatewayURL, secret string, resolved []ipCity) error {
+	body, err := json.Marshal(map[string]any{"resolved": resolved})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, gatewayURL+"/admin/api/ipgeo/resolve", bytes.NewReader(body))
 	if err != nil {
 		return err
 	}

@@ -32,6 +32,9 @@ type Record struct {
 	IsDowngraded bool
 	UA           string
 	ErrorReason  string
+	IP           string
+	City         string
+	IsHQ         bool
 	CreatedAt    time.Time
 }
 
@@ -140,6 +143,9 @@ func recordToLog(r Record) *model.UsageLog {
 		IsDowngraded: r.IsDowngraded,
 		UA:           r.UA,
 		ErrorReason:  r.ErrorReason,
+		IP:           r.IP,
+		City:         r.City,
+		IsHQ:         r.IsHQ,
 		CreatedAt:    r.CreatedAt,
 	}
 }

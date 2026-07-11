@@ -109,6 +109,9 @@ interface UsageLog {
   is_openclaw: boolean
   ua: string
   error_reason: string
+  ip: string
+  city: string
+  is_hq: boolean
   created_at: string
 }
 
@@ -327,7 +330,7 @@ export default function AdminUsagePage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['用户', '模型', 'Backend', '总 Token', '费用', '状态', '错误', 'UA', '时间'].map((h) => (
+              {['用户', '模型', 'Backend', '城市', '总 Token', '费用', '状态', 'UA', '时间'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -355,6 +358,20 @@ export default function AdminUsagePage() {
                     {log.is_openclaw && log.ua !== 'hermesclaw' && <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-orange-50 text-orange-600 ring-1 ring-orange-100">OC</span>}
                   </td>
                   <td className="px-4 py-3.5 text-xs text-gray-500">{log.backend}</td>
+                  <td className="px-4 py-3.5 text-xs">
+                    {log.city ? (
+                      <span className="inline-flex items-center gap-1 text-gray-600" title={log.ip}>
+                        {log.city}
+                        {log.is_hq && (
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-600 ring-1 ring-blue-100">总部</span>
+                        )}
+                      </span>
+                    ) : log.is_hq ? (
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-600 ring-1 ring-blue-100" title={log.ip}>总部</span>
+                    ) : (
+                      <span className="text-gray-300" title={log.ip}>—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3.5 font-medium text-gray-800">{log.total_tokens.toLocaleString()}</td>
                   <td className="px-4 py-3.5 text-gray-700">${log.cost_usd.toFixed(4)}</td>
                   <td className="px-4 py-3.5">
@@ -364,21 +381,10 @@ export default function AdminUsagePage() {
                           ? 'bg-green-50 text-green-700 ring-green-100'
                           : 'bg-red-50 text-red-700 ring-red-100'
                       }`}
+                      title={log.error_reason ? errorReasonLabel(log.error_reason) : undefined}
                     >
                       {log.status_code}
                     </span>
-                  </td>
-                  <td className="px-4 py-3.5">
-                    {log.error_reason ? (
-                      <span
-                        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-red-100 text-red-700 ring-1 ring-red-200"
-                        title={log.error_reason}
-                      >
-                        {errorReasonLabel(log.error_reason)}
-                      </span>
-                    ) : (
-                      <span className="text-gray-300 text-xs">—</span>
-                    )}
                   </td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs font-mono">{log.ua}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">

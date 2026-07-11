@@ -21,6 +21,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/awsproxy"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/handler"
+	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/model"
@@ -159,6 +160,14 @@ func main() {
 		lb.ValidateBackends()
 	}
 
+	// ─── IP → city / HQ store ─────────────────────────────────────────
+	// Tags backend + public usage records with client IP, city (filled in
+	// out-of-band by `check --ip2region`), and whether the IP is a HQ/VPN address.
+	ipGeoStore := ipgeo.New(cfg.IPGeo.CacheFile, cfg.IPGeo.HQCIDRs)
+	proxyH.SetIPGeo(ipGeoStore)
+	ipGeoStop := make(chan struct{})
+	ipGeoStore.StartFlusher(30*time.Second, ipGeoStop)
+
 	// ─── AWS Bedrock initialization ───────────────────────────────────
 	var awsProxyH *awsproxy.Handler
 	var awsCollector *stats.AWSCollector
@@ -187,6 +196,7 @@ func main() {
 
 	// ─── Public providers initialization ─────────────────────────────
 	publicH := publicproxy.NewHandler(collector, keyStore, cfg)
+	publicH.SetIPGeo(ipGeoStore)
 	if len(cfg.PublicProviders) > 0 {
 		var names []string
 		for _, p := range cfg.PublicProviders {
@@ -517,6 +527,48 @@ func main() {
 			return
 		}
 		c.JSON(200, gin.H{"backends": lb.Metrics()})
+	})
+
+	// IP → city cache management (session_secret auth, called by cmd/check --ip2region).
+	// GET returns public IPs that have no city yet; POST applies resolved cities.
+	r.GET("/admin/api/ipgeo/unresolved", func(c *gin.Context) {
+		raw := c.GetHeader("Authorization")
+		raw = strings.TrimPrefix(raw, "Bearer ")
+		raw = strings.TrimPrefix(raw, "bearer ")
+		if raw == "" || raw != cfg.Auth.SessionSecret {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.JSON(200, gin.H{"ips": ipGeoStore.Unresolved()})
+	})
+	r.POST("/admin/api/ipgeo/resolve", func(c *gin.Context) {
+		raw := c.GetHeader("Authorization")
+		raw = strings.TrimPrefix(raw, "Bearer ")
+		raw = strings.TrimPrefix(raw, "bearer ")
+		if raw == "" || raw != cfg.Auth.SessionSecret {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+		var req struct {
+			Resolved []struct {
+				IP   string `json:"ip"`
+				City string `json:"city"`
+			} `json:"resolved"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		updated := 0
+		for _, r := range req.Resolved {
+			if r.City != "" {
+				ipGeoStore.Resolve(r.IP, r.City)
+				updated++
+			}
+		}
+		// Persist immediately so a crash before the next tick does not lose the work.
+		_ = ipGeoStore.Flush()
+		c.JSON(200, gin.H{"updated": updated})
 	})
 
 	// Serve frontend static files
