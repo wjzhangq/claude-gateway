@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -47,20 +48,53 @@ func (d *DB) BatchInsertUsageLogs(logs []*model.UsageLog) error {
 		return fmt.Errorf("prepare stmt: %w", err)
 	}
 	defer stmt.Close()
+
+	// pendStmt enqueues a pending_analysis row for a successful user_initiated
+	// request, linked to the usage_logs row just inserted (feature 004). Prepared
+	// lazily so the common all-error / no-signal batch pays nothing.
+	var pendStmt *sql.Stmt
+	defer func() {
+		if pendStmt != nil {
+			pendStmt.Close()
+		}
+	}()
+
 	now := time.Now()
 	for _, log := range logs {
 		ts := now
 		if !log.CreatedAt.IsZero() {
 			ts = log.CreatedAt
 		}
-		if _, err := stmt.ExecContext(ctx,
+		res, err := stmt.ExecContext(ctx,
 			log.UserID, log.GroupID, log.APIKeyID, log.Model, log.Backend,
 			log.InputTokens, log.OutputTokens, log.TotalTokens,
 			log.CostUSD, log.StatusCode, log.Latency,
 			log.IsOpenClaw, log.IsDowngraded, log.UA, log.ErrorReason,
 			log.IP, log.City, log.IsHQ, ts,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("exec insert: %w", err)
+		}
+
+		// Enqueue only successful (status<400) user_initiated rounds that carry a
+		// compressed signal. Invariant B: failed requests never enter the queue.
+		if log.PendingSignal == "" || !log.PendingUserInitiated || log.StatusCode >= 400 {
+			continue
+		}
+		usageLogID, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("last insert id: %w", err)
+		}
+		if pendStmt == nil {
+			pendStmt, err = tx.PrepareContext(ctx,
+				`INSERT INTO pending_analysis (usage_log_id, user_id, signal, created_at)
+				 VALUES (?, ?, ?, ?)`)
+			if err != nil {
+				return fmt.Errorf("prepare pending stmt: %w", err)
+			}
+		}
+		if _, err := pendStmt.ExecContext(ctx, usageLogID, log.UserID, log.PendingSignal, ts); err != nil {
+			return fmt.Errorf("exec pending insert: %w", err)
 		}
 	}
 	return tx.Commit()
@@ -175,7 +209,7 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backen
 	joinArgs := append(args, pageSize, offset)
 
 	rows, err := d.Query(
-		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.created_at
+		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.task_type, l.work_related, l.code_direction, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+joinWhere+` ORDER BY l.created_at DESC LIMIT ? OFFSET ?`, joinArgs...)
 	if err != nil {
 		return nil, 0, err
@@ -188,7 +222,7 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backen
 		if err := rows.Scan(&l.ID, &l.UserID, &l.Itcode, &l.APIKeyID, &l.Model, &l.Backend,
 			&l.InputTokens, &l.OutputTokens, &l.TotalTokens, &l.CostUSD,
 			&l.StatusCode, &l.Latency, &l.IsOpenClaw, &l.IsDowngraded, &l.UA, &l.ErrorReason,
-			&l.IP, &l.City, &l.IsHQ, &l.CreatedAt); err != nil {
+			&l.IP, &l.City, &l.IsHQ, &l.TaskType, &l.WorkRelated, &l.CodeDirection, &l.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		logs = append(logs, l)
@@ -223,7 +257,7 @@ func (d *DB) ListUsageLogsAll(userID int64, startDate, endDate, modelFilter, bac
 	}
 
 	rows, err := d.Query(
-		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.created_at
+		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.task_type, l.work_related, l.code_direction, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+where+` ORDER BY l.created_at ASC`, args...)
 	if err != nil {
 		return nil, err
@@ -236,7 +270,7 @@ func (d *DB) ListUsageLogsAll(userID int64, startDate, endDate, modelFilter, bac
 		if err := rows.Scan(&l.ID, &l.UserID, &l.Itcode, &l.APIKeyID, &l.Model, &l.Backend,
 			&l.InputTokens, &l.OutputTokens, &l.TotalTokens, &l.CostUSD,
 			&l.StatusCode, &l.Latency, &l.IsOpenClaw, &l.IsDowngraded, &l.UA, &l.ErrorReason,
-			&l.IP, &l.City, &l.IsHQ, &l.CreatedAt); err != nil {
+			&l.IP, &l.City, &l.IsHQ, &l.TaskType, &l.WorkRelated, &l.CodeDirection, &l.CreatedAt); err != nil {
 			return nil, err
 		}
 		logs = append(logs, l)

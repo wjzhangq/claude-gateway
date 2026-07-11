@@ -53,6 +53,7 @@ func main() {
 	disableGlob := flag.String("disable", "", "glob pattern to mark matching backends as exhausted (e.g. 'aws-*')")
 	health := flag.Bool("health", false, "run active health probe (GET /v1/models) and sync state to gateway")
 	ip2region := flag.Bool("ip2region", false, "resolve city for usage-log IPs that have none yet (via ip9.com.cn) and update the gateway cache")
+	analyze := flag.Bool("analyze", false, "consume the pending-analysis queue: classify each successful request (rules → Haiku fallback) and write verdicts back to the gateway")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -74,6 +75,13 @@ func main() {
 	// records carry a city.
 	if *ip2region {
 		runIP2Region(client, cfg, gatewayURL)
+		return
+	}
+
+	// Offline abuse-analysis mode: pull the pending queue, classify each record
+	// (rules first, Haiku only when unsure), and write verdicts back (feature 004).
+	if *analyze {
+		runAnalyze(client, cfg, gatewayURL)
 		return
 	}
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
+	"github.com/wjzhangq/claude-gateway/internal/classify"
 	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
@@ -866,7 +867,7 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 
 	latency := time.Since(start)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP())
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP(), reqBody)
 
 	if statusCode >= 400 || rawZero {
 		msg := "backend zero tokens"
@@ -903,7 +904,7 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 		out = tokenest.EstimateString(tokenest.ExtractResponseText(respBody), tokenest.Default)
 	}
 	latency := time.Since(start)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP())
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP(), reqBody)
 
 	if statusCode >= 400 || rawZero {
 		msg := "backend zero tokens"
@@ -983,7 +984,7 @@ func resolvePricing(model string, pricing map[string]config.ModelPricingEntry) c
 	return config.ModelPricingEntry{Input: 3.0, Output: 15.0}
 }
 
-func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isHermes, isDowngraded bool, userAgent, clientIP string) {
+func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isHermes, isDowngraded bool, userAgent, clientIP string, reqBody []byte) {
 	if h.collector == nil || keyInfo == nil {
 		return
 	}
@@ -995,10 +996,33 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	total := inputTokens + outputTokens
 	h.mu.RLock()
 	pricing := map[string]config.ModelPricingEntry{}
+	var analyzeCfg config.AnalyzeConfig
 	if h.config != nil {
 		pricing = h.config.BackendModelPricing
+		analyzeCfg = h.config.Analyze
 	}
 	h.mu.RUnlock()
+
+	// Feature 004: extract a compressed signal + request role for offline abuse
+	// analysis. This runs AFTER the response has been written to the client (this
+	// path is off the forward hot path) and only touches the in-memory reqBody, so
+	// SC-001 (no measurable P99 impact) holds. Only successful requests are
+	// analyzed (user constraint "logs only handle successful ones"), and the
+	// analyzer's own Haiku calls are skipped to prevent self-recursion (FR, R6).
+	var signalJSON, requestRole string
+	if analyzeCfg.Enabled && statusCode < 400 && len(reqBody) > 0 &&
+		!(analyzeCfg.AnalyzerUA != "" && userAgent == analyzeCfg.AnalyzerUA) {
+		if req, err := classify.ParseRequest(reqBody); err == nil {
+			role := classify.RequestRole(req)
+			requestRole = string(role)
+			if role == classify.RoleUserInitiated {
+				sig := classify.Extract(req, classify.FromAnalyzeConfig(analyzeCfg))
+				if b, err := json.Marshal(sig); err == nil {
+					signalJSON = string(b)
+				}
+			}
+		}
+	}
 	cost := costUSD(model, inputTokens, outputTokens, pricing)
 	ua := parseUA(userAgent, isOpenClaw, isHermes)
 	// For DB is_openclaw field: both openclaw and hermes count as lobster traffic
@@ -1010,6 +1034,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	if h.ipGeo != nil {
 		city, isHQ = h.ipGeo.Observe(clientIP)
 	}
+
 	h.collector.Emit(stats.Record{
 		UserID:       info.UserID,
 		GroupID:      info.GroupID,
@@ -1030,6 +1055,8 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 		IP:           clientIP,
 		City:         city,
 		IsHQ:         isHQ,
+		SignalJSON:   signalJSON,
+		RequestRole:  requestRole,
 	})
 
 	// Accumulate backend daily cost for per-user quota tracking

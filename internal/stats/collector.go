@@ -36,6 +36,14 @@ type Record struct {
 	City         string
 	IsHQ         bool
 	CreatedAt    time.Time
+
+	// Feature 004: offline abuse analysis. The proxy fills these on the response
+	// path (not the forward hot path). SignalJSON is the marshaled classify.Signal;
+	// RequestRole is "user_initiated"/"tool_continuation"/"subagent". Only a
+	// successful user_initiated round with a non-empty SignalJSON is enqueued for
+	// analysis (done inside the batch-insert transaction). Empty ⇒ no enqueue.
+	SignalJSON  string
+	RequestRole string
 }
 
 // Collector receives usage records asynchronously and batch-writes them to the DB.
@@ -147,5 +155,8 @@ func recordToLog(r Record) *model.UsageLog {
 		City:         r.City,
 		IsHQ:         r.IsHQ,
 		CreatedAt:    r.CreatedAt,
+		// Transient (db:"-"): drive the same-transaction pending_analysis enqueue.
+		PendingSignal:        r.SignalJSON,
+		PendingUserInitiated: r.RequestRole == "user_initiated",
 	}
 }

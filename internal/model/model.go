@@ -60,7 +60,19 @@ type UsageLog struct {
 	IP           string    `db:"ip"            json:"ip"`
 	City         string    `db:"city"          json:"city"`
 	IsHQ         bool      `db:"is_hq"         json:"is_hq"`
-	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
+	// Feature 004 abuse-analysis verdict (written back offline by cmd/check --analyze).
+	TaskType      string    `db:"task_type"      json:"task_type"`      // code|doc|other|'' (unanalyzed)
+	WorkRelated   int       `db:"work_related"   json:"work_related"`   // 1=yes 0=no -1=undetermined
+	CodeDirection string    `db:"code_direction" json:"code_direction"` // 前端/后端/... (code only)
+	CreatedAt     time.Time `db:"created_at"     json:"created_at"`
+
+	// PendingSignal / PendingUserInitiated are transient (db:"-"): they carry the
+	// compressed classify.Signal JSON and the "should enqueue" decision from the
+	// proxy down to the batch insert, which — inside the same transaction — writes a
+	// pending_analysis row for a successful user_initiated request (feature 004).
+	// Never persisted as columns on usage_logs.
+	PendingSignal        string `db:"-" json:"-"` // JSON of classify.Signal; empty ⇒ do not enqueue
+	PendingUserInitiated bool   `db:"-" json:"-"` // true only for a user_initiated round
 }
 
 // DailyStats aggregates usage per user per model per day.

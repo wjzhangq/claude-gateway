@@ -98,7 +98,27 @@ var migrations = []migration{
 	{37, `ALTER TABLE usage_logs ADD COLUMN ip TEXT NOT NULL DEFAULT ''`},
 	{38, `ALTER TABLE usage_logs ADD COLUMN city TEXT NOT NULL DEFAULT ''`},
 	{39, `ALTER TABLE usage_logs ADD COLUMN is_hq INTEGER NOT NULL DEFAULT 0`},
+	// Feature 004: offline traffic abuse analysis. usage_logs carries the verdict
+	// (3 columns); work_reason / doc_activity reuse the existing error_reason column.
+	{40, `ALTER TABLE usage_logs ADD COLUMN task_type      TEXT    NOT NULL DEFAULT ''`},  // code|doc|other|'' (unanalyzed)
+	{41, `ALTER TABLE usage_logs ADD COLUMN work_related   INTEGER NOT NULL DEFAULT -1`},  // 1=yes 0=no -1=undetermined
+	{42, `ALTER TABLE usage_logs ADD COLUMN code_direction TEXT    NOT NULL DEFAULT ''`},  // 前端/后端/... (code only)
+	{43, pendingAnalysisSchema},
+	{44, `CREATE INDEX IF NOT EXISTS idx_pending_analysis_id ON pending_analysis(id)`},
 }
+
+// pendingAnalysisSchema is the to-analyze queue (= the incremental watermark; it
+// only ever holds records not yet analyzed successfully). Original messages are
+// never stored — only the compressed classify.Signal JSON (FR-015a).
+const pendingAnalysisSchema = `
+CREATE TABLE IF NOT EXISTS pending_analysis (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    usage_log_id  INTEGER NOT NULL,              -- write-back target usage_logs.id
+    user_id       INTEGER NOT NULL,              -- redundant, eases aggregation/triage
+    signal        TEXT    NOT NULL,              -- JSON of classify.Signal (compressed, no raw messages)
+    retry_count   INTEGER NOT NULL DEFAULT 0,    -- Haiku-fallback failure retry counter
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);`
 
 const perfTestSchema = `
 CREATE TABLE IF NOT EXISTS perf_test_runs (

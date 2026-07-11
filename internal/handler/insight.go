@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/wjzhangq/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/internal/classify"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 )
 
@@ -207,4 +208,55 @@ func (h *InsightHandler) BatchUpdateOrgTags(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"updated": n})
+}
+
+// GetAbuseInsight godoc: GET /admin/api/insight/abuse?window=day|week|month
+// Aggregates tagged usage per person over the window, scores each, and returns the
+// per-person portraits plus a review queue (score ≥ threshold). Identification
+// only — the response carries no punitive action (FR-021).
+func (h *InsightHandler) GetAbuseInsight(c *gin.Context) {
+	windowStart := abuseWindowStart(c.DefaultQuery("window", "day"))
+
+	recs, err := h.db.ListTaggedRecords(0, windowStart)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	clsCfg := classify.FromAnalyzeConfig(h.cfg.Analyze)
+
+	// Group by user, aggregate, score.
+	byUser := map[int64][]classify.Record{}
+	for _, r := range recs {
+		byUser[r.UserID] = append(byUser[r.UserID], r)
+	}
+	rollups := make([]classify.Rollup, 0, len(byUser))
+	reviewQueue := make([]classify.Rollup, 0)
+	for _, urecs := range byUser {
+		ru := classify.Aggregate(urecs, windowStart, clsCfg)
+		rollups = append(rollups, ru)
+		if classify.NeedsReview(ru, clsCfg.Score) {
+			reviewQueue = append(reviewQueue, ru)
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"window_start": windowStart.Format(time.RFC3339),
+		"users":        rollups,
+		"review_queue": reviewQueue,
+		"threshold":    clsCfg.Score.Threshold,
+	})
+}
+
+// abuseWindowStart maps a window keyword to its start instant (gateway local time).
+func abuseWindowStart(window string) time.Time {
+	now := time.Now()
+	switch window {
+	case "week":
+		return now.AddDate(0, 0, -7)
+	case "month":
+		return now.AddDate(0, -1, 0)
+	default: // "day"
+		return now.AddDate(0, 0, -1)
+	}
 }

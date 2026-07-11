@@ -217,6 +217,7 @@ func main() {
 	awsStatsH := handler.NewAWSStatsHandler(database, cfg, keyStore)
 	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore)
 	insightH := handler.NewInsightHandler(database, cfg)
+	analyzeH := handler.NewAnalysisHandler(database, cfg.Analyze.MaxRetry)
 	configH := handler.NewConfigHandler(cfgPath, cfg, func() error {
 		newCfg, err := config.Load(cfgPath)
 		if err != nil {
@@ -229,6 +230,7 @@ func main() {
 		statsH.UpdateConfig(newCfg)
 		awsStatsH.UpdateConfig(newCfg)
 		insightH.UpdateConfig(newCfg)
+		analyzeH.SetMaxRetry(newCfg.Analyze.MaxRetry)
 		if awsProxyH != nil {
 			awsProxyH.UpdateConfig(&newCfg.AWS)
 			awsProxyH.SetRootConfig(newCfg)
@@ -408,6 +410,7 @@ func main() {
 		adminAPI.GET("/insight/org", insightH.GetOrgList)
 		adminAPI.PUT("/insight/org/:id", insightH.UpdateOrgTag)
 		adminAPI.POST("/insight/org/batch", insightH.BatchUpdateOrgTags)
+		adminAPI.GET("/insight/abuse", insightH.GetAbuseInsight)
 	}
 
 	// Admin AWS API
@@ -571,6 +574,31 @@ func main() {
 		c.JSON(200, gin.H{"updated": updated})
 	})
 
+	// Offline abuse-analysis queue (session_secret auth, called by cmd/check --analyze).
+	// GET pulls not-yet-analyzed records; POST writes verdicts back and clears the queue.
+	analyzeAuth := func(c *gin.Context) bool {
+		raw := c.GetHeader("Authorization")
+		raw = strings.TrimPrefix(raw, "Bearer ")
+		raw = strings.TrimPrefix(raw, "bearer ")
+		if raw == "" || raw != cfg.Auth.SessionSecret {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return false
+		}
+		return true
+	}
+	r.GET("/admin/api/analyze/pending", func(c *gin.Context) {
+		if !analyzeAuth(c) {
+			return
+		}
+		analyzeH.GetPending(c)
+	})
+	r.POST("/admin/api/analyze/results", func(c *gin.Context) {
+		if !analyzeAuth(c) {
+			return
+		}
+		analyzeH.PostResults(c)
+	})
+
 	// Serve frontend static files
 	r.Static("/assets", "web/dist/assets")
 	r.StaticFile("/favicon.ico", "web/dist/favicon.ico")
@@ -582,7 +610,7 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP)
 	go handleReload(sigCh, cfgPath, collector, awsCollector, aggregator, awsAggregator,
-		lb, proxyH, awsProxyH, publicH, statsH, awsStatsH, insightH, database, keyStore, cfg)
+		lb, proxyH, awsProxyH, publicH, statsH, awsStatsH, insightH, analyzeH, database, keyStore, cfg)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Infof("Claude Gateway listening on %s", addr)
@@ -649,7 +677,7 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 	lb *proxy.LoadBalancer, proxyH *proxy.Handler, awsProxyH *awsproxy.Handler,
 	publicH *publicproxy.Handler,
 	statsH *handler.StatsHandler, awsStatsH *handler.AWSStatsHandler,
-	insightH *handler.InsightHandler,
+	insightH *handler.InsightHandler, analyzeH *handler.AnalysisHandler,
 	database *db.DB, keyStore *auth.KeyStore, currentCfg *config.Config) {
 
 	for range sigCh {
@@ -685,6 +713,7 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 		statsH.UpdateConfig(newCfg)
 		awsStatsH.UpdateConfig(newCfg)
 		insightH.UpdateConfig(newCfg)
+		analyzeH.SetMaxRetry(newCfg.Analyze.MaxRetry)
 		if awsProxyH != nil {
 			awsProxyH.UpdateConfig(&newCfg.AWS)
 			awsProxyH.SetRootConfig(newCfg)

@@ -129,3 +129,28 @@ backends:
 #     - tool_choice
 #     - thinking
 #     - output_config
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 流量离线滥用分析（feature 004）。旁路批处理：check --analyze 拉取待分析队列，
+# 规则优先分类，规则拿不准才调用 Haiku（经本网关自身 /v1/messages），结论回写
+# usage_logs。原始 messages 不落库，仅存压缩信号，回写后即删。
+# enabled=false（默认）时代理侧完全跳过信号抽取/入队，零开销。
+# analyze:
+#   enabled: true
+#   haiku_base_url: "http://127.0.0.1:8080"   # 默认指向本网关自身
+#   haiku_api_key: "<内部分析专用网关 key>"     # 留空则纯规则模式，不做 Haiku 兜底
+#   haiku_model: "claude-haiku-4-5-20251001"
+#   analyzer_ua: "claude-gateway-analyzer"      # 代理据此识别分析器自身请求并跳过入队（防自递归）
+#   batch_size: 500                              # 每批拉取的待分析记录数
+#   max_retry: 3                                 # Haiku 兜底失败重试上限，超过则跳过
+#   score:                                       # 滥用评分权重（读时计算，改后即时生效）
+#     non_work: 0.6                              # 非工作任务占比权重
+#     off_hours: 0.15                            # 非工作时段任务占比权重
+#     volume: 0.25                               # 超基线任务量权重
+#     baseline_tasks: 60                         # 逻辑任务基线，仅超出部分计入 volume
+#     threshold: 0.5                             # 评分 ≥ 阈值进人工复核队列（仅识别不处罚）
+#   off_hours:                                   # 非工作时段（网关本地时区）
+#     start_hour: 22                             # 含
+#     end_hour: 8                                # 不含（22→8 跨零点）
+#     weekend_off: true                          # 周末整天记为非工作时段
+#   repos: ["teamai-iap", "modelgate", "kb-core", "thinkpet", "localclaw", "openclaw"]  # 内部仓库白名单：命中即判工作相关
