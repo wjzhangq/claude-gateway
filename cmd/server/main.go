@@ -467,10 +467,14 @@ func main() {
 
 		var req struct {
 			Backends []struct {
-				Name      string `json:"name"`
-				Healthy   bool   `json:"healthy"`
-				LatencyMs int64  `json:"latency_ms"`
-				Error     string `json:"error"`
+				Name         string  `json:"name"`
+				Healthy      bool    `json:"healthy"`
+				LatencyMs    int64   `json:"latency_ms"`
+				Error        string  `json:"error"`
+				ObservedCode int     `json:"observed_code"`  // optional: HTTP code the probe saw
+				RetryAfter   string  `json:"retry_after"`    // optional: raw Retry-After header
+				ProbeCostUSD float64 `json:"probe_cost_usd"` // optional: cost of an inference probe
+				KeyRotated   bool    `json:"key_rotated"`    // optional: reset auth-quarantine backoff
 			} `json:"backends"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -480,10 +484,39 @@ func main() {
 
 		results := make([]gin.H, 0, len(req.Backends))
 		for _, b := range req.Backends {
-			found := lb.SetHealthStatus(b.Name, b.Healthy, b.LatencyMs)
+			if b.KeyRotated {
+				lb.ResetAuthQuarantine(b.Name)
+			}
+			retryAfterUnix := proxy.ParseRetryAfter(b.RetryAfter, time.Now())
+			found := lb.SetHealthStatusDetailed(b.Name, b.Healthy, b.LatencyMs, b.ObservedCode, retryAfterUnix)
+			// Attribute any inference-probe cost to the backend's spend so budget
+			// accounting stays closed (FR-010).
+			if b.ProbeCostUSD > 0 {
+				lb.AddProbeCost(b.Name, b.ProbeCostUSD)
+				collector.Emit(stats.Record{
+					Model:       "__probe__",
+					Backend:     b.Name,
+					StatusCode:  b.ObservedCode,
+					CostUSD:     b.ProbeCostUSD,
+					ErrorReason: "probe",
+				})
+			}
 			results = append(results, gin.H{"name": b.Name, "found": found, "healthy": b.Healthy})
 		}
 		c.JSON(200, gin.H{"updated": results})
+	})
+
+	// Per-backend observability metrics (feature 003, US12): isolation-by-code,
+	// failsafe promotions, probe cost, per-state dwell, first-403 calibration.
+	r.GET("/admin/api/backends/metrics", func(c *gin.Context) {
+		raw := c.GetHeader("Authorization")
+		raw = strings.TrimPrefix(raw, "Bearer ")
+		raw = strings.TrimPrefix(raw, "bearer ")
+		if raw == "" || raw != cfg.Auth.SessionSecret {
+			c.JSON(401, gin.H{"error": "unauthorized"})
+			return
+		}
+		c.JSON(200, gin.H{"backends": lb.Metrics()})
 	})
 
 	// Serve frontend static files

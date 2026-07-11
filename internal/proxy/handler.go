@@ -95,6 +95,25 @@ func isClaudeModel(model string) bool {
 		strings.Contains(m, "haiku")
 }
 
+// isValidHealthModel reports whether an error on a request for this model should
+// count against a Claude backend's health (US6, FR-015..FR-017). Only the
+// sonnet/haiku/opus families are real signal for a Claude backend; errors on
+// other/unknown models say nothing about the backend's ability to serve the
+// traffic we actually route, so they must not eject or degrade it.
+//
+// An empty/undeterminable model returns true (count it): treating unknown as
+// "ignore" risks keeping a genuinely broken backend routable, which is the
+// worse failure (FR-017 documented default).
+func isValidHealthModel(model string) bool {
+	if strings.TrimSpace(model) == "" {
+		return true
+	}
+	m := strings.ToLower(model)
+	return strings.Contains(m, "sonnet") ||
+		strings.Contains(m, "opus") ||
+		strings.Contains(m, "haiku")
+}
+
 // stripThinkingSuffix maps a "-thinking" model pseudo-variant to its base model
 // name. claude-cli appends "-thinking" (e.g. claude-sonnet-4-5-20250929-thinking)
 // to signal extended thinking, but upstream distributors only register the base
@@ -383,6 +402,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		// failover instead of a user-facing 429.
 		tried := map[string]bool{backend.Name: true}
 		failovers := 0
+		// Bound the whole failover chain by a wall-clock budget (FR-022) so a
+		// cascade cannot stack per-attempt latency into a ~45s tail.
+		chainDeadline := start.Add(failoverBudgetSecs * time.Second)
 		for {
 			resp, err = h.doRequest(c, backend, upstreamPath, targetURL, body)
 
@@ -410,10 +432,13 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 					h.lb.MarkQuotaExhausted(backend.Name)
 					failovers++
 					next := h.lb.PickExcluding(tried)
-					if next == nil || failovers > maxQuotaFailovers {
-						// No alternate left: hand the original 429 back to the client.
+					// Stop failing over when: no alternate, the per-request cap is
+					// hit, the chain deadline elapsed (FR-022), or a quota cascade is
+					// active — in a cascade, retrying just adds upstream load at the
+					// worst moment, so fast-fail (FR-023).
+					if next == nil || failovers > maxQuotaFailovers || time.Now().After(chainDeadline) || h.lb.QuotaCascadeActive() {
 						resp.Body = io.NopCloser(bytes.NewReader(peek))
-						logger.Warnf("quota failover exhausted (backend=%s failovers=%d): returning 429", backend.Name, failovers)
+						logger.Warnf("quota failover stopped (backend=%s failovers=%d cascade=%v): returning 429", backend.Name, failovers, h.lb.QuotaCascadeActive())
 						break // keep this response; recorded once below
 					}
 					// Abandon this backend: record its failure now, then retry.
@@ -441,9 +466,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 					h.lb.MarkQuotaExhausted(backend.Name)
 					failovers++
 					next := h.lb.PickExcluding(tried)
-					if next == nil || failovers > maxQuotaFailovers {
+					if next == nil || failovers > maxQuotaFailovers || time.Now().After(chainDeadline) || h.lb.QuotaCascadeActive() {
 						resp.Body = io.NopCloser(bytes.NewReader(peek))
-						logger.Warnf("login-quota failover exhausted (backend=%s failovers=%d): returning 403", backend.Name, failovers)
+						logger.Warnf("login-quota failover stopped (backend=%s failovers=%d cascade=%v): returning 403", backend.Name, failovers, h.lb.QuotaCascadeActive())
 						break
 					}
 					backend.RecordResult(ErrRateLimit) // counts against health but not auth-disable
@@ -461,7 +486,11 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		}
 
 		if err != nil {
-			backend.RecordResult(ClassifyError(0, err))
+			// Transport failure: count it against health only for a valid-health
+			// model (US6, FR-016); client-canceled was already handled above.
+			if isValidHealthModel(reqModel) {
+				backend.RecordResult(ClassifyError(0, err))
+			}
 			logger.Errorf("backend %s error: %v", backend.Name, err)
 
 			// Try downgrade if enabled and this is the first attempt
@@ -491,9 +520,16 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
 	var retryAfterUnix int64
 	if resp.StatusCode == http.StatusTooManyRequests {
-		retryAfterUnix = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
+		retryAfterUnix = ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 	}
-	backend.RecordResultDetailed(ClassifyError(resp.StatusCode, nil), retryAfterUnix, false)
+	// Model-scoped health (US6): only sonnet/haiku/opus errors count against a
+	// Claude backend. For other/unknown models, record the outcome as a no-op
+	// class so state/consecErr/TTL are untouched.
+	if isValidHealthModel(reqModel) {
+		backend.RecordResultDetailed(ClassifyError(resp.StatusCode, nil), retryAfterUnix, false)
+	} else {
+		backend.RecordResultDetailed(ErrClient, 0, false)
+	}
 
 	// Check if we need to retry with downgrade (response indicates failure)
 	if autoDowngrade && !isDowngraded && resp.StatusCode >= 400 {
@@ -701,7 +737,7 @@ const maxQuotaFailovers = 2
 // expiry, supporting both the delta-seconds form ("Retry-After: 120") and the
 // HTTP-date form ("Retry-After: Fri, 31 Dec 2027 23:59:59 GMT"). Returns 0 when
 // the header is absent or unparseable, or resolves to a time in the past.
-func parseRetryAfter(header string, now time.Time) int64 {
+func ParseRetryAfter(header string, now time.Time) int64 {
 	header = strings.TrimSpace(header)
 	if header == "" {
 		return 0
@@ -977,6 +1013,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 		IsOpenClaw:   isLobster,
 		IsDowngraded: isDowngraded,
 		UA:           ua,
+		ErrorReason:  reasonCode(ClassifyError(statusCode, nil), statusCode, false),
 	})
 
 	// Accumulate backend daily cost for per-user quota tracking

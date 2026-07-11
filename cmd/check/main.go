@@ -12,7 +12,14 @@ import (
 	"time"
 
 	"github.com/wjzhangq/claude-gateway/config"
+	"github.com/wjzhangq/claude-gateway/internal/proxy"
 )
+
+// probeReachable delegates to the shared reachability routine so cmd/check and
+// the server's startup validation apply identical health logic (FR-011).
+func probeReachable(client *http.Client, baseURL, apiKey string) (int, string, bool, error) {
+	return proxy.ProbeReachableDetailed(client, baseURL, apiKey)
+}
 
 type billingUsage struct {
 	TotalUsage float64 `json:"total_usage"`
@@ -30,10 +37,13 @@ type quotaBackend struct {
 }
 
 type healthBackend struct {
-	Name      string `json:"name"`
-	Healthy   bool   `json:"healthy"`
-	LatencyMs int64  `json:"latency_ms"`
-	Error     string `json:"error,omitempty"`
+	Name         string  `json:"name"`
+	Healthy      bool    `json:"healthy"`
+	LatencyMs    int64   `json:"latency_ms"`
+	Error        string  `json:"error,omitempty"`
+	ObservedCode int     `json:"observed_code,omitempty"`  // HTTP status the probe saw (0 = transport)
+	RetryAfter   string  `json:"retry_after,omitempty"`    // raw Retry-After header, if any
+	ProbeCostUSD float64 `json:"probe_cost_usd,omitempty"` // estimated cost of an inference probe
 }
 
 func main() {
@@ -125,36 +135,54 @@ func main() {
 	log.Println("quota sync complete")
 }
 
-// runHealthProbe actively probes each enabled backend with GET /v1/models,
-// measures latency, and syncs the result to the gateway.
+// probeMessageCostUSD is a conservative flat estimate of a single max_tokens=1
+// health probe's cost, attributed to the probed backend (FR-010). The probe is
+// intentionally tiny; this is an upper-bound placeholder pending per-backend rates.
+const probeMessageCostUSD = 0.0002
+
+// runHealthProbe actively probes each enabled backend via the shared reachability
+// routine (GET /v1/models, falling back to a minimal /v1/messages inference call),
+// measures latency, and syncs the result to the gateway. Backends the gateway
+// reports as quota-isolated are skipped entirely so probing never spends real
+// budget on — or worsens the quota of — an already-exhausted backend (FR-008).
 func runHealthProbe(client *http.Client, cfg *config.Config, gatewayURL string) {
+	quotaIsolated := fetchQuotaIsolated(client, gatewayURL, cfg.Auth.SessionSecret)
+
 	var results []healthBackend
 	for _, b := range cfg.Backends {
 		if !b.Enabled {
 			continue
 		}
+		if quotaIsolated[b.Name] {
+			// Quota-isolated: recovers via daily-reset / TTL expiry, never a probe.
+			log.Printf("[%s] quota-isolated: skipping billable probe (recovers via reset/TTL)", b.Name)
+			results = append(results, healthBackend{Name: b.Name, Healthy: false, Error: "quota-isolated (probe skipped)"})
+			continue
+		}
+
 		baseURL := strings.TrimRight(b.URL, "/")
 		start := time.Now()
-		err := probeModels(client, baseURL, b.APIKey)
+		code, retryAfter, usedInference, err := probeReachable(client, baseURL, b.APIKey)
 		latency := time.Since(start).Milliseconds()
+		// Only a real /v1/messages inference probe costs money; a pure
+		// /v1/models 200 is free (FR-010).
+		var probeCost float64
+		if usedInference {
+			probeCost = probeMessageCostUSD
+		}
 		if err != nil {
-			// The /v1/models listing can fail (or be unsupported) even when the
-			// backend can still serve inference. Before declaring it unhealthy,
-			// confirm with a real message request against a known model.
-			log.Printf("[%s] models probe failed (%dms): %v — verifying with %s", b.Name, latency, err, healthCheckModel)
-			mStart := time.Now()
-			if mErr := probeMessages(client, baseURL, b.APIKey); mErr != nil {
-				latency = time.Since(start).Milliseconds()
-				log.Printf("[%s] health FAIL (%dms): models: %v; messages: %v", b.Name, latency, err, mErr)
-				results = append(results, healthBackend{Name: b.Name, Healthy: false, LatencyMs: latency, Error: mErr.Error()})
-			} else {
-				latency = time.Since(mStart).Milliseconds()
-				log.Printf("[%s] health OK via %s message probe (%dms)", b.Name, healthCheckModel, latency)
-				results = append(results, healthBackend{Name: b.Name, Healthy: true, LatencyMs: latency})
-			}
+			log.Printf("[%s] health FAIL (%dms) code=%d: %v", b.Name, latency, code, err)
+			results = append(results, healthBackend{
+				Name: b.Name, Healthy: false, LatencyMs: latency,
+				Error: err.Error(), ObservedCode: code, RetryAfter: retryAfter,
+				ProbeCostUSD: probeCost,
+			})
 		} else {
-			log.Printf("[%s] health OK (%dms)", b.Name, latency)
-			results = append(results, healthBackend{Name: b.Name, Healthy: true, LatencyMs: latency})
+			log.Printf("[%s] health OK (%dms) code=%d", b.Name, latency, code)
+			results = append(results, healthBackend{
+				Name: b.Name, Healthy: true, LatencyMs: latency, ObservedCode: code,
+				ProbeCostUSD: probeCost,
+			})
 		}
 	}
 
@@ -169,71 +197,43 @@ func runHealthProbe(client *http.Client, cfg *config.Config, gatewayURL string) 
 	log.Println("health sync complete")
 }
 
-// healthCheckModel is a real model used to verify a backend can actually serve
-// inference when the lightweight /v1/models probe fails.
-const healthCheckModel = "claude-sonnet-4-6"
-
-// probeModels performs a GET /v1/models and returns an error if unreachable/non-200.
-func probeModels(client *http.Client, baseURL, apiKey string) error {
-	_, err := doGet(client, baseURL+"/v1/models", apiKey)
-	return err
-}
-
-// probeMessages sends a minimal /v1/messages request with a real model and
-// verifies the backend returns a well-formed message response. This is a
-// stronger signal than /v1/models: it confirms the backend can actually route
-// and serve inference.
-func probeMessages(client *http.Client, baseURL, apiKey string) error {
-	reqBody, err := json.Marshal(map[string]any{
-		"model":      healthCheckModel,
-		"max_tokens": 16,
-		"messages": []map[string]any{
-			{"role": "user", "content": "ping"},
-		},
-	})
+// fetchQuotaIsolated asks the gateway which backends are currently quota-isolated
+// (state=isolated AND (quota_exhausted OR last_http_code==403)) so they can be
+// excluded from billable probing. Returns an empty set on any error (fail-open:
+// probing is still safe, just not skipped).
+func fetchQuotaIsolated(client *http.Client, gatewayURL, secret string) map[string]bool {
+	out := map[string]bool{}
+	req, err := http.NewRequest(http.MethodGet, gatewayURL+"/admin/api/backends", nil)
 	if err != nil {
-		return err
+		return out
 	}
-
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/messages", bytes.NewReader(reqBody))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
+	req.Header.Set("Authorization", "Bearer "+secret)
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		log.Printf("fetch backend list failed (probing all): %v", err)
+		return out
 	}
 	defer resp.Body.Close()
-
-	var buf bytes.Buffer
-	buf.ReadFrom(resp.Body)
-
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(buf.String()))
+		return out
 	}
-
-	// Validate the response is a proper message (type == "message") rather than
-	// an error payload returned with a 200 status.
-	var result struct {
-		Type    string `json:"type"`
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-		} `json:"content"`
+	var payload struct {
+		Backends []struct {
+			Name           string `json:"name"`
+			State          string `json:"state"`
+			QuotaExhausted bool   `json:"quota_exhausted"`
+			LastHTTPCode   int    `json:"last_http_code"`
+		} `json:"backends"`
 	}
-	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
-		return fmt.Errorf("decode response: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return out
 	}
-	if result.Type != "message" || len(result.Content) == 0 {
-		return fmt.Errorf("unexpected response shape (type=%q, content=%d)", result.Type, len(result.Content))
+	for _, b := range payload.Backends {
+		if b.State == "isolated" && (b.QuotaExhausted || b.LastHTTPCode == 403) {
+			out[b.Name] = true
+		}
 	}
-
-	return nil
+	return out
 }
 
 // syncHealthToServer posts health probe results to the gateway.

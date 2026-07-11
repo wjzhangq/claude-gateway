@@ -2,12 +2,12 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"math/rand"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,7 +41,7 @@ const (
 
 // Thresholds for state transitions driven by consecutive request outcomes.
 const (
-	consecErrToDegrade    = 3 // consecutive errors: healthy -> degraded
+	consecErrToDegrade    = 3 // reserved: passive path fast-ejects (see RecordResult); Degraded is entered via probe recovery / windowed rate (US11, FR-027)
 	consecErrToQuarantine = 5 // consecutive errors: -> quarantine
 	consecOKToHealthy     = 3 // consecutive successes: degraded -> healthy (probe-driven)
 )
@@ -71,6 +71,35 @@ const (
 const (
 	failsafeTrigger   = 3 // routable < this triggers the failsafe
 	failsafeTargetCap = 7 // promote until routable >= min(this, total)
+)
+
+// Feature 003 hardening tunables (see specs/003 research.md R-table). All are
+// default-in-code; exposing them via config is optional and out of scope for v1.
+const (
+	// Quota isolation: default policy is a jittered long TTL + probe recovery
+	// instead of a hardcoded wall-clock reset (FR-013/FR-014).
+	quotaIsolationTTL = 6 * 60 * 60 // 6h base, jittered ±20%
+
+	// Windowed error-rate signal for flapping backends (FR-018/FR-019).
+	windowedMinSamples  = 8
+	windowedDegradeRate = 0.5
+	windowedIsolateRate = 0.8
+	windowedRecoverRate = 0.3
+
+	// Auth-quarantine exponential backoff cap (FR-020).
+	authQuarantineMaxTTL = 24 * 60 * 60 // 24h
+
+	// Bounded, budget-aware failover chain (FR-022/FR-023).
+	failoverBudgetSecs    = 20 // total wall-clock budget across a request's failover chain
+	quotaCascadeThreshold = 3  // this many quota reports within the window => fast-fail
+	cascadeWindowSecs     = 10
+
+	// Retry-After honored bounds (FR-025/FR-026).
+	retryAfterMinSecs = 5
+	retryAfterMaxSecs = 30 * 60 // 30min
+
+	// Startup validationFailed re-check cadence (FR-011 secondary safety net).
+	revalidatePeriodSecs = 60 * 60 // hourly
 )
 
 // Health / soft weighting factors.
@@ -180,6 +209,7 @@ type Backend struct {
 	URL              string
 	APIKey           string
 	Weight           int
+	quotaReset       string // "" (long-TTL), "cst-midnight", "utc-midnight" (FR-014)
 	client           *http.Client
 	state            atomic.Int32  // stateHealthy/Degraded/Isolated/Probing/Quarantine
 	enteredAt        atomic.Int64  // unix s: when the current state was entered
@@ -204,6 +234,17 @@ type Backend struct {
 	statusCapacity   int           // dynamic capacity: max(50, 10 * backends_count)
 	statusMu         sync.Mutex
 	owner            *LoadBalancer // balancer that owns this backend (for clock/jitter access)
+
+	// Feature 003 observability + backoff state (FR-020, FR-028..FR-030).
+	totalErr             atomic.Int64    // cumulative impacting errors (never reset at runtime); distinct from consecErr
+	authQuarantineCount  atomic.Int64    // consecutive auth (401) quarantines; drives exponential TTL
+	failsafePromotions   atomic.Int64    // times force-promoted by the failsafe
+	probeCostCents       atomic.Int64    // accumulated estimated inference-probe cost (cents)
+	estSpendAt403Cents   atomic.Int64    // quotaUsage snapshot at first quota-403 (0 = not seen)
+	limitAt403Cents      atomic.Int64    // quotaLimit snapshot at first quota-403
+	dwellByState         [6]atomic.Int64 // accumulated seconds spent in each state
+	isolationCountByCode map[int]int64   // per-code isolation tally (guarded by metricsMu)
+	metricsMu            sync.Mutex
 }
 
 // defaultLB provides clock and jitter for backends constructed without an owner
@@ -286,10 +327,32 @@ func baseCapForCode(code int) (base, cap int64) {
 // secondsUntilCSTMidnight returns seconds from now until the next 00:00 CST,
 // reusing the fixed zone used by quotaResetLoop.
 func secondsUntilCSTMidnight(now time.Time) int64 {
-	cst := time.FixedZone("CST", 8*3600)
-	n := now.In(cst)
-	next := time.Date(n.Year(), n.Month(), n.Day()+1, 0, 0, 0, 0, cst)
+	return secondsUntilMidnight(now, 8*3600)
+}
+
+// secondsUntilMidnight returns seconds from now until the next 00:00 in the
+// fixed zone at offsetSecs east of UTC.
+func secondsUntilMidnight(now time.Time, offsetSecs int) int64 {
+	zone := time.FixedZone("z", offsetSecs)
+	n := now.In(zone)
+	next := time.Date(n.Year(), n.Month(), n.Day()+1, 0, 0, 0, 0, zone)
 	return int64(next.Sub(n).Seconds())
+}
+
+// quotaIsolationSecs returns the cooldown (seconds) for a quota-isolated backend
+// per its configured reset policy (FR-013/FR-014). Default ("" policy) is a
+// jittered long TTL so recovery is discovered by probe/releaseExpired rather
+// than bound to a single hardcoded wall-clock instant that may not match the
+// backend's real reset.
+func (lb *LoadBalancer) quotaIsolationSecs(b *Backend, now time.Time) int64 {
+	switch b.quotaReset {
+	case "cst-midnight":
+		return secondsUntilCSTMidnight(now)
+	case "utc-midnight":
+		return secondsUntilMidnight(now, 0)
+	default:
+		return lb.jitter(quotaIsolationTTL)
+	}
 }
 
 // jitter applies ±20% to a seconds value using the injected rand source.
@@ -308,17 +371,27 @@ func (lb *LoadBalancer) jitter(secs int64) int64 {
 // special case, with ±20% jitter applied. consec drives exponential backoff via
 // the reconcile probe path (handled in judgeProbing); the initial entry uses the
 // base TTL for the code.
-//   - retryAfterUnix > 0: use the absolute expiry from the 429 Retry-After header.
-//   - quotaBody: a 403 whose body clearly indicates quota → TTL to next 00:00 CST.
-func (lb *LoadBalancer) computeTTL(code int, retryAfterUnix int64, quotaBody bool, now time.Time) int64 {
+//   - retryAfterUnix > 0: honor the 429 Retry-After, clamped to [retryAfterMinSecs,
+//     retryAfterMaxSecs] so one header can neither remove a node for hours (FR-025)
+//     nor cause a hot re-probe loop (FR-026).
+//   - quotaBody: a 403 whose body clearly indicates quota → per-backend quota
+//     reset policy (default: jittered long TTL), not a single hardcoded clock (FR-013).
+func (lb *LoadBalancer) computeTTL(b *Backend, code int, retryAfterUnix int64, quotaBody bool, now time.Time) int64 {
 	nowUnix := now.Unix()
-	// 429 Retry-After takes precedence: honor the absolute expiry directly (no jitter).
+	// 429 Retry-After takes precedence: honor the absolute expiry, clamped.
 	if code == 429 && retryAfterUnix > nowUnix {
-		return retryAfterUnix - nowUnix
+		secs := retryAfterUnix - nowUnix
+		if secs > retryAfterMaxSecs {
+			secs = retryAfterMaxSecs
+		}
+		if secs < retryAfterMinSecs {
+			secs = retryAfterMinSecs
+		}
+		return secs
 	}
-	// 403 quota body → lock until the daily reset (no jitter; it's an absolute boundary).
+	// 403 quota body → recover per the backend's configured quota-reset policy.
 	if code == 403 && quotaBody {
-		return secondsUntilCSTMidnight(now)
+		return lb.quotaIsolationSecs(b, now)
 	}
 	base, _ := baseCapForCode(code)
 	return lb.jitter(base)
@@ -332,6 +405,13 @@ func (lb *LoadBalancer) computeTTL(code int, retryAfterUnix int64, quotaBody boo
 //   - ErrRateLimit/ErrServer/ErrTransport/ErrForbidden: Isolated with code-specific TTL, consecErr++.
 //   - consecErr reaching the quarantine threshold: Quarantine regardless of class.
 //   - A Probing backend shielded by the failsafe (probeShieldUntil) is not re-isolated.
+//
+// Degraded triggers (FR-027): the passive request path does NOT enter Degraded —
+// the first impacting error isolates directly (fast-eject is intentional). The
+// Degraded state is reachable via three documented paths, all verified in tests:
+//  1. Probe recovery: Isolated/Quarantine -> Probing -> Degraded (SetHealthStatus true).
+//  2. Windowed error rate >= windowedDegradeRate on a Healthy node (softUpDown, US7).
+//  3. Active probe failure on a Healthy node: Healthy -> Degraded (SetHealthStatus false).
 //
 // This method requires a *LoadBalancer receiver access for TTL/jitter; it is
 // exposed on Backend via lb.recordResult. RecordResult is kept as a Backend
@@ -359,6 +439,7 @@ func (lb *LoadBalancer) recordResult(b *Backend, class ErrorClass, retryAfterUni
 
 	case ErrNone:
 		b.consecErr.Store(0)
+		b.authQuarantineCount.Store(0) // a success clears auth-backoff escalation (FR-020)
 		b.lastSuccessAt.Store(now.Unix())
 		// Promote degraded -> healthy after enough consecutive successes.
 		if b.state.Load() == stateDegraded {
@@ -375,13 +456,16 @@ func (lb *LoadBalancer) recordResult(b *Backend, class ErrorClass, retryAfterUni
 	case ErrAuth:
 		// 401: key invalid -> Quarantine + alert.
 		b.lastErr.Store(now.Unix())
+		b.totalErr.Add(1)
 		b.consecOK.Store(0)
 		b.consecErr.Add(1)
 		lb.setQuarantine(b, 401, now, "auth failure (401)")
+		lb.eventFailsafe(now)
 		return
 
 	default: // ErrRateLimit, ErrServer, ErrTransport, ErrForbidden
 		b.lastErr.Store(now.Unix())
+		b.totalErr.Add(1)
 		b.consecOK.Store(0)
 		n := b.consecErr.Add(1)
 
@@ -393,7 +477,16 @@ func (lb *LoadBalancer) recordResult(b *Backend, class ErrorClass, retryAfterUni
 		// Consecutive-failure escalation to Quarantine regardless of class.
 		if n >= consecErrToQuarantine {
 			lb.setQuarantine(b, int(b.lastHTTPCode.Load()), now, "5 consecutive failures")
+			lb.eventFailsafe(now)
 			return
+		}
+
+		// Calibration snapshot (FR-030): on the first quota-indicating 403, record
+		// the estimated spend and configured limit so budget-estimate error can be
+		// measured after the fact.
+		if class == ErrForbidden && quotaBody && b.estSpendAt403Cents.Load() == 0 {
+			b.estSpendAt403Cents.Store(b.quotaUsage.Load())
+			b.limitAt403Cents.Store(b.quotaLimit.Load())
 		}
 
 		code := httpCodeForClass(class)
@@ -401,6 +494,26 @@ func (lb *LoadBalancer) recordResult(b *Backend, class ErrorClass, retryAfterUni
 			code = int(lc)
 		}
 		lb.setIsolated(b, code, retryAfterUnix, quotaBody, now)
+		lb.eventFailsafe(now)
+	}
+}
+
+// eventFailsafe runs the failsafe immediately after a request-path transition
+// into a non-routable state, closing the ~60s window that waiting for the next
+// reconcile tick would open (FR-001). It is called from recordResult, which
+// holds no lock, so it takes its own RLock; the reconcile/probe callers that
+// already hold lb.mu invoke lb.failsafe directly instead.
+//
+// It only intervenes on fleets larger than the trigger: on a fleet with
+// failsafeTrigger or fewer nodes, "routable < trigger" is the fleet's steady
+// state (it can never reach the floor), so synchronously promoting a
+// just-isolated node would only churn the request path. Such small fleets rely
+// on the 60s reconcile pass, which promotes without this size gate.
+func (lb *LoadBalancer) eventFailsafe(now time.Time) {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	if len(lb.backends) > failsafeTrigger && lb.routableCount() < failsafeTrigger {
+		lb.failsafe(now)
 	}
 }
 
@@ -412,21 +525,66 @@ func (b *Backend) setState(s int32, now time.Time) {
 
 // setIsolated moves a backend to Isolated with a code-specific TTL. No-op alert.
 func (lb *LoadBalancer) setIsolated(b *Backend, code int, retryAfterUnix int64, quotaBody bool, now time.Time) {
-	ttl := lb.computeTTL(code, retryAfterUnix, quotaBody, now)
+	ttl := lb.computeTTL(b, code, retryAfterUnix, quotaBody, now)
 	b.ttlUntil.Store(now.Unix() + ttl)
-	if b.state.Swap(stateIsolated) != stateIsolated {
+	prev := b.state.Swap(stateIsolated)
+	if prev != stateIsolated {
+		b.accrueDwell(prev, now)
+		b.noteIsolation(code)
 		log.Printf("[backend:%s] isolated: code=%d ttl=%ds", b.Name, code, ttl)
 	}
 	b.enteredAt.Store(now.Unix())
 }
 
+// noteIsolation increments the per-code isolation tally for metrics (FR-029).
+func (b *Backend) noteIsolation(code int) {
+	b.metricsMu.Lock()
+	if b.isolationCountByCode == nil {
+		b.isolationCountByCode = make(map[int]int64)
+	}
+	b.isolationCountByCode[code]++
+	b.metricsMu.Unlock()
+}
+
+// accrueDwell adds the time spent in prevState (the state being left) to its
+// dwell bucket (FR-029). Called on state exit, before enteredAt is reset.
+func (b *Backend) accrueDwell(prevState int32, now time.Time) {
+	if prevState < 0 || int(prevState) >= len(b.dwellByState) {
+		return
+	}
+	entered := b.enteredAt.Load()
+	if entered > 0 && now.Unix() > entered {
+		b.dwellByState[prevState].Add(now.Unix() - entered)
+	}
+}
+
 // setQuarantine moves a backend to Quarantine with a long TTL and raises an alert
-// on entry (FR-038).
+// on entry (FR-038). For auth (401) quarantines the TTL grows exponentially with
+// the repeat count (FR-020): a revoked key does not self-heal, so re-probing it
+// every 15m is wasted; back off 15m -> 30m -> 1h ... capped at authQuarantineMaxTTL.
+// The count resets on any 2xx (recordResult ErrNone) or a key-rotation signal
+// (ResetAuthQuarantine).
 func (lb *LoadBalancer) setQuarantine(b *Backend, code int, now time.Time, reason string) {
 	base, _ := baseCapForCode(401) // Quarantine always uses the 401 TTL band
-	ttl := lb.jitter(base)
+	var ttl int64
+	if code == 401 {
+		shift := b.authQuarantineCount.Add(1) - 1 // 0 on first quarantine
+		if shift > 30 {
+			shift = 30 // guard against int64 overflow on the left shift
+		}
+		grown := base << uint(shift)
+		if grown > authQuarantineMaxTTL || grown <= 0 {
+			grown = authQuarantineMaxTTL
+		}
+		ttl = lb.jitter(grown)
+	} else {
+		ttl = lb.jitter(base)
+	}
 	b.ttlUntil.Store(now.Unix() + ttl)
-	if b.state.Swap(stateQuarantine) != stateQuarantine {
+	prev := b.state.Swap(stateQuarantine)
+	if prev != stateQuarantine {
+		b.accrueDwell(prev, now)
+		b.noteIsolation(code)
 		alert(b.Name, reason)
 	}
 	b.enteredAt.Store(now.Unix())
@@ -469,6 +627,41 @@ type LoadBalancer struct {
 	rng    *rand.Rand // injectable randomness for jitter
 
 	lastFailsafeAt atomic.Int64 // unix s of last failsafe run (hysteresis)
+
+	quotaReportMu    sync.Mutex // guards quotaReportTimes
+	quotaReportTimes []int64    // unix s of recent quota reports (cascade fast-fail, FR-023)
+}
+
+// noteQuotaReport records that a backend just reported a quota failure, for the
+// cascade fast-fail detector (FR-023).
+func (lb *LoadBalancer) noteQuotaReport(now time.Time) {
+	lb.quotaReportMu.Lock()
+	defer lb.quotaReportMu.Unlock()
+	cutoff := now.Unix() - cascadeWindowSecs
+	kept := lb.quotaReportTimes[:0]
+	for _, t := range lb.quotaReportTimes {
+		if t >= cutoff {
+			kept = append(kept, t)
+		}
+	}
+	lb.quotaReportTimes = append(kept, now.Unix())
+}
+
+// quotaCascadeActive reports whether at least quotaCascadeThreshold backends
+// reported quota within the last cascadeWindowSecs — the signal to fast-fail a
+// request instead of walking the remaining backends and adding load at the worst
+// moment (FR-023).
+func (lb *LoadBalancer) quotaCascadeActive(now time.Time) bool {
+	lb.quotaReportMu.Lock()
+	defer lb.quotaReportMu.Unlock()
+	cutoff := now.Unix() - cascadeWindowSecs
+	n := 0
+	for _, t := range lb.quotaReportTimes {
+		if t >= cutoff {
+			n++
+		}
+	}
+	return n >= quotaCascadeThreshold
 }
 
 // NewLoadBalancer builds backends from config and starts the reconcile + quota tickers.
@@ -486,7 +679,35 @@ func NewLoadBalancer(cfgs []config.BackendAPI) *LoadBalancer {
 	lb.updateCapacities()
 	go lb.quotaResetLoop()
 	go lb.reconcileLoop()
+	go lb.revalidateLoop()
 	return lb
+}
+
+// revalidateLoop periodically re-checks backends permanently marked
+// validationFailed at startup and clears the flag if they now pass the shared
+// reachability probe (FR-011 secondary safety net). This heals a transient
+// startup failure that would otherwise silently keep a usable backend disabled
+// forever. It runs off the hot path and performs its own network I/O, so it is
+// a separate goroutine rather than a step in the synchronous Reconcile pass.
+func (lb *LoadBalancer) revalidateLoop() {
+	ticker := time.NewTicker(revalidatePeriodSecs * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		lb.mu.RLock()
+		failed := make([]*Backend, 0)
+		for _, b := range lb.backends {
+			if b.validationFailed.Load() {
+				failed = append(failed, b)
+			}
+		}
+		lb.mu.RUnlock()
+		for _, b := range failed {
+			if validateBackend(b) {
+				b.validationFailed.Store(false)
+				log.Printf("[backend:%s] revalidate: recovered, re-enabled", b.Name)
+			}
+		}
+	}
 }
 
 // newBackend constructs a Backend with its dedicated HTTP client and owner back-ref.
@@ -498,10 +719,11 @@ func (lb *LoadBalancer) newBackend(c config.BackendAPI) *Backend {
 		DisableCompression:  true, // prevent gzip on SSE streams (e.g. MiniMax returns compressed binary)
 	}
 	return &Backend{
-		Name:   c.Name,
-		URL:    c.URL,
-		APIKey: c.APIKey,
-		Weight: c.Weight,
+		Name:       c.Name,
+		URL:        c.URL,
+		APIKey:     c.APIKey,
+		Weight:     c.Weight,
+		quotaReset: c.QuotaReset,
 		client: &http.Client{
 			Transport: transport,
 			Timeout:   300 * time.Second, // long for streaming
@@ -652,6 +874,31 @@ func (lb *LoadBalancer) pick(exclude map[string]bool) *Backend {
 		b.currentWeight += w
 		if best == nil || b.currentWeight > best.currentWeight {
 			best = b
+		}
+	}
+	if best == nil && len(lb.backends) > failsafeTrigger {
+		// No routable candidate on a fleet large enough for the floor to be
+		// meaningful: synchronously run the failsafe (FR-002) to force-promote
+		// recoverable backends, then re-scan once. This closes the availability
+		// window that would otherwise wait for the 60s reconcile. We already hold
+		// lb.mu.RLock; failsafe only performs atomic writes, so it is safe here
+		// without upgrading the lock. Small fleets (<= trigger) fall through and
+		// return nil, preserving the "isolated node is unselectable" contract.
+		lb.failsafe(lb.nowFn())
+		total = 0
+		for _, b := range lb.backends {
+			if exclude != nil && exclude[b.Name] {
+				continue
+			}
+			w := b.effectiveWeight()
+			if w <= 0 {
+				continue
+			}
+			total += w
+			b.currentWeight += w
+			if best == nil || b.currentWeight > best.currentWeight {
+				best = b
+			}
 		}
 	}
 	if best == nil {
@@ -881,19 +1128,55 @@ func (lb *LoadBalancer) judgeProbing(now time.Time) {
 	}
 }
 
+// windowedErrorRate returns the impacting-error rate (403/429/5xx/transport==0)
+// and sample count over the recent ring-buffer window (recentCodes). It gives a
+// flapping backend — one that alternates success/failure so consecErr never
+// accumulates — a rate-based trigger for degrade/isolate (US7, FR-018).
+func (b *Backend) windowedErrorRate(now time.Time) (rate float64, samples int) {
+	codes := b.recentCodes(now)
+	if len(codes) == 0 {
+		return 0, 0
+	}
+	errs := 0
+	for _, c := range codes {
+		if c == 403 || c == 429 || c >= 500 || c == 0 {
+			errs++
+		}
+	}
+	return float64(errs) / float64(len(codes)), len(codes)
+}
+
 // softUpDown handles the soft transitions: Degraded->Healthy after a clean
-// window, consecErr decay after a clean window, and marking idle Healthy nodes
-// as due-for-probe (logged; the external probe/traffic will exercise them).
+// window, consecErr decay after a clean window, the windowed error-rate signal
+// for flapping backends (US7), and marking idle Healthy nodes as due-for-probe.
 func (lb *LoadBalancer) softUpDown(now time.Time) {
 	nowUnix := now.Unix()
 	for _, b := range lb.backends {
+		// Windowed error-rate signal (FR-018): catch flappers that never build a
+		// consecutive run. Only acts on routable states; a sustained high rate
+		// degrades, a very high rate isolates. Recovery is gated below (< recover).
+		rate, samples := b.windowedErrorRate(now)
+		if samples >= windowedMinSamples && isRoutable(b.state.Load()) {
+			if rate >= windowedIsolateRate {
+				lb.setIsolated(b, int(b.lastHTTPCode.Load()), 0, false, now)
+				log.Printf("[backend:%s] windowed error rate %.0f%% (n=%d): -> isolated", b.Name, rate*100, samples)
+				continue
+			}
+			if rate >= windowedDegradeRate && b.state.Load() == stateHealthy {
+				b.setState(stateDegraded, now)
+				log.Printf("[backend:%s] windowed error rate %.0f%% (n=%d): healthy -> degraded", b.Name, rate*100, samples)
+			}
+		}
+
 		s := b.state.Load()
 		switch s {
 		case stateDegraded:
-			// Clean for the full window with recent successes -> Healthy.
+			// Clean for the full window with recent successes AND a windowed rate
+			// below the recovery threshold -> Healthy.
 			last := b.lastSuccessAt.Load()
 			entered := b.enteredAt.Load()
-			if last > 0 && last >= entered && nowUnix-entered >= cleanWindowSecs && b.consecErr.Load() == 0 {
+			rateOK := samples < windowedMinSamples || rate < windowedRecoverRate
+			if last > 0 && last >= entered && nowUnix-entered >= cleanWindowSecs && b.consecErr.Load() == 0 && rateOK {
 				b.setState(stateHealthy, now)
 				b.consecOK.Store(0)
 				log.Printf("[backend:%s] clean %ds: degraded -> healthy", b.Name, cleanWindowSecs)
@@ -951,6 +1234,14 @@ type failsafeCandidate struct {
 // Quarantine candidates to Probing (ignoring TTL) until routable >= min(
 // failsafeTargetCap, total), shielding each for failsafeShieldSecs and recording
 // lastFailsafeAt for hysteresis.
+//
+// Promotion is one-shot: a single invocation promotes as many candidates as
+// needed to reach min(failsafeTargetCap=7, total) in one pass, not one node per
+// cycle. Feature 003 (FR-001/FR-002) also invokes it event-driven — from
+// eventFailsafe on a request-path transition into a non-routable state, and
+// synchronously from pick() when no routable candidate is found — so recovery no
+// longer waits up to 60s for the reconcile tick. Callers already holding lb.mu
+// (Reconcile, pick) call this directly; eventFailsafe takes its own RLock.
 func (lb *LoadBalancer) failsafe(now time.Time) {
 	nowUnix := now.Unix()
 
@@ -1031,9 +1322,11 @@ func (lb *LoadBalancer) failsafe(now time.Time) {
 		if lb.routableCount() >= target {
 			break
 		}
+		c.b.accrueDwell(c.b.state.Load(), now)
 		c.b.setState(stateProbing, now)
 		c.b.ttlUntil.Store(0)
 		c.b.probeShieldUntil.Store(nowUnix + failsafeShieldSecs)
+		c.b.failsafePromotions.Add(1)
 		promoted++
 		log.Printf("[backend:%s] failsafe: force-promoted to probing (shield %ds)", c.b.Name, failsafeShieldSecs)
 	}
@@ -1047,13 +1340,25 @@ func (lb *LoadBalancer) failsafe(now time.Time) {
 // External probe + quota (health/quota admin sync)
 // ---------------------------------------------------------------------------
 
-// SetHealthStatus is called by the external active health probe (check --health,
-// via /admin/api/backends/health). It drives the 5-state machine (FR-016, FR-035):
+// SetHealthStatus is the compatibility wrapper for callers that do not carry the
+// probe-observed code / Retry-After (older check binaries). It delegates to
+// SetHealthStatusDetailed with observedCode=0 (server-band fallback).
+func (lb *LoadBalancer) SetHealthStatus(name string, healthy bool, latencyMs int64) bool {
+	return lb.SetHealthStatusDetailed(name, healthy, latencyMs, 0, 0)
+}
+
+// SetHealthStatusDetailed is called by the external active health probe
+// (check --health, via /admin/api/backends/health). It drives the 5-state
+// machine (FR-016, FR-035) and, on failure, isolates using the SAME computeTTL
+// policy as the passive request path (FR-005..FR-007): the probe-observed HTTP
+// code and Retry-After determine the cooldown, so a probe-observed 429 honors
+// its Retry-After instead of being mis-bucketed as a short server-band cooldown.
 //
 //	healthy=true:  Isolated/Quarantine -> Probing; Probing -> Degraded;
 //	               Degraded -> Healthy.
-//	healthy=false: Healthy -> Degraded; Degraded -> Isolated (default TTL).
-func (lb *LoadBalancer) SetHealthStatus(name string, healthy bool, latencyMs int64) bool {
+//	healthy=false: Healthy -> Degraded; Degraded/Probing -> Isolated
+//	               (TTL from observedCode + retryAfterUnix; 0 => server band).
+func (lb *LoadBalancer) SetHealthStatusDetailed(name string, healthy bool, latencyMs int64, observedCode int, retryAfterUnix int64) bool {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 	now := lb.nowFn()
@@ -1083,15 +1388,21 @@ func (lb *LoadBalancer) SetHealthStatus(name string, healthy bool, latencyMs int
 				// already healthy
 			}
 		} else {
+			// Prefer the probe-observed code; fall back to the last recorded live
+			// code, then to 0 (server band) — matching the passive path's TTL.
+			code := observedCode
+			if code == 0 {
+				code = int(b.lastHTTPCode.Load())
+			}
 			switch cur {
 			case stateHealthy:
 				b.setState(stateDegraded, now)
 				b.consecOK.Store(0)
 				log.Printf("[backend:%s] probe FAIL: healthy -> degraded", b.Name)
 			case stateDegraded, stateProbing:
-				lb.setIsolated(b, int(b.lastHTTPCode.Load()), 0, false, now)
+				lb.setIsolated(b, code, retryAfterUnix, false, now)
 				b.consecOK.Store(0)
-				log.Printf("[backend:%s] probe FAIL: %s -> isolated", b.Name, stateName(cur))
+				log.Printf("[backend:%s] probe FAIL: %s -> isolated (code=%d)", b.Name, stateName(cur), code)
 			default:
 				// already non-routable
 			}
@@ -1108,14 +1419,59 @@ func (lb *LoadBalancer) MarkQuotaExhausted(name string) bool {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 	now := lb.nowFn()
+	lb.noteQuotaReport(now) // feed the cascade fast-fail detector (FR-023)
 	for _, b := range lb.backends {
 		if b.Name == name {
 			if !b.quotaExhausted.Swap(true) {
 				b.quotaCheckedAt.Store(now.Unix())
-				// Isolate until the daily reset (quota won't recover before then).
-				b.ttlUntil.Store(now.Unix() + secondsUntilCSTMidnight(now))
-				b.setState(stateIsolated, now)
-				log.Printf("[backend:%s] quota exhausted (insufficient balance): isolated until daily reset", b.Name)
+				// Isolate per the backend's quota-reset policy (default: jittered
+				// long TTL + probe recovery), not a single hardcoded clock (FR-013).
+				prev := b.state.Swap(stateIsolated)
+				b.accrueDwell(prev, now)
+				b.ttlUntil.Store(now.Unix() + lb.quotaIsolationSecs(b, now))
+				b.enteredAt.Store(now.Unix())
+				b.noteIsolation(403)
+				log.Printf("[backend:%s] quota exhausted (insufficient balance): isolated per quota_reset=%q", b.Name, b.quotaReset)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// QuotaCascadeActive reports whether a quota cascade is in progress (FR-023),
+// exposed for the request-path failover fast-fail.
+func (lb *LoadBalancer) QuotaCascadeActive() bool {
+	return lb.quotaCascadeActive(lb.nowFn())
+}
+
+// AddProbeCost attributes an inference-probe's estimated cost (USD) to a named
+// backend's spend accounting so budget stays closed (FR-010).
+func (lb *LoadBalancer) AddProbeCost(name string, costUSD float64) bool {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	for _, b := range lb.backends {
+		if b.Name == name {
+			b.probeCostCents.Add(int64(costUSD * 100))
+			return true
+		}
+	}
+	return false
+}
+
+// ResetAuthQuarantine clears the exponential auth-quarantine backoff for a named
+// backend and drops its cooldown so a rotated key is retried immediately (FR-021).
+func (lb *LoadBalancer) ResetAuthQuarantine(name string) bool {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	now := lb.nowFn()
+	for _, b := range lb.backends {
+		if b.Name == name {
+			b.authQuarantineCount.Store(0)
+			if b.state.Load() == stateQuarantine {
+				b.setState(stateProbing, now)
+				b.ttlUntil.Store(0)
+				log.Printf("[backend:%s] key rotated: quarantine -> probing", b.Name)
 			}
 			return true
 		}
@@ -1205,7 +1561,7 @@ func (lb *LoadBalancer) GetBackends() []BackendInfo {
 			State:           stateName(b.state.Load()),
 			EffectiveWeight: ew,
 			Disabled:        ew == 0,
-			ErrCount:        b.consecErr.Load(),
+			ErrCount:        b.totalErr.Load(),
 			ConsecFailures:  b.consecErr.Load(),
 			TTLUntil:        b.ttlUntil.Load(),
 			LastHTTPCode:    int(b.lastHTTPCode.Load()),
@@ -1233,6 +1589,54 @@ func (lb *LoadBalancer) GetBackendNames() []string {
 		names = append(names, b.Name)
 	}
 	return names
+}
+
+// BackendMetrics is the per-backend observability snapshot exposed via
+// /admin/api/backends/metrics for diagnosing the state machine and calibrating
+// the budget estimate (US12, FR-028..FR-030). In-memory only; resets on restart.
+type BackendMetrics struct {
+	Name                  string           `json:"name"`
+	TotalErr              int64            `json:"total_err"`
+	ConsecErr             int64            `json:"consec_err"`
+	IsolationCountByCode  map[string]int64 `json:"isolation_count_by_code"`
+	FailsafePromotions    int64            `json:"failsafe_promotions"`
+	ProbeCostUSD          float64          `json:"probe_cost_usd"`
+	DwellSecondsByState   map[string]int64 `json:"dwell_seconds_by_state"`
+	EstSpendAtFirst403USD float64          `json:"est_spend_at_first_403_usd"`
+	LimitAtFirst403USD    float64          `json:"limit_at_first_403_usd"`
+}
+
+// Metrics returns the per-backend observability snapshot for all backends.
+func (lb *LoadBalancer) Metrics() []BackendMetrics {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	out := make([]BackendMetrics, 0, len(lb.backends))
+	for _, b := range lb.backends {
+		b.metricsMu.Lock()
+		isoByCode := make(map[string]int64, len(b.isolationCountByCode))
+		for code, n := range b.isolationCountByCode {
+			isoByCode[strconv.Itoa(code)] = n
+		}
+		b.metricsMu.Unlock()
+
+		dwell := make(map[string]int64, len(b.dwellByState))
+		for s := range b.dwellByState {
+			dwell[stateName(int32(s))] = b.dwellByState[s].Load()
+		}
+
+		out = append(out, BackendMetrics{
+			Name:                  b.Name,
+			TotalErr:              b.totalErr.Load(),
+			ConsecErr:             b.consecErr.Load(),
+			IsolationCountByCode:  isoByCode,
+			FailsafePromotions:    b.failsafePromotions.Load(),
+			ProbeCostUSD:          float64(b.probeCostCents.Load()) / 100,
+			DwellSecondsByState:   dwell,
+			EstSpendAtFirst403USD: float64(b.estSpendAt403Cents.Load()) / 100,
+			LimitAtFirst403USD:    float64(b.limitAt403Cents.Load()) / 100,
+		})
+	}
+	return out
 }
 
 // PickForPerfTest selects a routable backend and returns its connection details.
@@ -1294,42 +1698,18 @@ func (lb *LoadBalancer) UpdateBackends(cfgs []config.BackendAPI) {
 }
 
 // validateBackend returns true if the backend passes the /v1/models health check.
+// validateBackend judges a backend usable via the SAME reachability logic as the
+// runtime active probe (FR-011): GET /v1/models, falling back to a minimal
+// /v1/messages inference call. This ensures a backend that serves inference but
+// does not support the listing endpoint is NOT permanently disabled at startup
+// (FR-012) — the previous listing-only check silently lost such capacity.
 func validateBackend(b *Backend) bool {
-	url := strings.TrimRight(b.URL, "/") + "/v1/models"
-	req, err := http.NewRequest(http.MethodGet, url, nil)
-	if err != nil {
-		log.Printf("[backend:%s] validate: build request error: %v", b.Name, err)
-		return false
-	}
-	req.Header.Set("Authorization", "Bearer "+b.APIKey)
-	req.Header.Set("x-api-key", b.APIKey)
-
 	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	code, _, err := ProbeReachable(client, b.URL, b.APIKey)
 	if err != nil {
-		log.Printf("[backend:%s] validate: request error: %v", b.Name, err)
+		log.Printf("[backend:%s] validate: FAIL — code=%d: %v", b.Name, code, err)
 		return false
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[backend:%s] validate: FAIL — HTTP %d", b.Name, resp.StatusCode)
-		return false
-	}
-
-	var result struct {
-		Data []json.RawMessage `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("[backend:%s] validate: decode response error: %v", b.Name, err)
-		return false
-	}
-
-	if len(result.Data) == 0 {
-		log.Printf("[backend:%s] validate: FAIL — data array is empty", b.Name)
-		return false
-	}
-
-	log.Printf("[backend:%s] validate: OK — %d model(s) available", b.Name, len(result.Data))
+	log.Printf("[backend:%s] validate: OK (code=%d)", b.Name, code)
 	return true
 }

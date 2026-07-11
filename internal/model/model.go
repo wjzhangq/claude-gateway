@@ -56,6 +56,7 @@ type UsageLog struct {
 	IsOpenClaw   bool      `db:"is_openclaw"   json:"is_openclaw"`
 	IsDowngraded bool      `db:"is_downgraded" json:"is_downgraded"`
 	UA           string    `db:"ua"            json:"ua"`
+	ErrorReason  string    `db:"error_reason"  json:"error_reason"`
 	CreatedAt    time.Time `db:"created_at"    json:"created_at"`
 }
 

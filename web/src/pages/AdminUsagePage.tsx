@@ -108,13 +108,32 @@ interface UsageLog {
   status_code: number
   is_openclaw: boolean
   ua: string
+  error_reason: string
   created_at: string
+}
+
+// Human-readable labels for the compact reason codes persisted in usage_logs.
+const ERROR_REASON_LABELS: Record<string, string> = {
+  auth_401: '认证失败 (401)',
+  forbidden_403: '拒绝访问 (403)',
+  quota_403: '配额耗尽 (403)',
+  rate_limit: '限流 (429)',
+  server_5xx: '服务端错误 (5xx)',
+  transport: '连接失败',
+  canceled: '客户端取消',
+  client_4xx: '客户端错误 (4xx)',
+  probe: '健康探测',
+  unknown: '未知错误',
+}
+
+function errorReasonLabel(code: string): string {
+  return ERROR_REASON_LABELS[code] || code
 }
 
 function SkeletonRow() {
   return (
     <tr>
-      {[80, 130, 90, 80, 70, 60, 60, 110].map((w, i) => (
+      {[80, 130, 90, 80, 70, 60, 90, 60, 110].map((w, i) => (
         <td key={i} className="px-4 py-3.5">
           <div className="skeleton h-3.5 rounded" style={{ width: w }} />
         </td>
@@ -308,7 +327,7 @@ export default function AdminUsagePage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['用户', '模型', 'Backend', '总 Token', '费用', '状态', 'UA', '时间'].map((h) => (
+              {['用户', '模型', 'Backend', '总 Token', '费用', '状态', '错误', 'UA', '时间'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
@@ -320,11 +339,13 @@ export default function AdminUsagePage() {
               Array.from({ length: 5 }).map((_, i) => <SkeletonRow key={i} />)
             ) : logs.length === 0 ? (
               <tr>
-                <td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">当天暂无数据</td>
+                <td colSpan={9} className="px-4 py-10 text-center text-sm text-gray-400">当天暂无数据</td>
               </tr>
             ) : (
-              logs.map((log) => (
-                <tr key={log.id} className="hover:bg-gray-50/50 transition-colors">
+              logs.map((log) => {
+                const isError = log.status_code >= 400 || !!log.error_reason
+                return (
+                <tr key={log.id} className={`transition-colors ${isError ? 'bg-red-50/40 hover:bg-red-50/70' : 'hover:bg-gray-50/50'}`}>
                   <td className="px-4 py-3.5">
                     <span className="font-medium text-gray-800">{log.itcode || log.user_id}</span>
                   </td>
@@ -347,12 +368,24 @@ export default function AdminUsagePage() {
                       {log.status_code}
                     </span>
                   </td>
+                  <td className="px-4 py-3.5">
+                    {log.error_reason ? (
+                      <span
+                        className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold bg-red-100 text-red-700 ring-1 ring-red-200"
+                        title={log.error_reason}
+                      >
+                        {errorReasonLabel(log.error_reason)}
+                      </span>
+                    ) : (
+                      <span className="text-gray-300 text-xs">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3.5 text-gray-600 text-xs font-mono">{log.ua}</td>
                   <td className="px-4 py-3.5 text-gray-400 text-xs">
                     {formatTime(log.created_at)}
                   </td>
                 </tr>
-              ))
+              )})
             )}
           </tbody>
         </table>

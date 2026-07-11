@@ -294,12 +294,12 @@ func (h *StatsHandler) GetMyQuota(c *gin.Context) {
 	}
 
 	resp := gin.H{
-		"itcode":             user.Itcode,
-		"date":               today,
+		"itcode":                  user.Itcode,
+		"date":                    today,
 		"backend_daily_limit":     backendLimit,
 		"backend_daily_used":      backendUsed,
 		"backend_daily_remaining": backendRemaining,
-		"backends":           backends,
+		"backends":                backends,
 	}
 
 	// ── AWS (only if enabled) ─────────────────────────────────────────────────
@@ -365,7 +365,7 @@ func (h *StatsHandler) ExportMyUsage(c *gin.Context) {
 	_ = w.Write([]string{
 		"id", "model", "backend",
 		"input_tokens", "output_tokens", "total_tokens", "cost_usd",
-		"status_code", "latency_ms", "is_openclaw", "is_downgraded", "ua", "created_at",
+		"status_code", "latency_ms", "is_openclaw", "is_downgraded", "ua", "error_reason", "created_at",
 	})
 	for _, l := range logs {
 		isOC := "0"
@@ -389,6 +389,7 @@ func (h *StatsHandler) ExportMyUsage(c *gin.Context) {
 			isOC,
 			isDG,
 			l.UA,
+			l.ErrorReason,
 			l.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
@@ -464,7 +465,7 @@ func (h *StatsHandler) ExportUsage(c *gin.Context) {
 	_ = w.Write([]string{
 		"id", "user_id", "itcode", "api_key_id", "model", "backend",
 		"input_tokens", "output_tokens", "total_tokens", "cost_usd",
-		"status_code", "latency_ms", "is_openclaw", "is_downgraded", "ua", "created_at",
+		"status_code", "latency_ms", "is_openclaw", "is_downgraded", "ua", "error_reason", "created_at",
 	})
 	for _, l := range logs {
 		isOC := "0"
@@ -491,6 +492,7 @@ func (h *StatsHandler) ExportUsage(c *gin.Context) {
 			isOC,
 			isDG,
 			l.UA,
+			l.ErrorReason,
 			l.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}

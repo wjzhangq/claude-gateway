@@ -209,9 +209,10 @@ func TestTTLPolicy_BaseRange(t *testing.T) {
 		{0, ttlBase5xx, ttlCap5xx}, // transport (no code)
 	}
 	lb, _ := newTestLB(singleCfg(1))
+	b := lb.backends[0]
 	now := time.Unix(1_000_000, 0)
 	for _, tc := range cases {
-		got := lb.computeTTL(tc.code, 0, false, now)
+		got := lb.computeTTL(b, tc.code, 0, false, now)
 		lo := int64(float64(tc.base) * 0.8)
 		hi := int64(float64(tc.base) * 1.2)
 		if got < lo || got > hi {
@@ -233,11 +234,27 @@ func TestTTLPolicy_RetryAfterOverrides429(t *testing.T) {
 	}
 }
 
-// 403 quota body -> TTL to next CST midnight (FR-013)
-func TestTTLPolicy_ForbiddenQuotaBodyExtends(t *testing.T) {
+// 403 quota body under the DEFAULT policy -> jittered long TTL (~6h), not a
+// hardcoded wall-clock instant (US5, FR-013/FR-014).
+func TestTTLPolicy_ForbiddenQuotaBodyDefaultLongTTL(t *testing.T) {
+	lb, _ := newTestLB(singleCfg(10))
+	b := lb.backends[0]
+	now := lb.nowFn()
+	lb.recordResult(b, ErrForbidden, 0, true)
+	got := b.ttlUntil.Load() - now.Unix()
+	lo := int64(float64(quotaIsolationTTL) * 0.8)
+	hi := int64(float64(quotaIsolationTTL) * 1.2)
+	if got < lo || got > hi {
+		t.Fatalf("403 quota body default policy: want ttl in [%d,%d] (~6h jittered), got %d", lo, hi, got)
+	}
+}
+
+// 403 quota body with a per-backend cst-midnight policy -> TTL to next CST
+// midnight (FR-014 per-backend override).
+func TestTTLPolicy_ForbiddenQuotaBodyCSTMidnight(t *testing.T) {
 	lb, frozen := newTestLB(singleCfg(10))
-	// Pin time to a known moment: 2024-01-15 14:00:00 UTC = 22:00 CST
-	// Next CST midnight is 2024-01-15 16:00:00 UTC (2h away)
+	lb.backends[0].quotaReset = "cst-midnight"
+	// 2024-01-15 14:00:00 UTC = 22:00 CST; next CST midnight is 2h away.
 	t0, _ := time.Parse(time.RFC3339, "2024-01-15T14:00:00Z")
 	*frozen = t0.Unix()
 	b := lb.backends[0]
@@ -245,7 +262,7 @@ func TestTTLPolicy_ForbiddenQuotaBodyExtends(t *testing.T) {
 	got := b.ttlUntil.Load() - t0.Unix()
 	want := secondsUntilCSTMidnight(t0)
 	if got != want {
-		t.Fatalf("403 quota body: want ttl=%d (CST midnight), got %d", want, got)
+		t.Fatalf("403 quota body (cst-midnight): want ttl=%d, got %d", want, got)
 	}
 }
 
@@ -551,14 +568,14 @@ func TestBudgetFactor_Tiers(t *testing.T) {
 		lo    float64
 		hi    float64
 	}{
-		{0, 100, 1.0, 1.0, 1.0},    // <80%
-		{79, 100, 1.0, 1.0, 1.0},   // just under 80%
-		{80, 100, 0, 0.3, 1.0},     // entering 80-95% band
-		{87.5, 100, 0.65, 0.3, 1.0},// midpoint 80-95% -> ~0.65
-		{95, 100, 0, 0.0, 0.31},    // entering 95-99% band -> ~0.3
-		{99, 100, 0, 0.04, 0.06},   // >=99% -> 0.05
-		{100, 100, 0, 0.04, 0.06},  // over limit -> 0.05
-		{0, 0, 1.0, 1.0, 1.0},      // no limit -> 1.0
+		{0, 100, 1.0, 1.0, 1.0},     // <80%
+		{79, 100, 1.0, 1.0, 1.0},    // just under 80%
+		{80, 100, 0, 0.3, 1.0},      // entering 80-95% band
+		{87.5, 100, 0.65, 0.3, 1.0}, // midpoint 80-95% -> ~0.65
+		{95, 100, 0, 0.0, 0.31},     // entering 95-99% band -> ~0.3
+		{99, 100, 0, 0.04, 0.06},    // >=99% -> 0.05
+		{100, 100, 0, 0.04, 0.06},   // over limit -> 0.05
+		{0, 0, 1.0, 1.0, 1.0},       // no limit -> 1.0
 	}
 	for _, tc := range cases {
 		f := budgetFactor(int64(tc.usage*100), int64(tc.limit*100))
@@ -653,7 +670,7 @@ func TestEffectiveWeight_DegradedReduced(t *testing.T) {
 	b.state.Store(stateDegraded)
 	ew := b.effectiveWeight()
 	want := int(float64(100) * degradedHealthFactor) // =30
-	if ew != want && ew != 1 { // min=1 guard applies if want<1
+	if ew != want && ew != 1 {                       // min=1 guard applies if want<1
 		t.Fatalf("degraded: want effectiveWeight=%d, got %d", want, ew)
 	}
 }
@@ -802,5 +819,306 @@ func TestRecovery_ReleaseNotBeforeTTL(t *testing.T) {
 	lb.releaseExpired(lb.nowFn())
 	if b.state.Load() != stateIsolated {
 		t.Fatal("backend must remain isolated before TTL expiry")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US1 (T008) – event-driven failsafe (FR-001/FR-002)
+// ---------------------------------------------------------------------------
+
+// A request-path transition that drops routable below the trigger on a fleet
+// larger than the trigger promotes immediately, without a reconcile tick.
+func TestEventFailsafe_PromotesOnTransition(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(5, 10)) // 5 > failsafeTrigger(3)
+	// Isolate backends until routable would drop below the trigger. Isolating
+	// the 3rd node takes routable from 3 -> 2 (< trigger); eventFailsafe fires.
+	for i := 0; i < 3; i++ {
+		lb.recordResult(lb.backends[i], ErrServer, 0, false)
+	}
+	if r := lb.routableCount(); r < failsafeTrigger {
+		t.Fatalf("event-driven failsafe must keep routable >= %d, got %d", failsafeTrigger, r)
+	}
+}
+
+// pick() with no routable candidate on a large-enough fleet triggers a
+// synchronous failsafe and returns a (probing) backend rather than nil.
+func TestPickFailsafe_SynchronousPromotion(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(5, 10))
+	// Force every backend non-routable directly (bypass recordResult so the
+	// event path doesn't pre-promote), simulating a burst that already landed.
+	for _, b := range lb.backends {
+		b.state.Store(stateIsolated)
+		b.ttlUntil.Store(lb.nowFn().Unix() + 300)
+	}
+	if lb.routableCount() != 0 {
+		t.Fatalf("precondition: 0 routable, got %d", lb.routableCount())
+	}
+	got := lb.pick(nil)
+	if got == nil {
+		t.Fatal("pick must synchronously failsafe-promote and return a backend")
+	}
+	if !isRoutable(got.state.Load()) {
+		t.Fatalf("picked backend must be routable, state=%d", got.state.Load())
+	}
+}
+
+// A fleet at or below the trigger does NOT synchronously promote from pick():
+// the "isolated node is unselectable" contract is preserved for small fleets.
+func TestPickFailsafe_SmallFleetReturnsNil(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(failsafeTrigger, 10)) // exactly trigger, not >
+	for _, b := range lb.backends {
+		b.state.Store(stateIsolated)
+		b.ttlUntil.Store(lb.nowFn().Unix() + 300)
+	}
+	if lb.pick(nil) != nil {
+		t.Fatal("small fleet (<= trigger) must return nil, not force-promote")
+	}
+}
+
+// Hysteresis prevents the event-driven failsafe from re-promoting within the
+// window after a first promotion.
+func TestEventFailsafe_Hysteresis(t *testing.T) {
+	lb, frozen := newTestLB(multiCfg(5, 10))
+	for _, b := range lb.backends {
+		b.state.Store(stateIsolated)
+		b.ttlUntil.Store(lb.nowFn().Unix() + 300)
+	}
+	lb.eventFailsafe(lb.nowFn())
+	first := lb.routableCount()
+	if first < failsafeTrigger {
+		t.Fatalf("first failsafe should reach trigger, got %d", first)
+	}
+	// Re-isolate everything, then fire again within the hysteresis window.
+	for _, b := range lb.backends {
+		b.state.Store(stateIsolated)
+	}
+	advance(frozen, failsafeHysteresisSecs-1)
+	lb.eventFailsafe(lb.nowFn())
+	if r := lb.routableCount(); r != 0 {
+		t.Fatalf("failsafe re-ran within hysteresis window: routable=%d", r)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US2 (T012) – probe carries observed code + Retry-After into shared TTL
+// ---------------------------------------------------------------------------
+
+func TestProbeDetailed_429HonorsRetryAfter(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(5, 10))
+	b := lb.backends[0]
+	b.state.Store(stateDegraded) // degraded so probe-fail isolates
+	now := lb.nowFn()
+	ra := now.Unix() + 120
+	if !lb.SetHealthStatusDetailed(b.Name, false, 10, 429, ra) {
+		t.Fatal("expected backend found")
+	}
+	if b.state.Load() != stateIsolated {
+		t.Fatalf("degraded + probe fail must isolate, got %d", b.state.Load())
+	}
+	got := b.ttlUntil.Load() - now.Unix()
+	if got != 120 {
+		t.Fatalf("probe-observed 429 must honor Retry-After (120s), got %d", got)
+	}
+}
+
+func TestProbeDetailed_ZeroCodeServerBand(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(5, 10))
+	b := lb.backends[0]
+	b.state.Store(stateDegraded)
+	now := lb.nowFn()
+	lb.SetHealthStatusDetailed(b.Name, false, 10, 0, 0) // no observed code
+	got := b.ttlUntil.Load() - now.Unix()
+	lo := int64(float64(ttlBase5xx) * 0.8)
+	hi := int64(float64(ttlBase5xx) * 1.2)
+	if got < lo || got > hi {
+		t.Fatalf("observed_code=0 must use server band [%d,%d], got %d", lo, hi, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US5 (T023) – quota isolation policy
+// ---------------------------------------------------------------------------
+
+func TestQuotaIsolation_DefaultLongTTL(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(5, 10))
+	b := lb.backends[0]
+	now := lb.nowFn()
+	lb.MarkQuotaExhausted(b.Name)
+	if b.state.Load() != stateIsolated {
+		t.Fatalf("quota exhausted must isolate, got %d", b.state.Load())
+	}
+	got := b.ttlUntil.Load() - now.Unix()
+	lo := int64(float64(quotaIsolationTTL) * 0.8)
+	hi := int64(float64(quotaIsolationTTL) * 1.2)
+	if got < lo || got > hi {
+		t.Fatalf("default quota policy TTL want [%d,%d], got %d", lo, hi, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US12 (T042) – cumulative vs consecutive counters + metrics
+// ---------------------------------------------------------------------------
+
+func TestMetrics_TotalVsConsecErr(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(5, 10))
+	b := lb.backends[0]
+	// Three impacting errors then a success: consec resets, total keeps.
+	for i := 0; i < 3; i++ {
+		b.lastHTTPCode.Store(500)
+		lb.recordResult(b, ErrServer, 0, false)
+		b.state.Store(stateHealthy) // allow re-isolation to count again
+	}
+	lb.recordResult(b, ErrNone, 0, false)
+	if b.consecErr.Load() != 0 {
+		t.Fatalf("consecErr must reset on success, got %d", b.consecErr.Load())
+	}
+	if b.totalErr.Load() != 3 {
+		t.Fatalf("totalErr must accumulate to 3, got %d", b.totalErr.Load())
+	}
+	m := lb.Metrics()
+	if len(m) == 0 || m[0].TotalErr != 3 {
+		t.Fatalf("Metrics must report total_err=3, got %+v", m)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US7 (T029) – windowed error-rate signal for flapping backends
+// ---------------------------------------------------------------------------
+
+func TestWindowedRate_FlapperDegradesThenIsolates(t *testing.T) {
+	lb, frozen := newTestLB(multiCfg(5, 10))
+	b := lb.backends[0]
+	// Alternate success/failure so consecErr never accumulates, but the windowed
+	// rate is ~0.5. Record 12 entries within the 5-min window.
+	for i := 0; i < 12; i++ {
+		code := 200
+		if i%2 == 0 {
+			code = 500
+		}
+		b.RecordRequest(code, 5)
+		advance(frozen, 1)
+	}
+	lb.softUpDown(lb.nowFn())
+	if b.state.Load() != stateDegraded && b.state.Load() != stateIsolated {
+		t.Fatalf("flapper (rate~0.5) must degrade/isolate, got %d", b.state.Load())
+	}
+
+	// Now push rate above the isolate threshold.
+	b.state.Store(stateHealthy)
+	for i := 0; i < 12; i++ {
+		b.RecordRequest(500, 5)
+		advance(frozen, 1)
+	}
+	lb.softUpDown(lb.nowFn())
+	if b.state.Load() != stateIsolated {
+		t.Fatalf("sustained high rate must isolate, got %d", b.state.Load())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US8 (T032) – auth-quarantine exponential backoff
+// ---------------------------------------------------------------------------
+
+func TestAuthQuarantine_ExponentialTTL(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(5, 10))
+	b := lb.backends[0]
+	base, _ := baseCapForCode(401)
+	var lastTTL int64
+	for i := 0; i < 4; i++ {
+		now := lb.nowFn()
+		lb.setQuarantine(b, 401, now, "auth")
+		ttl := b.ttlUntil.Load() - now.Unix()
+		// Each round should be >= the previous (monotonic growth), capped.
+		if i > 0 && ttl < lastTTL && lastTTL < authQuarantineMaxTTL {
+			t.Fatalf("round %d: TTL must grow, got %d after %d", i, ttl, lastTTL)
+		}
+		if ttl > int64(float64(authQuarantineMaxTTL)*1.2) {
+			t.Fatalf("round %d: TTL exceeds cap, got %d", i, ttl)
+		}
+		lastTTL = ttl
+		b.state.Store(stateHealthy) // allow re-quarantine
+	}
+	_ = base
+	// A success resets the escalation.
+	lb.recordResult(b, ErrNone, 0, false)
+	if b.authQuarantineCount.Load() != 0 {
+		t.Fatalf("2xx must reset authQuarantineCount, got %d", b.authQuarantineCount.Load())
+	}
+}
+
+func TestResetAuthQuarantine_KeyRotation(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(5, 10))
+	b := lb.backends[0]
+	lb.setQuarantine(b, 401, lb.nowFn(), "auth")
+	if b.state.Load() != stateQuarantine {
+		t.Fatal("precondition: quarantined")
+	}
+	if !lb.ResetAuthQuarantine(b.Name) {
+		t.Fatal("ResetAuthQuarantine should find the backend")
+	}
+	if b.state.Load() != stateProbing {
+		t.Fatalf("key rotation must move quarantine -> probing, got %d", b.state.Load())
+	}
+	if b.authQuarantineCount.Load() != 0 {
+		t.Fatal("key rotation must reset the backoff count")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US9 (T035) – quota cascade fast-fail
+// ---------------------------------------------------------------------------
+
+func TestQuotaCascade_ActiveAfterThreshold(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(10, 10))
+	now := lb.nowFn()
+	for i := 0; i < quotaCascadeThreshold; i++ {
+		lb.noteQuotaReport(now)
+	}
+	if !lb.quotaCascadeActive(now) {
+		t.Fatalf("cascade must be active after %d reports", quotaCascadeThreshold)
+	}
+	// After the window elapses, it clears.
+	later := now.Add((cascadeWindowSecs + 1) * time.Second)
+	if lb.quotaCascadeActive(later) {
+		t.Fatal("cascade must clear after the window")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US10 (T038) – Retry-After clamp
+// ---------------------------------------------------------------------------
+
+func TestRetryAfterClamp_MaxAndMin(t *testing.T) {
+	lb, _ := newTestLB(singleCfg(10))
+	b := lb.backends[0]
+	now := lb.nowFn()
+	// Huge Retry-After -> capped at retryAfterMaxSecs.
+	got := lb.computeTTL(b, 429, now.Unix()+86400, false, now)
+	if got != retryAfterMaxSecs {
+		t.Fatalf("large Retry-After must clamp to %d, got %d", retryAfterMaxSecs, got)
+	}
+	// Tiny positive Retry-After -> floored at retryAfterMinSecs.
+	got = lb.computeTTL(b, 429, now.Unix()+1, false, now)
+	if got != retryAfterMinSecs {
+		t.Fatalf("tiny Retry-After must floor to %d, got %d", retryAfterMinSecs, got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US6 (T026) – model-scoped error validity
+// ---------------------------------------------------------------------------
+
+func TestValidHealthModel(t *testing.T) {
+	valid := []string{"claude-sonnet-4-6", "claude-3-opus", "claude-haiku-4-5", "", "  "}
+	invalid := []string{"gpt-4o", "gemini-1.5", "claude-instant", "text-davinci"}
+	for _, m := range valid {
+		if !isValidHealthModel(m) {
+			t.Errorf("model %q should be a valid-health model", m)
+		}
+	}
+	for _, m := range invalid {
+		if isValidHealthModel(m) {
+			t.Errorf("model %q should NOT be a valid-health model", m)
+		}
 	}
 }

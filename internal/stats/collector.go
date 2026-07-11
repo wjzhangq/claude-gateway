@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	batchSize    = 100          // flush when this many records accumulate
+	batchSize    = 100             // flush when this many records accumulate
 	batchTimeout = 5 * time.Second // or after this duration
 )
 
@@ -31,6 +31,7 @@ type Record struct {
 	IsOpenClaw   bool
 	IsDowngraded bool
 	UA           string
+	ErrorReason  string
 	CreatedAt    time.Time
 }
 
@@ -138,6 +139,7 @@ func recordToLog(r Record) *model.UsageLog {
 		IsOpenClaw:   r.IsOpenClaw,
 		IsDowngraded: r.IsDowngraded,
 		UA:           r.UA,
+		ErrorReason:  r.ErrorReason,
 		CreatedAt:    r.CreatedAt,
 	}
 }

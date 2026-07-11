@@ -61,10 +61,10 @@ type migration struct {
 var migrations = []migration{
 	{1, schema},
 	{2, awsSchema},
-	{3, `SELECT 1`}, // group_id already in initial schema; was duplicate ALTER
-	{4, `SELECT 1`}, // is_openclaw already in initial schema
-	{5, `SELECT 1`}, // daily_quota_tokens already in initial schema
-	{6, `SELECT 1`}, // ua already in initial schema
+	{3, `SELECT 1`},  // group_id already in initial schema; was duplicate ALTER
+	{4, `SELECT 1`},  // is_openclaw already in initial schema
+	{5, `SELECT 1`},  // daily_quota_tokens already in initial schema
+	{6, `SELECT 1`},  // ua already in initial schema
 	{7, `SELECT 1`},  // auto_downgrade already in initial schema
 	{8, `SELECT 1`},  // is_downgraded already in initial schema
 	{9, `SELECT 1`},  // last_used_at already in initial schema
@@ -94,6 +94,7 @@ var migrations = []migration{
 	{33, `ALTER TABLE users ADD COLUMN department TEXT NOT NULL DEFAULT ''`},
 	{34, `ALTER TABLE users ADD COLUMN role_tag TEXT NOT NULL DEFAULT '未分类'`},
 	{35, `ALTER TABLE users ADD COLUMN org_note TEXT NOT NULL DEFAULT ''`},
+	{36, `ALTER TABLE usage_logs ADD COLUMN error_reason TEXT NOT NULL DEFAULT ''`},
 }
 
 const perfTestSchema = `

@@ -14,9 +14,9 @@ import (
 // allowing individual users to have a higher (or lower) ceiling than the global default.
 type UserDailyLimit struct {
 	Itcode          string  `yaml:"itcode"`
-	BackendDailyUSD float64 `yaml:"backend_daily_usd"`  // 0 = not overridden for backend channel
-	AWSDailyUSD     float64 `yaml:"aws_daily_usd"`      // 0 = not overridden for AWS channel (daily)
-	AWSMonthlyUSD   float64 `yaml:"aws_monthly_usd"`    // 0 = not overridden; >0 switches AWS to monthly billing
+	BackendDailyUSD float64 `yaml:"backend_daily_usd"` // 0 = not overridden for backend channel
+	AWSDailyUSD     float64 `yaml:"aws_daily_usd"`     // 0 = not overridden for AWS channel (daily)
+	AWSMonthlyUSD   float64 `yaml:"aws_monthly_usd"`   // 0 = not overridden; >0 switches AWS to monthly billing
 }
 
 // BackendDailyLimit specifies a per-backend daily cost cap (display/monitoring only).
@@ -25,33 +25,33 @@ type UserDailyLimit struct {
 // where 0 (or absent/negative) means unlimited, following the project-wide
 // "0 = unlimited" convention.
 type BackendDailyLimit struct {
-	Name     string  `yaml:"name"`   // exact backend name (optional if Prefix is set)
-	Prefix   string  `yaml:"prefix"` // backend name prefix; applies to every backend whose name starts with it
+	Name     string  `yaml:"name"`              // exact backend name (optional if Prefix is set)
+	Prefix   string  `yaml:"prefix"`            // backend name prefix; applies to every backend whose name starts with it
 	DailyUSD float64 `yaml:"backend_daily_usd"` // 0 = unlimited
 }
 
 // Config is the root configuration structure.
 type Config struct {
-	Server            ServerConfig      `yaml:"server"`
-	Database          DatabaseConfig    `yaml:"database"`
-	Log               LogConfig         `yaml:"log"`
-	Auth              AuthConfig        `yaml:"auth"`
-	Groups            []Group           `yaml:"groups"`
-	Backends          []BackendAPI      `yaml:"backends"`
-	UsageSync         time.Duration     `yaml:"usage_sync_time"`
-	ModelReplacements map[string]string `yaml:"model_replacements"`
-	DowngradedTTL     time.Duration     `yaml:"downgraded_ttl"`    // how long to skip original model after downgrade
-	Fallback          string            `yaml:"fallback"`          // fallback model name from public_providers for auto-downgrade
-	BackendDailyMax         float64           `yaml:"backend_daily_max"`          // max backend spend per user per day in USD (0 = unlimited)
-	UserDailyLimits         []UserDailyLimit  `yaml:"user_daily_limits"`          // per-itcode daily spending overrides
-	BackendDailyLimits      []BackendDailyLimit `yaml:"backend_daily_limits"`     // per-backend daily cost caps (display only, 0 = unlimited)
-	LobsterAutoForward      bool                         `yaml:"lobster_auto_forward"`       // auto-forward lobster (openclaw/hermes) Claude requests to fallback
+	Server                  ServerConfig                 `yaml:"server"`
+	Database                DatabaseConfig               `yaml:"database"`
+	Log                     LogConfig                    `yaml:"log"`
+	Auth                    AuthConfig                   `yaml:"auth"`
+	Groups                  []Group                      `yaml:"groups"`
+	Backends                []BackendAPI                 `yaml:"backends"`
+	UsageSync               time.Duration                `yaml:"usage_sync_time"`
+	ModelReplacements       map[string]string            `yaml:"model_replacements"`
+	DowngradedTTL           time.Duration                `yaml:"downgraded_ttl"`            // how long to skip original model after downgrade
+	Fallback                string                       `yaml:"fallback"`                  // fallback model name from public_providers for auto-downgrade
+	BackendDailyMax         float64                      `yaml:"backend_daily_max"`         // max backend spend per user per day in USD (0 = unlimited)
+	UserDailyLimits         []UserDailyLimit             `yaml:"user_daily_limits"`         // per-itcode daily spending overrides
+	BackendDailyLimits      []BackendDailyLimit          `yaml:"backend_daily_limits"`      // per-backend daily cost caps (display only, 0 = unlimited)
+	LobsterAutoForward      bool                         `yaml:"lobster_auto_forward"`      // auto-forward lobster (openclaw/hermes) Claude requests to fallback
 	LobsterForwardWhitelist []string                     `yaml:"lobster_forward_whitelist"` // itcodes exempt from lobster forwarding
 	AWS                     AWSConfig                    `yaml:"aws"`
-	PublicProviders         []PublicProvider             `yaml:"public_providers"`           // third-party model providers accessible from all channels
-	BackendModelPricing     map[string]ModelPricingEntry `yaml:"backend_model_pricing"`      // glob pattern -> pricing for backend channel
-	ValidateBackends        bool                         `yaml:"validate_backends"`          // check backend /v1/models on startup (default: false)
-	RankingHiddenItcodes    []string                     `yaml:"ranking_hidden_itcodes"`     // itcodes hidden from ranking / user-daily lists (still counted in totals)
+	PublicProviders         []PublicProvider             `yaml:"public_providers"`       // third-party model providers accessible from all channels
+	BackendModelPricing     map[string]ModelPricingEntry `yaml:"backend_model_pricing"`  // glob pattern -> pricing for backend channel
+	ValidateBackends        bool                         `yaml:"validate_backends"`      // check backend /v1/models on startup (default: false)
+	RankingHiddenItcodes    []string                     `yaml:"ranking_hidden_itcodes"` // itcodes hidden from ranking / user-daily lists (still counted in totals)
 }
 
 // PublicProvider represents a third-party model provider (e.g. Kimi, MiniMax)
@@ -66,7 +66,7 @@ type PublicProvider struct {
 	APIKey       string                       `yaml:"api_key"`
 	Enabled      bool                         `yaml:"enabled"`
 	Models       []string                     `yaml:"models"`        // supported model names (exact match)
-	ModelPricing map[string]ModelPricingEntry  `yaml:"model_pricing"` // model name -> pricing per 1M tokens
+	ModelPricing map[string]ModelPricingEntry `yaml:"model_pricing"` // model name -> pricing per 1M tokens
 }
 
 // Group represents a user group for organizing users and tracking usage.
@@ -91,12 +91,12 @@ type LogConfig struct {
 }
 
 type AuthConfig struct {
-	SessionSecret  string        `yaml:"session_secret"`
-	SessionMaxAge  int           `yaml:"session_max_age"` // seconds
-	CodeExpiry     time.Duration `yaml:"code_expiry"`     // verification code TTL
-	AdminItcode    string        `yaml:"admin_itcode"`
-	SendCodeURL    string        `yaml:"send_code_url"`
-	InviteCode     string        `yaml:"invite_code"`
+	SessionSecret string        `yaml:"session_secret"`
+	SessionMaxAge int           `yaml:"session_max_age"` // seconds
+	CodeExpiry    time.Duration `yaml:"code_expiry"`     // verification code TTL
+	AdminItcode   string        `yaml:"admin_itcode"`
+	SendCodeURL   string        `yaml:"send_code_url"`
+	InviteCode    string        `yaml:"invite_code"`
 }
 
 // BackendAPI represents a single upstream Claude API endpoint.
@@ -106,6 +106,12 @@ type BackendAPI struct {
 	APIKey  string `yaml:"api_key"`
 	Weight  int    `yaml:"weight"`
 	Enabled bool   `yaml:"enabled"`
+	// QuotaReset controls how quota isolation recovers (feature 003, FR-014).
+	// Empty (default) => treat quota isolation as a jittered long TTL and let the
+	// probe/releaseExpired path discover recovery. "cst-midnight" / "utc-midnight"
+	// => release at that wall-clock reset instant instead. Avoids assuming every
+	// backend shares one reset clock.
+	QuotaReset string `yaml:"quota_reset"`
 }
 
 // AWSConfig holds all AWS Bedrock channel configuration.
@@ -115,12 +121,12 @@ type AWSConfig struct {
 	SecretAccessKey string                       `yaml:"secret_access_key"`
 	CacheEnabled    int                          `yaml:"cache_enabled"`
 	CacheTTL        time.Duration                `yaml:"cache_ttl"`
-	Socks5Proxy     string                       `yaml:"socks5"`        // optional socks5 proxy, e.g. socks5://user:pass@host:port or user:pass@host:port
+	Socks5Proxy     string                       `yaml:"socks5"`          // optional socks5 proxy, e.g. socks5://user:pass@host:port or user:pass@host:port
 	AWSDailyMax     float64                      `yaml:"aws_daily_max"`   // max AWS spend per user per day in USD (0 = unlimited)
 	AWSMonthlyMax   float64                      `yaml:"aws_monthly_max"` // max AWS spend per user per natural month in USD (0 = use daily limit)
 	ModelReplace    map[string]string            `yaml:"model_replace"`   // exact: upstream name -> Bedrock ARN
-	ModelDefault    map[string]string            `yaml:"model_default"` // glob pattern -> upstream name
-	ModelPricing    map[string]ModelPricingEntry `yaml:"model_pricing"` // glob pattern -> pricing
+	ModelDefault    map[string]string            `yaml:"model_default"`   // glob pattern -> upstream name
+	ModelPricing    map[string]ModelPricingEntry `yaml:"model_pricing"`   // glob pattern -> pricing
 	// ModelCapabilities is an ordered list of per-model-family capability rules.
 	// The first entry whose Match substring appears (case-insensitive) in either
 	// the resolved Bedrock model or the requested model name wins. It controls how
