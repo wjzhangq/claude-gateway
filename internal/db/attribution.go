@@ -91,6 +91,14 @@ func (d *DB) GetAttribution(days int, hidden []string, shenLabel, nonLabel strin
 	if days > 0 {
 		dateFilter = fmt.Sprintf("WHERE date >= date('now', '+8 hours', '-%d days')", days)
 	}
+	// Legacy rows imported by cmd/sync carry tokens but requests=0 (the old system
+	// never recorded per-request counts). Estimate their request counts from the
+	// real tokens→requests ratio so the 归口 request column isn't undercounted.
+	rn, rd, err := d.backendRequestRatio()
+	if err != nil {
+		return nil, err
+	}
+	reqExpr := backendRequestsExpr(rn, rd)
 	hiddenClause, hiddenArgs := hiddenItcodeClause("u.itcode", hidden)
 	sql := fmt.Sprintf(`
 	SELECT u.itcode, COALESCE(u.name, ''),
@@ -101,14 +109,14 @@ func (d *DB) GetAttribution(days int, hidden []string, shenLabel, nonLabel strin
 	  COALESCE(b.requests, 0) + COALESCE(a.requests, 0) as requests
 	FROM users u
 	LEFT JOIN (
-	  SELECT user_id, SUM(total_tokens) as total_tokens, SUM(cost_usd) as cost, SUM(requests) as requests
+	  SELECT user_id, SUM(total_tokens) as total_tokens, SUM(cost_usd) as cost, %s as requests
 	  FROM daily_stats %s GROUP BY user_id
 	) b ON u.id = b.user_id
 	LEFT JOIN (
 	  SELECT user_id, SUM(total_tokens) as total_tokens, SUM(cost_usd) as cost, SUM(requests) as requests
 	  FROM aws_daily_stats %s GROUP BY user_id
 	) a ON u.id = a.user_id
-	WHERE u.itcode IS NOT NULL AND u.itcode != ''%s`, dateFilter, dateFilter, hiddenClause)
+	WHERE u.itcode IS NOT NULL AND u.itcode != ''%s`, reqExpr, dateFilter, dateFilter, hiddenClause)
 
 	rows, err := d.Query(sql, hiddenArgs...)
 	if err != nil {
@@ -130,6 +138,38 @@ func (d *DB) GetAttribution(days int, hidden []string, shenLabel, nonLabel strin
 	}
 
 	return foldAttribution(all, days, shenLabel, nonLabel), nil
+}
+
+// backendRequestRatio returns (realRequests, realTokens) from daily_stats rows that
+// actually recorded a request count (requests > 0). It is used to estimate request
+// counts for legacy 'synced' rows, which carry tokens but requests=0. Returns
+// (0, 0) when there is no real data to derive a ratio from.
+func (d *DB) backendRequestRatio() (int64, int64, error) {
+	var reqs, tokens *int64
+	err := d.QueryRow(
+		`SELECT SUM(requests), SUM(total_tokens) FROM daily_stats WHERE requests > 0`,
+	).Scan(&reqs, &tokens)
+	if err != nil {
+		return 0, 0, err
+	}
+	if reqs == nil || tokens == nil || *tokens == 0 {
+		return 0, 0, nil
+	}
+	return *reqs, *tokens, nil
+}
+
+// backendRequestsExpr builds the SQL aggregate for a user's backend request count:
+// the real recorded requests plus an estimate for legacy rows (requests=0) derived
+// from the tokens→requests ratio (rn/rd). Falls back to SUM(requests) when no ratio
+// is available. The result is embedded in the daily_stats subquery's GROUP BY.
+func backendRequestsExpr(rn, rd int64) string {
+	if rn <= 0 || rd <= 0 {
+		return "SUM(requests)"
+	}
+	return fmt.Sprintf(
+		"SUM(requests) + CAST(SUM(CASE WHEN requests = 0 THEN total_tokens ELSE 0 END) * %d / %d AS INTEGER)",
+		rn, rd,
+	)
 }
 
 // foldAttribution collapses per-user rows into the side → group → member tree,

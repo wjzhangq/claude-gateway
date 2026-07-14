@@ -71,6 +71,23 @@ func TestFoldAttribution(t *testing.T) {
 	}
 }
 
+func TestBackendRequestsExpr(t *testing.T) {
+	// No ratio available → fall back to plain SUM(requests).
+	if got := backendRequestsExpr(0, 0); got != "SUM(requests)" {
+		t.Errorf("no-ratio expr = %q, want SUM(requests)", got)
+	}
+	if got := backendRequestsExpr(10, 0); got != "SUM(requests)" {
+		t.Errorf("zero-denominator expr = %q, want SUM(requests)", got)
+	}
+	// With a ratio, legacy rows (requests=0) get an estimate added on top of the
+	// real recorded requests, keyed off the tokens→requests ratio.
+	got := backendRequestsExpr(3, 6)
+	want := "SUM(requests) + CAST(SUM(CASE WHEN requests = 0 THEN total_tokens ELSE 0 END) * 3 / 6 AS INTEGER)"
+	if got != want {
+		t.Errorf("ratio expr = %q, want %q", got, want)
+	}
+}
+
 func TestFoldAttributionEmpty(t *testing.T) {
 	got := foldAttribution(nil, 7, "S", "N")
 	if got.Period != "近7天" {
