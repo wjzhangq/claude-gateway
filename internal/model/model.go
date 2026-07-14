@@ -16,6 +16,11 @@ type User struct {
 	Department       string    `db:"department"        json:"department"`
 	RoleTag          string    `db:"role_tag"          json:"role_tag"` // 研发 | 非研发 | 未分类
 	OrgNote          string    `db:"org_note"          json:"org_note"`
+	Mgr1Name         string    `db:"mgr1_name"         json:"mgr1_name"`   // 直接主管
+	Mgr2Name         string    `db:"mgr2_name"         json:"mgr2_name"`   // 二级主管
+	AttrSide         string    `db:"attr_side"         json:"attr_side"`   // 归口团队: ""|"shen"|"non"
+	AttrGroup        string    `db:"attr_group"        json:"attr_group"`  // 归口负责人组名
+	IsDeparted       bool      `db:"is_departed"       json:"is_departed"` // 离职标记
 	CreatedAt        time.Time `db:"created_at"        json:"created_at"`
 	UpdatedAt        time.Time `db:"updated_at"        json:"updated_at"`
 }

@@ -147,6 +147,8 @@ func (h *InsightHandler) GetUserInsight(c *gin.Context) {
 }
 
 // GetOrgList godoc: GET /admin/api/insight/org
+// Returns all users with their org/attribution tags plus the configured 负责人
+// (attribution leader) list, so the org tab can render the leader dropdown.
 func (h *InsightHandler) GetOrgList(c *gin.Context) {
 	users, err := h.db.ListOrgUsers()
 	if err != nil {
@@ -156,7 +158,11 @@ func (h *InsightHandler) GetOrgList(c *gin.Context) {
 	if users == nil {
 		users = []*db.OrgUser{}
 	}
-	c.JSON(http.StatusOK, gin.H{"users": users, "total": len(users)})
+	leaders := h.cfg.AttributionLeaders
+	if leaders == nil {
+		leaders = []config.AttributionLeader{}
+	}
+	c.JSON(http.StatusOK, gin.H{"users": users, "total": len(users), "leaders": leaders})
 }
 
 type orgTagUpdateBody struct {
@@ -191,6 +197,48 @@ func (h *InsightHandler) UpdateOrgTag(c *gin.Context) {
 	})
 }
 
+type orgLeaderUpdateBody struct {
+	Leader string `json:"leader"` // attr_group; empty clears attribution
+}
+
+// UpdateOrgLeader godoc: PUT /admin/api/insight/org/:id/leader
+// Sets the user's 负责人 (attr_group) and derives the team (attr_side) from the
+// configured attribution_leaders list, so the user rolls up in the Token 归口 report.
+func (h *InsightHandler) UpdateOrgLeader(c *gin.Context) {
+	userID, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+		return
+	}
+	var body orgLeaderUpdateBody
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Empty leader clears attribution; otherwise the leader must be one of the
+	// configured options, and its side is taken from config (not client input).
+	var group, side string
+	if body.Leader != "" {
+		leader := h.cfg.LookupAttributionLeader(body.Leader)
+		if leader == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "未知的负责人"})
+			return
+		}
+		group, side = leader.Name, leader.Side
+	}
+
+	if err := h.db.UpdateUserLeader(userID, group, side); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"user_id":    userID,
+		"attr_group": group,
+		"attr_side":  side,
+	})
+}
+
 type orgBatchBody struct {
 	Updates []db.OrgTagUpdate `json:"updates"`
 }
@@ -208,6 +256,52 @@ func (h *InsightHandler) BatchUpdateOrgTags(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"updated": n})
+}
+
+// GetAttribution godoc: GET /admin/api/insight/attribution?days=0
+// Query params: days (0=all, 7/30/90=last N days).
+// Derives ASDC&SWS&NBC / SMB token attribution from the DB org columns
+// (attr_side / attr_group / is_departed) merged with live daily_stats + aws_daily_stats.
+func (h *InsightHandler) GetAttribution(c *gin.Context) {
+	days, _ := strconv.Atoi(c.DefaultQuery("days", "0"))
+
+	shenLabel, nonLabel := h.attributionLabels()
+	attr, err := h.db.GetAttribution(days, h.cfg.RankingHiddenItcodes, shenLabel, nonLabel)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"meta": gin.H{
+			"days":   attr.Days,
+			"period": attr.Period,
+			"labels": gin.H{"shen": shenLabel, "non": nonLabel},
+		},
+		"shen":            attr.Shen,
+		"non":             attr.Non,
+		"unmatched":       attr.Unmatched,
+		"unmatched_total": attr.UnmatchedTotal,
+		"departed":        attr.Departed,
+		"departed_total":  attr.DepartedTotal,
+		"departed_tokens": attr.DepartedTokens,
+		"departed_cost":   attr.DepartedCost,
+		"server_time":     time.Now().Format(time.RFC3339),
+	})
+}
+
+// attributionLabels returns the display names for the two attribution sides,
+// falling back to the canonical defaults when not configured.
+func (h *InsightHandler) attributionLabels() (shen, non string) {
+	shen, non = "ASDC&SWS&NBC", "SMB"
+	if h.cfg != nil {
+		if v := h.cfg.AttributionLabels["shen"]; v != "" {
+			shen = v
+		}
+		if v := h.cfg.AttributionLabels["non"]; v != "" {
+			non = v
+		}
+	}
+	return shen, non
 }
 
 // GetAbuseInsight godoc: GET /admin/api/insight/abuse?window=day|week|month

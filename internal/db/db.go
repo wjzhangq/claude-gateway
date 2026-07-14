@@ -105,6 +105,14 @@ var migrations = []migration{
 	{42, `ALTER TABLE usage_logs ADD COLUMN code_direction TEXT    NOT NULL DEFAULT ''`},  // 前端/后端/... (code only)
 	{43, pendingAnalysisSchema},
 	{44, `CREATE INDEX IF NOT EXISTS idx_pending_analysis_id ON pending_analysis(id)`},
+	// Token 归口 (attribution): org hierarchy + business-line attribution, orthogonal
+	// to role_tag. Populated by cmd/orgimport from the sky-insight snapshot; editable
+	// via the org-management tab. NOT NULL DEFAULT '' / 0 → zero risk to existing rows.
+	{45, `ALTER TABLE users ADD COLUMN mgr1_name   TEXT    NOT NULL DEFAULT ''`}, // 直接主管
+	{46, `ALTER TABLE users ADD COLUMN mgr2_name   TEXT    NOT NULL DEFAULT ''`}, // 二级主管
+	{47, `ALTER TABLE users ADD COLUMN attr_side   TEXT    NOT NULL DEFAULT ''`}, // 归口团队: ''|'shen'|'non'
+	{48, `ALTER TABLE users ADD COLUMN attr_group  TEXT    NOT NULL DEFAULT ''`}, // 归口负责人组名
+	{49, `ALTER TABLE users ADD COLUMN is_departed INTEGER NOT NULL DEFAULT 0`},  // 离职标记
 }
 
 // pendingAnalysisSchema is the to-analyze queue (= the incremental watermark; it

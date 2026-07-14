@@ -148,3 +148,18 @@ backends:
 #     volume: 0.3                                # 超基线任务量权重
 #     baseline_tasks: 60                         # 逻辑任务基线，仅超出部分计入 volume
 #     threshold: 0.5                             # 评分 ≥ 阈值进人工复核队列（仅识别不处罚）
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Token 归口（attribution）。attr_side/attr_group 由 cmd/orgimport 批量导入，
+# 也可在「算力洞察 → 组织管理」页逐人下拉设置负责人。
+# attribution_labels: 两条业务线的显示名（不入库）。
+# attribution_leaders: 组织管理页「负责人」下拉的可选项，每个负责人带所属业务线 side。
+#   选中负责人时同时写入 users.attr_group(=name) 与 users.attr_side(=side)。
+# attribution_labels:
+#   shen: "ASDC&SWS&NBC"
+#   non: "SMB"
+# attribution_leaders:
+#   - name: "Kavin CL7 Lu"
+#     side: shen
+#   - name: "John Zhang"
+#     side: non

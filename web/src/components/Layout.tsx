@@ -29,9 +29,7 @@ const adminNav = [
 ]
 
 const insightNav = [
-  { to: '/admin/insight/ranking', label: '用量排名' },
-  { to: '/admin/insight/user', label: '用户洞察' },
-  { to: '/admin/insight/org', label: '组织管理' },
+  { to: '/admin/insight', label: '算力洞察' },
 ]
 
 const awsAdminNav = [

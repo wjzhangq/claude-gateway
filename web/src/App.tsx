@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useParams } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { RequireAuth, RequireAdmin } from './components/RequireAuth'
 import ToastContainer from './components/Toast'
@@ -25,10 +25,15 @@ import AdminPublicStatsPage from './pages/AdminPublicStatsPage'
 import AdminPublicUsagePage from './pages/AdminPublicUsagePage'
 import AdminQuotaPage from './pages/AdminQuotaPage'
 import AdminPerfTestPage from './pages/AdminPerfTestPage'
-import AdminInsightRankingPage from './pages/AdminInsightRankingPage'
-import AdminInsightUserPage from './pages/AdminInsightUserPage'
-import AdminInsightOrgPage from './pages/AdminInsightOrgPage'
+import AdminInsightPage from './pages/AdminInsightPage'
 import PlaygroundPage from './pages/PlaygroundPage'
+
+// RedirectUserInsight maps the old /admin/insight/user/:id deep link onto the
+// merged tabbed page (?tab=user&uid=:id).
+function RedirectUserInsight() {
+  const { id } = useParams<{ id: string }>()
+  return <Navigate to={`/admin/insight?tab=user&uid=${id}`} replace />
+}
 
 export default function App() {
   return (
@@ -58,10 +63,11 @@ export default function App() {
                 <Route path="/admin/user-daily" element={<AdminUserDailyPage />} />
                 <Route path="/admin/quota" element={<AdminQuotaPage />} />
                 <Route path="/admin/perftest" element={<AdminPerfTestPage />} />
-                <Route path="/admin/insight/ranking" element={<AdminInsightRankingPage />} />
-                <Route path="/admin/insight/user" element={<AdminInsightUserPage />} />
-                <Route path="/admin/insight/user/:id" element={<AdminInsightUserPage />} />
-                <Route path="/admin/insight/org" element={<AdminInsightOrgPage />} />
+                <Route path="/admin/insight" element={<AdminInsightPage />} />
+                <Route path="/admin/insight/ranking" element={<Navigate to="/admin/insight?tab=ranking" replace />} />
+                <Route path="/admin/insight/user" element={<Navigate to="/admin/insight?tab=user" replace />} />
+                <Route path="/admin/insight/user/:id" element={<RedirectUserInsight />} />
+                <Route path="/admin/insight/org" element={<Navigate to="/admin/insight?tab=org" replace />} />
                 <Route path="/admin/aws/users" element={<AdminAWSUsersPage />} />
                 <Route path="/admin/aws/usage" element={<AdminAWSUsagePage />} />
                 <Route path="/admin/aws/user-daily" element={<AdminAWSUserDailyPage />} />

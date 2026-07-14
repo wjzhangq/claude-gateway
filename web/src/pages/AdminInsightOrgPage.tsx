@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { adminGetOrgList, adminUpdateOrgTag, type OrgUser } from '../api'
+import { adminGetOrgList, adminUpdateOrgTag, adminUpdateOrgLeader, type OrgUser, type AttributionLeader } from '../api'
 import { toast } from '../components/Toast'
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
@@ -7,6 +7,7 @@ const ROLE_TAGS = ['未分类', '研发', '非研发']
 
 export default function AdminInsightOrgPage() {
   const [users, setUsers] = useState<OrgUser[]>([])
+  const [leaders, setLeaders] = useState<AttributionLeader[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('all')
   const [search, setSearch] = useState('')
@@ -18,6 +19,7 @@ export default function AdminInsightOrgPage() {
     try {
       const { data } = await adminGetOrgList()
       setUsers(data.users || [])
+      setLeaders(data.leaders || [])
     } finally {
       setLoading(false)
     }
@@ -44,6 +46,20 @@ export default function AdminInsightOrgPage() {
         note: merged.note,
       })
       setUsers(prev => prev.map(x => x.user_id === u.user_id ? merged : x))
+      flashStatus(u.user_id, 'saved')
+    } catch {
+      flashStatus(u.user_id, 'error')
+      toast('保存失败')
+    }
+  }
+
+  const persistLeader = async (u: OrgUser, leader: string) => {
+    if (leader === (u.attr_group || '')) return
+    flashStatus(u.user_id, 'saving')
+    try {
+      const { data } = await adminUpdateOrgLeader(u.user_id, leader)
+      setUsers(prev => prev.map(x => x.user_id === u.user_id
+        ? { ...x, attr_group: data.attr_group, attr_side: data.attr_side } : x))
       flashStatus(u.user_id, 'saved')
     } catch {
       flashStatus(u.user_id, 'error')
@@ -130,13 +146,14 @@ export default function AdminInsightOrgPage() {
               <th className="px-4 py-3 w-44">用户</th>
               <th className="px-4 py-3 w-44">部门</th>
               <th className="px-4 py-3 w-32">角色标签</th>
+              <th className="px-4 py-3 w-40">负责人</th>
               <th className="px-4 py-3">备注</th>
               <th className="px-4 py-3 w-20">状态</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
             {loading ? (
-              <tr><td colSpan={5} className="px-4 py-10 text-center text-gray-400">加载中…</td></tr>
+              <tr><td colSpan={6} className="px-4 py-10 text-center text-gray-400">加载中…</td></tr>
             ) : filtered.map(u => {
               const st = status[u.user_id]
               return (
@@ -162,6 +179,20 @@ export default function AdminInsightOrgPage() {
                       className="w-full px-2 py-1 rounded border border-gray-200 focus:border-red-400 focus:outline-none"
                     >
                       {ROLE_TAGS.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <select
+                      value={u.attr_group || ''}
+                      onChange={e => persistLeader(u, e.target.value)}
+                      className="w-full px-2 py-1 rounded border border-gray-200 focus:border-red-400 focus:outline-none"
+                    >
+                      <option value="">—</option>
+                      {leaders.map(l => <option key={l.name} value={l.name}>{l.name}</option>)}
+                      {/* Preserve a currently-set leader that is no longer in the config list. */}
+                      {u.attr_group && !leaders.some(l => l.name === u.attr_group) && (
+                        <option value={u.attr_group}>{u.attr_group}（已移除）</option>
+                      )}
                     </select>
                   </td>
                   <td className="px-4 py-2.5">

@@ -52,6 +52,8 @@ type Config struct {
 	BackendModelPricing     map[string]ModelPricingEntry `yaml:"backend_model_pricing"`  // glob pattern -> pricing for backend channel
 	ValidateBackends        bool                         `yaml:"validate_backends"`      // check backend /v1/models on startup (default: false)
 	RankingHiddenItcodes    []string                     `yaml:"ranking_hidden_itcodes"` // itcodes hidden from ranking / user-daily lists (still counted in totals)
+	AttributionLabels       map[string]string            `yaml:"attribution_labels"`     // display names for token attribution sides (shen / non)
+	AttributionLeaders      []AttributionLeader          `yaml:"attribution_leaders"`    // selectable 负责人 list for the org-management tab
 	IPGeo                   IPGeoConfig                  `yaml:"ip_geo"`                 // per-request IP → city / HQ tagging
 	Analyze                 AnalyzeConfig                `yaml:"analyze"`                // offline traffic abuse analysis (feature 004)
 }
@@ -105,6 +107,15 @@ type PublicProvider struct {
 	Enabled      bool                         `yaml:"enabled"`
 	Models       []string                     `yaml:"models"`        // supported model names (exact match)
 	ModelPricing map[string]ModelPricingEntry `yaml:"model_pricing"` // model name -> pricing per 1M tokens
+}
+
+// AttributionLeader is one selectable 负责人 (attribution group leader) for the
+// org-management UI. Name is the leader/group name written to users.attr_group;
+// Side is the business line ("shen" | "non") written to users.attr_side so the
+// picked user immediately rolls up under that team in the Token 归口 report.
+type AttributionLeader struct {
+	Name string `yaml:"name" json:"name"`
+	Side string `yaml:"side" json:"side"` // shen | non
 }
 
 // Group represents a user group for organizing users and tracking usage.
@@ -339,6 +350,18 @@ func (c *Config) LookupBackendDailyLimit(name string) float64 {
 		return bestPrefixUSD
 	}
 	return 0
+}
+
+// LookupAttributionLeader returns the configured AttributionLeader with the given
+// name, or nil when no entry matches. Used to resolve the business-line side when a
+// leader is picked in the org-management tab.
+func (c *Config) LookupAttributionLeader(name string) *AttributionLeader {
+	for i := range c.AttributionLeaders {
+		if c.AttributionLeaders[i].Name == name {
+			return &c.AttributionLeaders[i]
+		}
+	}
+	return nil
 }
 
 // IsLobsterWhitelisted returns true if the itcode is exempt from lobster auto-forwarding.

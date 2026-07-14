@@ -409,7 +409,9 @@ func main() {
 		adminAPI.GET("/insight/user/:id", insightH.GetUserInsight)
 		adminAPI.GET("/insight/org", insightH.GetOrgList)
 		adminAPI.PUT("/insight/org/:id", insightH.UpdateOrgTag)
+		adminAPI.PUT("/insight/org/:id/leader", insightH.UpdateOrgLeader)
 		adminAPI.POST("/insight/org/batch", insightH.BatchUpdateOrgTags)
+		adminAPI.GET("/insight/attribution", insightH.GetAttribution)
 		adminAPI.GET("/insight/abuse", insightH.GetAbuseInsight)
 	}
 
@@ -597,6 +599,12 @@ func main() {
 			return
 		}
 		analyzeH.PostResults(c)
+	})
+	r.DELETE("/admin/api/analyze/pending/stale", func(c *gin.Context) {
+		if !analyzeAuth(c) {
+			return
+		}
+		analyzeH.PurgeOldPending(c)
 	})
 
 	// Serve frontend static files

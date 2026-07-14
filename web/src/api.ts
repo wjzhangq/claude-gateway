@@ -229,6 +229,14 @@ export interface OrgUser {
   department: string
   role_tag: string
   note: string
+  attr_group: string // 负责人 (leader) name
+  attr_side: string  // "shen" | "non" | ""
+}
+
+// AttributionLeader is one selectable 负责人 option from config.
+export interface AttributionLeader {
+  name: string
+  side: string // shen | non
 }
 
 export const adminGetInsightRanking = (params?: { days?: number; limit?: number }) =>
@@ -236,7 +244,11 @@ export const adminGetInsightRanking = (params?: { days?: number; limit?: number 
 export const adminGetUserInsight = (userId: number) =>
   api.get(`/admin/api/insight/user/${userId}`)
 export const adminGetOrgList = () =>
-  api.get<{ users: OrgUser[]; total: number }>('/admin/api/insight/org')
+  api.get<{ users: OrgUser[]; total: number; leaders: AttributionLeader[] }>('/admin/api/insight/org')
+export const adminUpdateOrgLeader = (userId: number, leader: string) =>
+  api.put<{ user_id: number; attr_group: string; attr_side: string }>(
+    `/admin/api/insight/org/${userId}/leader`, { leader }
+  )
 export const adminUpdateOrgTag = (
   userId: number,
   tag: { department?: string; role_tag?: string; note?: string }
@@ -244,3 +256,58 @@ export const adminUpdateOrgTag = (
 export const adminBatchUpdateOrgTags = (
   updates: { user_id: number; department?: string; role_tag?: string; note?: string }[]
 ) => api.post('/admin/api/insight/org/batch', { updates })
+
+// ----- Token 归口 (Attribution) -----
+export interface AttrMember {
+  itcode: string
+  name: string
+  mgr1_name: string
+  mgr2: string
+  tokens: number
+  cost: number
+  requests: number
+}
+
+export interface AttrGroup {
+  side: string
+  leader: string
+  tokens: number
+  cost: number
+  requests: number
+  org_count: number
+  active_count: number
+  members: AttrMember[]
+}
+
+export interface AttrSide {
+  label: string
+  groups: AttrGroup[]
+  group_count: number
+  org_count: number
+  active_count: number
+  tokens: number
+  cost: number
+  requests: number
+}
+
+export interface AttrDiag {
+  itcode: string
+  tokens: number
+  cost: number
+}
+
+export interface AttributionResponse {
+  meta: { days: number; period: string; labels: Record<string, string> }
+  shen: AttrSide
+  non: AttrSide
+  unmatched: AttrDiag[]
+  unmatched_total: number
+  departed: AttrDiag[]
+  departed_total: number
+  departed_tokens: number
+  departed_cost: number
+  server_time: string
+}
+
+export const adminGetAttribution = (days = 0) =>
+  api.get<AttributionResponse>('/admin/api/insight/attribution', { params: { days } })

@@ -60,9 +60,12 @@ func (d *DB) ListPending(limit, maxRetry int, newestFirst bool) ([]*PendingRecor
 	return out, rows.Err()
 }
 
-// AnalysisResult is one verdict to write back. Retry=true means the analysis
-// failed (Haiku error / unparseable) and the record should stay queued with an
-// incremented retry counter instead of being deleted.
+// AnalysisResult is one verdict to write back.
+//   - Retry=true: analysis failed transiently; bump retry_count (kept for
+//     backward-compat, but new clients should prefer Delete=true).
+//   - Delete=true: analysis failed permanently (corrupt signal, Haiku error);
+//     drop the pending row without updating usage_logs.
+//   - Neither: success — update usage_logs and delete the pending row.
 type AnalysisResult struct {
 	PendingID     int64  `json:"pending_id"`
 	UsageLogID    int64  `json:"usage_log_id"`
@@ -73,6 +76,7 @@ type AnalysisResult struct {
 	DocActivity   string `json:"doc_activity"`
 	FromHaiku     bool   `json:"from_haiku"`
 	Retry         bool   `json:"retry"`
+	Delete        bool   `json:"delete"`
 }
 
 // WriteBackCounts summarizes one WriteBackResults call.
@@ -80,6 +84,7 @@ type WriteBackCounts struct {
 	Updated int `json:"updated"`
 	Deleted int `json:"deleted"`
 	Retried int `json:"retried"`
+	Purged  int `json:"purged"`
 }
 
 // WriteBackResults applies each verdict inside a single transaction:
@@ -122,6 +127,13 @@ func (d *DB) WriteBackResults(results []*AnalysisResult) (WriteBackCounts, error
 	defer retryStmt.Close()
 
 	for _, r := range results {
+		if r.Delete {
+			if _, err := deleteStmt.ExecContext(ctx, r.PendingID); err != nil {
+				return counts, fmt.Errorf("exec delete (failure): %w", err)
+			}
+			counts.Purged++
+			continue
+		}
 		if r.Retry {
 			if _, err := retryStmt.ExecContext(ctx, r.PendingID); err != nil {
 				return counts, fmt.Errorf("exec retry: %w", err)
@@ -205,6 +217,18 @@ func (d *DB) ListTaggedRecords(userID int64, windowStart time.Time) ([]classify.
 		out = append(out, rec)
 	}
 	return out, rows.Err()
+}
+
+// DeletePendingBefore deletes all pending_analysis rows with id < maxID and
+// returns the number of rows removed. Used by --recent to evict older records
+// (and their stored user-intent signals) after the fresh batch is processed.
+func (d *DB) DeletePendingBefore(maxID int64) (int64, error) {
+	res, err := d.Exec(`DELETE FROM pending_analysis WHERE id < ?`, maxID)
+	if err != nil {
+		return 0, fmt.Errorf("delete pending before %d: %w", maxID, err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
 }
 
 // parseWorkReason pulls the "work:<reason>" segment back out of the reused

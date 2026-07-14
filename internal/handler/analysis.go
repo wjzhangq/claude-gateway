@@ -72,5 +72,23 @@ func (h *AnalysisHandler) PostResults(c *gin.Context) {
 		"updated": counts.Updated,
 		"deleted": counts.Deleted,
 		"retried": counts.Retried,
+		"purged":  counts.Purged,
 	})
+}
+
+// PurgeOldPending godoc: DELETE /admin/api/analyze/pending/stale?before_id=N
+// Deletes all pending_analysis rows with id < before_id, evicting stored user
+// intent signals that pre-date the current --recent batch.
+func (h *AnalysisHandler) PurgeOldPending(c *gin.Context) {
+	beforeID, err := strconv.ParseInt(c.Query("before_id"), 10, 64)
+	if err != nil || beforeID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "before_id must be a positive integer"})
+		return
+	}
+	purged, err := h.db.DeletePendingBefore(beforeID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"purged": purged})
 }

@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
 } from 'recharts'
@@ -59,9 +58,10 @@ function SummaryCard({ channel, s }: { channel: string; s: Summary }) {
   )
 }
 
-export default function AdminInsightUserPage() {
-  const { id } = useParams<{ id: string }>()
-  const navigate = useNavigate()
+export default function AdminInsightUserPage(
+  { userId, onSelectUser }: { userId?: number; onSelectUser?: (userId: number | null) => void } = {}
+) {
+  const id = userId ? String(userId) : ''
   const [users, setUsers] = useState<InsightRankingUser[]>([])
   const [insight, setInsight] = useState<Insight | null>(null)
   const [loading, setLoading] = useState(false)
@@ -88,7 +88,7 @@ export default function AdminInsightUserPage() {
     <div className="flex items-center gap-3 mb-4">
       <select
         value={id || ''}
-        onChange={e => navigate(e.target.value ? `/admin/insight/user/${e.target.value}` : '/admin/insight/user')}
+        onChange={e => onSelectUser?.(e.target.value ? Number(e.target.value) : null)}
         className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm w-72 focus:outline-none focus:border-red-400"
       >
         <option value="">选择用户查看洞察报告…</option>

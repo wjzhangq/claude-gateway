@@ -34,6 +34,7 @@ type analysisResult struct {
 	DocActivity   string `json:"doc_activity"`
 	FromHaiku     bool   `json:"from_haiku"`
 	Retry         bool   `json:"retry"`
+	Delete        bool   `json:"delete"`
 }
 
 // analyzeStats tallies one --analyze run for SC-002/003/006 verification.
@@ -104,6 +105,7 @@ func runAnalyze(client *http.Client, cfg *config.Config, gatewayURL string, rece
 	}
 
 	var stats analyzeStats
+	var minID int64 // lowest pending ID seen in the --recent batch; used to purge older rows
 	for {
 		records, err := fetchPending(client, gatewayURL, secret, limit, order)
 		if err != nil {
@@ -113,53 +115,57 @@ func runAnalyze(client *http.Client, cfg *config.Config, gatewayURL string, rece
 			break
 		}
 
-		results := make([]analysisResult, 0, len(records))
 		for _, rec := range records {
 			stats.Processed++
+			if recent && (minID == 0 || rec.ID < minID) {
+				minID = rec.ID
+			}
+
+			var r analysisResult
 			var sig classify.Signal
 			if err := json.Unmarshal([]byte(rec.Signal), &sig); err != nil {
-				// Corrupt signal will never parse — retry is pointless, but let the
-				// retry ceiling age it out rather than deleting silently.
 				log.Printf("[pending %d] bad signal JSON: %v", rec.ID, err)
-				results = append(results, analysisResult{PendingID: rec.ID, UsageLogID: rec.UsageLogID, Retry: true})
+				r = analysisResult{PendingID: rec.ID, UsageLogID: rec.UsageLogID, Delete: true}
 				stats.Retried++
-				continue
-			}
-
-			// Records in the queue are user_initiated by construction.
-			res, err := classify.AnalyzeSignal(context.Background(), sig, classify.RoleUserInitiated, clsCfg, hc)
-			if err != nil {
-				// Haiku failed: keep the rule-only verdict queued for retry, do not
-				// abort the batch (FR-010).
-				results = append(results, analysisResult{PendingID: rec.ID, UsageLogID: rec.UsageLogID, Retry: true})
-				stats.Retried++
-				continue
-			}
-			if res.FromHaiku {
-				stats.HaikuCalls++
-				stats.HaikuInputTokens += int64(res.HaikuInTok)
-				stats.HaikuOutputTokens += int64(res.HaikuOutTok)
 			} else {
-				stats.RuleOnly++
+				// Records in the queue are user_initiated by construction.
+				res, err := classify.AnalyzeSignal(context.Background(), sig, classify.RoleUserInitiated, clsCfg, hc)
+				if err != nil {
+					r = analysisResult{PendingID: rec.ID, UsageLogID: rec.UsageLogID, Delete: true}
+					stats.Retried++
+				} else {
+					if res.FromHaiku {
+						stats.HaikuCalls++
+						stats.HaikuInputTokens += int64(res.HaikuInTok)
+						stats.HaikuOutputTokens += int64(res.HaikuOutTok)
+					} else {
+						stats.RuleOnly++
+					}
+					r = analysisResult{
+						PendingID:     rec.ID,
+						UsageLogID:    rec.UsageLogID,
+						TaskType:      res.TaskType,
+						WorkRelated:   res.WorkRelated,
+						CodeDirection: res.CodeDirection,
+						WorkReason:    res.WorkReason,
+						DocActivity:   res.DocActivity,
+						FromHaiku:     res.FromHaiku,
+					}
+				}
 			}
-			results = append(results, analysisResult{
-				PendingID:     rec.ID,
-				UsageLogID:    rec.UsageLogID,
-				TaskType:      res.TaskType,
-				WorkRelated:   res.WorkRelated,
-				CodeDirection: res.CodeDirection,
-				WorkReason:    res.WorkReason,
-				DocActivity:   res.DocActivity,
-				FromHaiku:     res.FromHaiku,
-			})
+
+			if err := postResults(client, gatewayURL, secret, []analysisResult{r}); err != nil {
+				log.Fatalf("post results: %v", err)
+			}
 		}
 
-		if err := postResults(client, gatewayURL, secret, results); err != nil {
-			log.Fatalf("post results: %v", err)
-		}
-
-		// --recent: only ever process the single newest batch, then stop.
+		// --recent: single pass only; purge older pending rows before stopping.
 		if recent {
+			if minID > 0 {
+				if err := purgeOldPending(client, gatewayURL, secret, minID); err != nil {
+					log.Printf("purge old pending: %v", err)
+				}
+			}
 			break
 		}
 		// A batch smaller than the limit means the queue is drained.
@@ -268,6 +274,31 @@ func fetchPending(client *http.Client, gatewayURL, secret string, limit int, ord
 		return nil, err
 	}
 	return out.Records, nil
+}
+
+// purgeOldPending calls DELETE /admin/api/analyze/pending/stale?before_id=N to
+// remove all pending_analysis rows with id < beforeID (user signal cleanup).
+func purgeOldPending(client *http.Client, gatewayURL, secret string, beforeID int64) error {
+	url := fmt.Sprintf("%s/admin/api/analyze/pending/stale?before_id=%d", gatewayURL, beforeID)
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+secret)
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		var buf bytes.Buffer
+		buf.ReadFrom(resp.Body)
+		return fmt.Errorf("server returned HTTP %d: %s", resp.StatusCode, buf.String())
+	}
+	var result map[string]any
+	json.NewDecoder(resp.Body).Decode(&result)
+	log.Printf("purge old pending: %v", result)
+	return nil
 }
 
 // postResults POSTs verdicts back to the gateway for write-back + queue cleanup.

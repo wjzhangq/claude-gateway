@@ -166,7 +166,8 @@ const TASK_TYPE_META: Record<string, { icon: string; label: string }> = {
 
 // CategoryCell renders the classification for one usage row: a work/non-work badge,
 // a task-type icon, and a hover tooltip carrying code_direction + what the task did.
-function CategoryCell({ log }: { log: UsageLog }) {
+// Content is blurred until the user holds Shift (privacy guard).
+function CategoryCell({ log, shiftHeld }: { log: UsageLog; shiftHeld: boolean }) {
   // work_related: 1=work, 0=non-work, -1/absent=undetermined. task_type empty ⇒
   // the row was never analyzed (continuation, unanalyzed, or pre-feature).
   const analyzed = !!log.task_type
@@ -188,13 +189,18 @@ function CategoryCell({ log }: { log: UsageLog }) {
 
   const workBadge =
     log.work_related === 1
-      ? { text: '工作', cls: 'bg-green-50 text-green-700 ring-green-100' }
+      ? { text: 'work', cls: 'bg-green-50 text-green-700 ring-green-100' }
       : log.work_related === 0
-      ? { text: '非工作', cls: 'bg-amber-50 text-amber-700 ring-amber-100' }
-      : { text: '待定', cls: 'bg-gray-50 text-gray-500 ring-gray-100' }
+      ? { text: 'Warning', cls: 'bg-amber-50 text-amber-700 ring-amber-100' }
+      : { text: 'Unknown', cls: 'bg-gray-50 text-gray-500 ring-gray-100' }
 
   return (
-    <span className="inline-flex items-center gap-1.5 cursor-default" title={tip}>
+    <span
+      className={`inline-flex items-center gap-1.5 cursor-default transition-all duration-150 ${
+        shiftHeld ? '' : 'blur-[3px] opacity-40 select-none'
+      }`}
+      title={shiftHeld ? tip : undefined}
+    >
       <span className="text-sm leading-none" aria-hidden>{meta.icon}</span>
       <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold ring-1 ${workBadge.cls}`}>
         {workBadge.text}
@@ -281,6 +287,15 @@ export default function AdminUsagePage() {
       })
       .catch(() => {})
   }, [date])
+
+  const [shiftHeld, setShiftHeld] = useState(false)
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(true) }
+    const up = (e: KeyboardEvent) => { if (e.key === 'Shift') setShiftHeld(false) }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
+  }, [])
 
   const shiftDate = (days: number) => {
     setPage(1)
@@ -400,11 +415,16 @@ export default function AdminUsagePage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50/80">
             <tr>
-              {['用户', '模型', 'Backend', '城市', '总 Token', '费用', '状态', 'UA', '时间', '分类'].map((h) => (
+              {['用户', '模型', 'Backend', '城市', '总 Token', '费用', '状态', 'UA', '时间'].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wide">
                   {h}
                 </th>
               ))}
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
+                <span className={`transition-colors duration-150 ${shiftHeld ? 'text-blue-500' : 'text-gray-400'}`}>
+                  分类{shiftHeld ? '' : ' ⇧'}
+                </span>
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
@@ -461,7 +481,7 @@ export default function AdminUsagePage() {
                     {formatTime(log.created_at)}
                   </td>
                   <td className="px-4 py-3.5">
-                    <CategoryCell log={log} />
+                    <CategoryCell log={log} shiftHeld={shiftHeld} />
                   </td>
                 </tr>
               )})

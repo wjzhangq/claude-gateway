@@ -36,6 +36,21 @@ func (d *DB) UpdateUserOrgTag(userID int64, department, roleTag, note string) er
 	return err
 }
 
+// UpdateUserLeader sets the Token 归口 attribution columns for a single user.
+// group is the 负责人 (leader) name written to attr_group; side is the business
+// line ("shen"|"non") written to attr_side. An empty group clears both columns so
+// the user drops out of the attribution rollups.
+func (d *DB) UpdateUserLeader(userID int64, group, side string) error {
+	if group == "" {
+		side = ""
+	}
+	_, err := d.Exec(
+		`UPDATE users SET attr_group=?, attr_side=?, updated_at=? WHERE id=?`,
+		group, side, time.Now(), userID,
+	)
+	return err
+}
+
 // OrgTagUpdate is one entry in a batch org tag update.
 type OrgTagUpdate struct {
 	UserID     int64  `json:"user_id"`
@@ -79,6 +94,9 @@ func (d *DB) BatchUpdateOrgTags(updates []OrgTagUpdate) (int, error) {
 // --- Org list ---
 
 // OrgUser is a user row with organization tag fields, for the org management page.
+// AttrGroup / AttrSide are the Token 归口 attribution columns: AttrGroup is the
+// 负责人 (leader) name and AttrSide is the business line ("shen"|"non"|""). Both are
+// set together when a leader is picked in the UI (see UpdateUserLeader).
 type OrgUser struct {
 	UserID     int64  `json:"user_id"`
 	Itcode     string `json:"itcode"`
@@ -87,13 +105,16 @@ type OrgUser struct {
 	Department string `json:"department"`
 	RoleTag    string `json:"role_tag"`
 	Note       string `json:"note"`
+	AttrGroup  string `json:"attr_group"` // 负责人 (leader) name
+	AttrSide   string `json:"attr_side"`  // "shen" | "non" | ""
 }
 
 // ListOrgUsers returns all users with their org tags, ordered by itcode.
 func (d *DB) ListOrgUsers() ([]*OrgUser, error) {
 	rows, err := d.Query(
 		`SELECT id, itcode, COALESCE(name, ''), status,
-		        COALESCE(department, ''), COALESCE(role_tag, '未分类'), COALESCE(org_note, '')
+		        COALESCE(department, ''), COALESCE(role_tag, '未分类'), COALESCE(org_note, ''),
+		        COALESCE(attr_group, ''), COALESCE(attr_side, '')
 		 FROM users ORDER BY itcode`)
 	if err != nil {
 		return nil, err
@@ -103,7 +124,7 @@ func (d *DB) ListOrgUsers() ([]*OrgUser, error) {
 	for rows.Next() {
 		u := &OrgUser{}
 		if err := rows.Scan(&u.UserID, &u.Itcode, &u.Name, &u.Status,
-			&u.Department, &u.RoleTag, &u.Note); err != nil {
+			&u.Department, &u.RoleTag, &u.Note, &u.AttrGroup, &u.AttrSide); err != nil {
 			return nil, err
 		}
 		if u.Name == "" {

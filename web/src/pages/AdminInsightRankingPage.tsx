@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
 import { adminGetInsightRanking, type InsightRankingUser } from '../api'
 
 function formatTokens(n: number): string {
@@ -20,8 +19,7 @@ const DAYS_OPTIONS = [
   { value: 90, label: '近 90 天' },
 ]
 
-export default function AdminInsightRankingPage() {
-  const navigate = useNavigate()
+export default function AdminInsightRankingPage({ onSelectUser }: { onSelectUser?: (userId: number) => void } = {}) {
   const [users, setUsers] = useState<InsightRankingUser[]>([])
   const [total, setTotal] = useState(0)
   const [registeredTotal, setRegisteredTotal] = useState(0)
@@ -112,7 +110,7 @@ export default function AdminInsightRankingPage() {
                 <td className="px-4 py-3 text-gray-400 text-xs">{i + 1}</td>
                 <td className="px-4 py-3">
                   <button
-                    onClick={() => navigate(`/admin/insight/user/${u.user_id}`)}
+                    onClick={() => onSelectUser?.(u.user_id)}
                     className="font-medium text-red-700 hover:underline text-left"
                   >
                     {u.name || u.itcode}

@@ -858,13 +858,17 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 	}
 
-	rawZero := lastIn == 0 && lastOut == 0
 	if lastIn == 0 {
 		lastIn = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
 	}
 	if lastOut == 0 {
 		lastOut = outCounts.Estimate(tokenest.Default)
 	}
+	// rawZero after fallback: a genuinely empty stream (no request text, no
+	// streamed delta content). This avoids flagging truncated-but-successful
+	// streams — where usage tokens never arrived but real deltas did — as
+	// "backend zero tokens".
+	rawZero := lastIn == 0 && lastOut == 0
 
 	latency := time.Since(start)
 	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP(), reqBody)
