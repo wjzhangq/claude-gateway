@@ -51,6 +51,9 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 		maxUses = 1
 	}
 
+	logger.Infof("websearch: start model=%s backend=%s max_uses=%d stream=%v allowed_domains=%d blocked_domains=%d",
+		reqModel, backend.Name, maxUses, clientWantsStream, len(allowed), len(blocked))
+
 	// Rewrite for upstream: server tool -> client tool, normalize prior
 	// gateway blocks, force non-streaming rounds.
 	req.NormalizeHistory()
@@ -140,9 +143,15 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 			if sse != nil {
 				sse.ping()
 			}
+			searchStart := time.Now()
 			results, searchErr := client.Search(c.Request.Context(), query, cfg.Language, allowed, blocked)
+			searchMs := time.Since(searchStart).Milliseconds()
 			if searchErr != nil {
-				logger.Warnf("websearch: search %q failed: %v", query, searchErr)
+				logger.Warnf("websearch: query=%q round=%d use=%d elapsed_ms=%d failed: %v",
+					query, round, uses+1, searchMs, searchErr)
+			} else {
+				logger.Infof("websearch: query=%q round=%d use=%d elapsed_ms=%d results=%d",
+					query, round, uses+1, searchMs, len(results))
 			}
 			uses++
 			if total.ServerToolUse == nil {
@@ -170,6 +179,14 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 			continue
 		}
 	}
+
+	webSearchRequests := 0
+	if total.ServerToolUse != nil {
+		webSearchRequests = total.ServerToolUse.WebSearchRequests
+	}
+	logger.Infof("websearch: done model=%s backend=%s searches=%d stop=%s stream=%v total_ms=%d input_tokens=%d output_tokens=%d",
+		reqModel, backend.Name, webSearchRequests, stopReason, clientWantsStream,
+		time.Since(start).Milliseconds(), total.InputTokens, total.OutputTokens)
 
 	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
 		total.InputTokens, total.OutputTokens, time.Since(start),
