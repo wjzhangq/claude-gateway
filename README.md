@@ -4,7 +4,8 @@
 
 ## 功能特性
 
-- **API 兼容**：同时支持 OpenAI 风格（`/v1/chat/completions`）和 Anthropic 原生风格（`/v1/messages`）
+- **API 兼容**：同时支持 OpenAI 风格（`/v1/chat/completions`）、Anthropic 原生风格（`/v1/messages`）和 OpenAI Responses API（`/v1/responses`，供 Codex CLI 使用）
+- **Responses API 适配**：backend 渠道支持 `/v1/responses`，网关将其转换为 Anthropic Messages 协议落地，透传 function 工具、复用 WebSearch loop，支持流式 SSE，客户端无需上游改动即可接入 Codex
 - **多后端负载均衡**：加权随机分发，自动故障剔除与恢复，可选启动时健康检查
 - **AWS Bedrock 支持**：独立渠道接入 AWS Bedrock，支持流式和非流式，自动格式转换，独立配额管理
 - **第三方 Provider 支持**：配置 `public_providers` 接入任意兼容 OpenAI/Anthropic 协议的第三方服务
@@ -175,6 +176,7 @@ x-api-key: sk-xxxxxxxx
 |------|------|
 | `POST /v1/chat/completions` | OpenAI 兼容接口 |
 | `POST /v1/messages` | Anthropic 原生接口 |
+| `POST /v1/responses` | OpenAI Responses API（Codex CLI），仅 backend 渠道，详见下文 |
 | `GET /v1/models` | 获取可用模型列表 |
 
 **示例（OpenAI 风格）：**
@@ -411,6 +413,55 @@ websearch:
 流式说明：agent loop 对上游一律走非流式（多轮调用）；对客户端，非流式请求直接返回完整 JSON，流式请求（`stream:true`）由网关合成标准 SSE 事件序列（`message_start → content_block_* → message_delta → message_stop`），搜索期间穿插 `ping` 事件防客户端超时。搜索失败不会 500 整个请求，而是回填 `web_search_tool_result_error{error_code:"unavailable"}`，让模型降级作答。
 
 `enabled: false`（默认）时代理完全不拦截 web_search，请求按原路透传。配置可随 SIGHUP 热重载（见下）。
+
+---
+
+## Responses API（Codex CLI）
+
+Codex CLI 走 OpenAI 的 Responses 协议（`POST /v1/responses`），与 Chat Completions / Messages 都不同。网关在 **backend 渠道** 支持该协议：把 Responses 请求转换成 Anthropic Messages 落地到上游，再把上游结果转换回 Responses 输出。**AWS 渠道不支持**（返回 404）。
+
+选择 Anthropic Messages 作为落地协议的原因：backend 渠道上游本就是 Anthropic 兼容中转，转成 Chat Completions 反而要多一跳；WebSearch loop 也是 Anthropic 原生的，可以直接复用。
+
+**协议映射：**
+
+| Responses 构造 | Anthropic 落地 |
+|------|------|
+| `instructions` / system、developer 消息 | 顶层 `system` |
+| `input` 消息（字符串或 `input_text` / `output_text`） | `user` / `assistant` 文本块 |
+| `function_call` | assistant `tool_use` 块 |
+| `function_call_output` | user `tool_result` 块 |
+| `tools` 里的 `function` | Anthropic 工具（`input_schema`） |
+| `tools` 里的 `web_search` | 注入 Anthropic web_search server tool，走 WebSearch loop |
+| `web_search_call` / `reasoning` 历史项 | 丢弃（信息已在后续正文中） |
+| 上游 `server_tool_use` + `web_search_tool_result` | `web_search_call` 输出项 |
+| 上游文本块 | `message` / `output_text` 输出项 |
+| `stop_reason: max_tokens` | `status: incomplete` + `incomplete_details.max_output_tokens` |
+
+**工作机制：**
+
+1. **转换请求**：解码 Responses 请求，映射为 Anthropic Messages（含 function 工具与可选 web_search）。
+2. **复用 loop**：交给与 WebSearch 共享的协议无关 agent loop。声明了 `web_search` 时走多轮搜索续跑；只有 function 工具时退化为单轮普通请求（function 工具由 Codex 客户端本地执行，网关只透传声明并中转 `function_call` / `function_call_output`）。
+3. **转换响应**：把上游内容块转换回 Responses `output[]`（`message` / `web_search_call` / `function_call`），聚合 usage，`function_call` 会带出 `stop_reason: tool_use`，由 Codex 执行后回传。
+
+**无状态：** 网关不保存任何 per-response 状态——`previous_response_id` 直接返回 400，`store` 恒为 `false`。Codex 需按全量历史模式配置（每轮发送完整 `input[]`）。
+
+**流式：** `stream: true` 时网关合成标准 Responses SSE 事件序列（`response.created → response.output_item.added → response.web_search_call.* / response.output_text.delta / response.function_call_arguments.delta → response.output_item.done → response.completed`），每个事件带单调递增的 `sequence_number`，搜索期间穿插 keep-alive 保活。
+
+**示例：**
+
+```bash
+curl http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer sk-your-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-opus-4-8",
+    "input": "search the web and summarize the latest Go release",
+    "stream": true,
+    "tools": [{"type": "web_search"}]
+  }'
+```
+
+web_search 增强依赖 `websearch.enabled: true`（见上文）；关闭时若请求带 `web_search` 工具，网关会剥除该 server tool 后正常转发，其余 function 工具不受影响。
 
 ---
 

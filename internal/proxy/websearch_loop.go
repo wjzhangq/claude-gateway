@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/websearch"
 )
@@ -20,14 +21,38 @@ import (
 // a model keeps calling web_search.
 const maxWebSearchRounds = 12
 
+// loopResult is the protocol-neutral output of runWebSearchLoop: the assembled
+// content blocks, aggregated usage, the final stop_reason and the effective
+// upstream model. Callers format this into their own wire protocol (Anthropic
+// Messages or OpenAI Responses).
+type loopResult struct {
+	Merged     []websearch.ContentBlock
+	Usage      websearch.Usage
+	StopReason string
+	Model      string
+}
+
+// loopError carries a loop failure in a protocol-neutral way so each caller can
+// render it in its own wire format. Exactly one condition is set:
+//   - Canceled: the client disconnected; the caller should return without writing.
+//   - Upstream != nil (via RawBody/Status/ContentType): a first-round upstream
+//     error to relay verbatim.
+//   - otherwise Message describes a synthesized gateway error (502-style).
+type loopError struct {
+	Canceled    bool
+	Message     string
+	RawBody     []byte // first-round upstream error body (already de-gzipped)
+	Status      int    // upstream status for a passthrough error
+	ContentType string // upstream Content-Type for a passthrough error
+	Passthrough bool   // true when RawBody/Status/ContentType should be relayed
+}
+
 // handleWithWebSearch runs the gateway web-search agent loop for a backend
-// /v1/messages request that declared the web_search server tool. Each upstream
-// round is a non-streaming call; the model's web_search tool_use calls are
-// resolved against SearXNG and fed back until the model stops searching, a
-// client tool is called, or the per-request cap is reached. The assembled
-// content is then written to the client either as JSON (non-stream) or a
-// synthesized Anthropic SSE stream (stream). Usage is aggregated across rounds
-// and billed once through emitUsage.
+// /v1/messages request that declared the web_search server tool, then writes the
+// result to the client as Anthropic Messages — JSON (non-stream) or a
+// synthesized Anthropic SSE stream (stream). The loop itself lives in the
+// protocol-neutral runWebSearchLoop; this is the Anthropic-protocol caller.
+// Usage is aggregated across rounds and billed once through emitUsage.
 func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstreamPath string, body []byte, reqModel string, keyInfo interface{}, keyStr string, start time.Time, isOpenClaw, isHermes bool) {
 	h.mu.RLock()
 	client := h.searxng
@@ -42,20 +67,10 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 	}
 
 	clientWantsStream := req.Stream
-	_, detectedMaxUses, allowed, blocked := websearch.DetectWebSearchTool(req.Tools)
-	maxUses := detectedMaxUses
-	if maxUses < 0 {
-		maxUses = cfg.DefaultMaxUses
-	}
-	if maxUses <= 0 {
-		maxUses = 1
-	}
 
-	logger.Infof("websearch: start model=%s backend=%s max_uses=%d stream=%v allowed_domains=%d blocked_domains=%d",
-		reqModel, backend.Name, maxUses, clientWantsStream, len(allowed), len(blocked))
-
-	// Rewrite for upstream: server tool -> client tool, normalize prior
-	// gateway blocks, force non-streaming rounds.
+	// Rewrite for upstream: server tool -> client tool, normalize prior gateway
+	// blocks, force non-streaming rounds. Done here (not in the core) so the core
+	// stays protocol-agnostic and callers control history normalization.
 	req.NormalizeHistory()
 	req.RewriteTools()
 	req.Stream = false
@@ -66,6 +81,63 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 	if clientWantsStream {
 		sse = newSSEWriter(c)
 	}
+	var pinger func()
+	if sse != nil {
+		pinger = sse.ping
+	}
+
+	res, lerr := h.runWebSearchLoop(c, backend, upstreamPath, reqModel, req, client, cfg, start, pinger)
+	if lerr != nil {
+		if lerr.Canceled {
+			return
+		}
+		if lerr.Passthrough {
+			h.webSearchPassRawError(c, sse, lerr)
+			return
+		}
+		h.webSearchError(c, sse, lerr.Message, nil)
+		return
+	}
+
+	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
+		res.Usage.InputTokens, res.Usage.OutputTokens, time.Since(start),
+		isOpenClaw, isHermes, false, c.Request.Header.Get("User-Agent"), c.ClientIP(), body)
+
+	if sse != nil {
+		sse.writeResponse(res.Model, res.Merged, res.Usage, res.StopReason)
+	} else {
+		writeJSONResponse(c, res.Model, res.Merged, res.Usage, res.StopReason)
+	}
+}
+
+// runWebSearchLoop is the protocol-neutral web-search agent loop. It expects a
+// request already prepared for upstream (server tool rewritten to client tool,
+// history normalized, Stream=false) and runs up to maxWebSearchRounds
+// non-streaming upstream calls, resolving the model's web_search tool_use calls
+// against SearXNG and feeding results back until the model stops searching, a
+// client tool is called, or the per-request cap is reached.
+//
+// It returns a protocol-neutral loopResult the caller renders into its own wire
+// format, or a loopError describing a cancellation / upstream / gateway failure.
+// It handles backend health accounting internally but does NOT bill usage or
+// write to the client — that is the caller's job.
+//
+// When the request declares no web_search client tool (e.g. an OpenAI Responses
+// request that only uses function tools), no search is ever triggered: the model
+// simply won't emit a web_search call, so the loop runs a single round and
+// returns the plain content.
+func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPath, reqModel string, req *websearch.MessagesRequest, client *websearch.Client, cfg config.WebSearchConfig, start time.Time, pinger func()) (loopResult, *loopError) {
+	_, detectedMaxUses, allowed, blocked := websearch.DetectWebSearchTool(req.Tools)
+	maxUses := detectedMaxUses
+	if maxUses < 0 {
+		maxUses = cfg.DefaultMaxUses
+	}
+	if maxUses <= 0 {
+		maxUses = 1
+	}
+
+	logger.Infof("websearch: start model=%s backend=%s max_uses=%d allowed_domains=%d blocked_domains=%d",
+		reqModel, backend.Name, maxUses, len(allowed), len(blocked))
 
 	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
 	var merged []websearch.ContentBlock
@@ -77,22 +149,20 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 	for round := 0; round < maxWebSearchRounds; round++ {
 		roundBody, err := req.Encode()
 		if err != nil {
-			h.webSearchError(c, sse, "encode request failed", err)
-			return
+			return loopResult{}, &loopError{Message: "encode request failed"}
 		}
 
 		resp, err := h.doRequest(c, backend, upstreamPath, targetURL, roundBody)
 		if err != nil {
 			if IsClientCanceled(err) {
 				backend.RecordResult(ErrCanceled)
-				return
+				return loopResult{}, &loopError{Canceled: true}
 			}
 			backend.RecordResult(ClassifyError(0, err))
-			h.webSearchError(c, sse, "upstream request failed", err)
-			return
+			return loopResult{}, &loopError{Message: "upstream request failed"}
 		}
 
-		parsed, rawStatus, ok := readMessagesResponse(resp)
+		parsed, raw, rawStatus, ok := readMessagesResponse(resp)
 		backend.RecordRequest(rawStatus, time.Since(start).Milliseconds())
 		if isValidHealthModel(reqModel) {
 			backend.RecordResultDetailed(ClassifyError(rawStatus, nil), 0, false)
@@ -101,8 +171,12 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 			// Upstream error: surface it verbatim on the first round, else stop
 			// the loop with what we have.
 			if round == 0 {
-				h.webSearchPassUpstreamError(c, sse, resp, rawStatus)
-				return
+				return loopResult{}, &loopError{
+					Passthrough: true,
+					RawBody:     raw,
+					Status:      rawStatus,
+					ContentType: resp.Header.Get("Content-Type"),
+				}
 			}
 			logger.Warnf("websearch: upstream error status=%d mid-loop, stopping", rawStatus)
 			break
@@ -140,8 +214,8 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 				continue
 			}
 
-			if sse != nil {
-				sse.ping()
+			if pinger != nil {
+				pinger()
 			}
 			searchStart := time.Now()
 			results, searchErr := client.Search(c.Request.Context(), query, cfg.Language, allowed, blocked)
@@ -184,19 +258,11 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 	if total.ServerToolUse != nil {
 		webSearchRequests = total.ServerToolUse.WebSearchRequests
 	}
-	logger.Infof("websearch: done model=%s backend=%s searches=%d stop=%s stream=%v total_ms=%d input_tokens=%d output_tokens=%d",
-		reqModel, backend.Name, webSearchRequests, stopReason, clientWantsStream,
+	logger.Infof("websearch: done model=%s backend=%s searches=%d stop=%s total_ms=%d input_tokens=%d output_tokens=%d",
+		reqModel, backend.Name, webSearchRequests, stopReason,
 		time.Since(start).Milliseconds(), total.InputTokens, total.OutputTokens)
 
-	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
-		total.InputTokens, total.OutputTokens, time.Since(start),
-		isOpenClaw, isHermes, false, c.Request.Header.Get("User-Agent"), c.ClientIP(), body)
-
-	if sse != nil {
-		sse.writeResponse(respModel, merged, total, stopReason)
-	} else {
-		writeJSONResponse(c, respModel, merged, total, stopReason)
-	}
+	return loopResult{Merged: merged, Usage: total, StopReason: stopReason, Model: respModel}, nil
 }
 
 // appendToolRound appends the assistant tool_use turn and the user tool_result
@@ -225,13 +291,15 @@ func mustJSONString(s string) json.RawMessage {
 }
 
 // readMessagesResponse reads and decodes an upstream non-streaming /v1/messages
-// response, transparently gunzipping. Returns the parsed message, the HTTP
-// status, and whether decoding succeeded.
-func readMessagesResponse(resp *http.Response) (*websearch.MessagesResponse, int, bool) {
+// response, transparently gunzipping. Returns the parsed message, the raw
+// (de-gzipped) body, the HTTP status, and whether decoding succeeded. The raw
+// body is returned so an upstream error can be relayed to the client verbatim
+// without re-reading the (already consumed) response body.
+func readMessagesResponse(resp *http.Response) (*websearch.MessagesResponse, []byte, int, bool) {
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, false
+		return nil, nil, resp.StatusCode, false
 	}
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		if r, e := gzip.NewReader(bytes.NewReader(raw)); e == nil {
@@ -242,9 +310,9 @@ func readMessagesResponse(resp *http.Response) (*websearch.MessagesResponse, int
 	}
 	var parsed websearch.MessagesResponse
 	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return nil, resp.StatusCode, false
+		return nil, raw, resp.StatusCode, false
 	}
-	return &parsed, resp.StatusCode, true
+	return &parsed, raw, resp.StatusCode, true
 }
 
 // forwardPlain re-forwards the original request as a normal passthrough when the
@@ -290,25 +358,17 @@ func (h *Handler) webSearchError(c *gin.Context, sse *sseWriter, msg string, err
 	})
 }
 
-// webSearchPassUpstreamError forwards an upstream error response to the client.
-// For SSE it emits an error event; otherwise it relays the status and body.
-func (h *Handler) webSearchPassUpstreamError(c *gin.Context, sse *sseWriter, resp *http.Response, status int) {
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.Header.Get("Content-Encoding") == "gzip" {
-		if r, e := gzip.NewReader(bytes.NewReader(raw)); e == nil {
-			if dec, e2 := io.ReadAll(r); e2 == nil {
-				raw = dec
-			}
-		}
-	}
+// webSearchPassRawError forwards a first-round upstream error (already buffered
+// in the loopError) to an Anthropic-protocol client. For SSE it emits an error
+// event; otherwise it relays the status and body verbatim.
+func (h *Handler) webSearchPassRawError(c *gin.Context, sse *sseWriter, lerr *loopError) {
 	if sse != nil {
-		sse.writeErrorRaw(raw)
+		sse.writeErrorRaw(lerr.RawBody)
 		return
 	}
-	if ct := resp.Header.Get("Content-Type"); ct != "" {
-		c.Header("Content-Type", ct)
+	if lerr.ContentType != "" {
+		c.Header("Content-Type", lerr.ContentType)
 	}
-	c.Status(status)
-	_, _ = c.Writer.Write(raw)
+	c.Status(lerr.Status)
+	_, _ = c.Writer.Write(lerr.RawBody)
 }

@@ -304,6 +304,18 @@ func main() {
 					}
 				}
 
+				// OpenAI Responses API (/v1/responses, used by Codex): convert to
+				// Anthropic Messages and run on the backend channel. Not supported
+				// on the AWS channel. Reuses the already-read body.
+				if strings.HasSuffix(path, "/responses") {
+					if ch == "aws" {
+						c.JSON(404, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "/v1/responses is not supported on the aws channel"}})
+						return
+					}
+					proxyH.HandleResponses(c, body)
+					return
+				}
+
 				// Restore body for the downstream channel handler
 				c.Request.Body = io.NopCloser(bytes.NewReader(body))
 			}
