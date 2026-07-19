@@ -25,6 +25,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/sanitize"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
 	"github.com/wjzhangq/claude-gateway/internal/tokenest"
+	"github.com/wjzhangq/claude-gateway/internal/websearch"
 )
 
 // Handler forwards requests to upstream Claude backends.
@@ -37,10 +38,16 @@ type Handler struct {
 	modelReplacements map[string]string
 	fallbackClient    *http.Client
 	ipGeo             *ipgeo.Store
+
+	// Web-search simulation (backend channel). webSearchCfg is the current
+	// config; searxng is a lazily-built client rebuilt when the config changes.
+	// Both are guarded by mu.
+	webSearchCfg config.WebSearchConfig
+	searxng      *websearch.Client
 }
 
 func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.KeyStore, cfg *config.Config, modelReplacements map[string]string) *Handler {
-	return &Handler{
+	h := &Handler{
 		lb:                lb,
 		collector:         collector,
 		keyStore:          keyStore,
@@ -48,6 +55,13 @@ func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.Key
 		modelReplacements: modelReplacements,
 		fallbackClient:    &http.Client{Timeout: 5 * time.Minute},
 	}
+	if cfg != nil {
+		h.webSearchCfg = cfg.WebSearch
+		if cfg.WebSearch.Enabled && cfg.WebSearch.SearchURL != "" {
+			h.searxng = websearch.NewClient(cfg.WebSearch)
+		}
+	}
+	return h
 }
 
 // SetIPGeo attaches an IP → city/HQ store used to tag usage records. Nil-safe:
@@ -382,6 +396,20 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			reqModel = replacement
 			break
 		}
+	}
+
+	// Web-search simulation (backend channel only): if this is a /v1/messages
+	// request that declares Anthropic's web_search server tool and the feature
+	// is enabled, run the gateway agent loop instead of a plain passthrough.
+	// The loop rewrites the server tool to a client tool, resolves the model's
+	// searches against SearXNG, and emits native server_tool_use +
+	// web_search_tool_result blocks. Any other request falls through untouched.
+	h.mu.RLock()
+	wsEnabled := h.webSearchCfg.Enabled && h.searxng != nil
+	h.mu.RUnlock()
+	if wsEnabled && strings.HasSuffix(upstreamPath, "/messages") && websearch.DetectInBody(body) {
+		h.handleWithWebSearch(c, backend, upstreamPath, body, reqModel, keyInfo, keyStr, time.Now(), isOpenClaw, isHermes)
+		return
 	}
 
 	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
@@ -1178,10 +1206,19 @@ func (h *Handler) UpdateModelReplacements(m map[string]string) {
 	h.mu.Unlock()
 }
 
-// UpdateConfig updates the handler config.
+// UpdateConfig updates the handler config and rebuilds the web-search client
+// when the websearch section changed (SIGHUP hot-reload).
 func (h *Handler) UpdateConfig(cfg *config.Config) {
 	h.mu.Lock()
 	h.config = cfg
+	if cfg != nil {
+		h.webSearchCfg = cfg.WebSearch
+		if cfg.WebSearch.Enabled && cfg.WebSearch.SearchURL != "" {
+			h.searxng = websearch.NewClient(cfg.WebSearch)
+		} else {
+			h.searxng = nil
+		}
+	}
 	h.mu.Unlock()
 }
 

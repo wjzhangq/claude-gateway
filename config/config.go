@@ -56,6 +56,26 @@ type Config struct {
 	AttributionLeaders      []AttributionLeader          `yaml:"attribution_leaders"`    // selectable 负责人 list for the org-management tab
 	IPGeo                   IPGeoConfig                  `yaml:"ip_geo"`                 // per-request IP → city / HQ tagging
 	Analyze                 AnalyzeConfig                `yaml:"analyze"`                // offline traffic abuse analysis (feature 004)
+	WebSearch               WebSearchConfig              `yaml:"websearch"`              // gateway-simulated web_search server tool (backend channel)
+}
+
+// WebSearchConfig configures gateway-side simulation of Anthropic's web_search
+// server tool for the backend channel. Backend upstreams are third-party
+// Anthropic-compatible relays that don't implement the server tool, so the
+// gateway rewrites it into a plain client tool, intercepts the model's
+// web_search tool_use calls, runs the search against SearXNG, feeds results
+// back, and finally emits native server_tool_use + web_search_tool_result
+// blocks so Claude Code renders the search natively. Disabled by default.
+type WebSearchConfig struct {
+	Enabled         bool          `yaml:"enabled"`           // master switch; when false the proxy never intercepts web_search
+	Provider        string        `yaml:"provider"`          // search provider identifier (currently only "searxng")
+	SearchURL       string        `yaml:"search_url"`        // SearXNG search endpoint, e.g. https://host/search
+	Authorization   string        `yaml:"authorization"`     // value placed verbatim into the Authorization header
+	Language        string        `yaml:"language"`          // default search language (request may override)
+	MaxResults      int           `yaml:"max_results"`       // results returned to the model per search
+	SnippetMaxChars int           `yaml:"snippet_max_chars"` // per-result content truncation length
+	Timeout         time.Duration `yaml:"timeout"`           // SearXNG request timeout (e.g. 10s)
+	DefaultMaxUses  int           `yaml:"default_max_uses"`  // per-request search cap when the tool omits max_uses
 }
 
 // AnalyzeConfig configures the offline traffic abuse analysis pipeline (feature 004).
@@ -300,15 +320,24 @@ func defaultConfig() *Config {
 			// HaikuBaseURL empty by default: the analyzer picks an available backend
 			// node and calls it directly with that backend's own key.
 			HaikuModel: "claude-haiku-4-5-20251001",
-			AnalyzerUA:   "claude-gateway-analyzer",
-			BatchSize:    500,
-			MaxRetry:     3,
+			AnalyzerUA: "claude-gateway-analyzer",
+			BatchSize:  500,
+			MaxRetry:   3,
 			Score: ScoreConfig{
 				NonWork:       0.7,
 				Volume:        0.3,
 				BaselineTasks: 60,
 				Threshold:     0.5,
 			},
+		},
+		WebSearch: WebSearchConfig{
+			// Disabled by default; a websearch: block in the config enables it.
+			Provider:        "searxng",
+			Language:        "zh-CN",
+			MaxResults:      8,
+			SnippetMaxChars: 800,
+			Timeout:         10 * time.Second,
+			DefaultMaxUses:  5,
 		},
 	}
 }

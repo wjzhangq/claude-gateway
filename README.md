@@ -15,6 +15,7 @@
 - **使用统计**：记录每次请求的 Token 用量和费用，支持按用户/模型/日期查询
 - **IP 归属记录**：记录每次请求的客户端 IP、城市和是否公司总部（基于 CIDR 判定），城市通过本地缓存 + `check --ip2region` 异步解析
 - **流量离线滥用分析**：对每条成功请求离线打标（任务类型 / 代码方向 / 是否工作相关），规则优先、Haiku 兜底，按人聚合出滥用评分与人工复核队列；分析走旁路，不影响转发链路，且原始请求正文不落库
+- **WebSearch 联网搜索**：backend 渠道在网关层模拟 Anthropic 的 `web_search` server tool，接入 SearXNG 完成搜索并回填，向 Claude Code 输出原生格式，客户端无需改动即可联网
 - **热重载**：发送 SIGHUP 信号即可重载配置，自动刷写数据后更新后端和规则
 - **审批流程**：用户提交模型使用申请，管理员审批
 - **DB Explorer**：管理员在线执行只读 SQL 查询，实时查看数据库内容
@@ -203,6 +204,8 @@ curl http://localhost:8080/v1/messages \
 
 支持流式响应（SSE），在请求体中加 `"stream": true` 即可。
 
+启用 `websearch` 后，backend 渠道的 `/v1/messages` 请求若声明了 Anthropic 的 `web_search` server tool，网关会自动接入 SearXNG 完成联网搜索（详见下文「WebSearch 联网搜索」）。
+
 ---
 
 ## 管理后台
@@ -379,6 +382,38 @@ analyze:
 
 ---
 
+## WebSearch 联网搜索
+
+Claude Code 的 WebSearch 依赖 Anthropic 的 server tool `web_search_20250305`：客户端只声明工具，搜索由 Anthropic 服务端执行。**backend 渠道**的上游是第三方 Anthropic 兼容中转，不支持该 server tool，请求会直接报错。网关在其间做一层模拟，让 Claude Code 无需任何改动即可联网搜索并原生渲染搜索过程。
+
+**仅作用于 backend 渠道**（`/v1/messages`）。AWS / public providers 不涉及。
+
+```yaml
+websearch:
+  enabled: true
+  provider: searxng
+  search_url: "https://searxng.example.com/search"
+  authorization: "Bearer <token>"      # 原样放入 Authorization 头
+  language: "zh-CN"                     # 默认语言，可被请求覆盖
+  max_results: 8                        # 每次搜索返回给模型的条数
+  snippet_max_chars: 800                # 每条结果摘要截断长度
+  timeout: 10s                          # SearXNG 请求超时
+  default_max_uses: 5                   # 请求未指定 max_uses 时的单请求搜索上限
+```
+
+工作机制（agent loop）：
+
+1. **改写请求**：检测到请求 `tools` 里带 `web_search_` 前缀的 server tool 时，从 tools 中移除它，注入一个普通 client tool `web_search`（`{query}` 入参）转发上游；历史消息里网关此前产生的 `server_tool_use` / `web_search_tool_result` 块会被还原成标准 `tool_use` / `tool_result`，让上游能识别多轮上下文。
+2. **执行搜索**：上游模型返回 `web_search` 调用时，网关拦截，调用 SearXNG（`?q=&format=json&language=`，`Authorization` 头透传），取结果按 score 排序、截断摘要，并按请求携带的 `allowed_domains` / `blocked_domains` 过滤域名。
+3. **回填续跑**：把搜索结果作为 `tool_result` 回填，继续请求上游，循环直到模型不再搜索、调用了客户端工具，或达到 `max_uses`（超限回填 `max_uses_exceeded`，让模型基于已有信息收尾）。
+4. **原生输出**：向 Claude Code 输出 Anthropic 原生的 `server_tool_use` + `web_search_tool_result` 块，客户端原生渲染。usage 聚合多轮上游的 input/output tokens，并填 `usage.server_tool_use.web_search_requests`。
+
+流式说明：agent loop 对上游一律走非流式（多轮调用）；对客户端，非流式请求直接返回完整 JSON，流式请求（`stream:true`）由网关合成标准 SSE 事件序列（`message_start → content_block_* → message_delta → message_stop`），搜索期间穿插 `ping` 事件防客户端超时。搜索失败不会 500 整个请求，而是回填 `web_search_tool_result_error{error_code:"unavailable"}`，让模型降级作答。
+
+`enabled: false`（默认）时代理完全不拦截 web_search，请求按原路透传。配置可随 SIGHUP 热重载（见下）。
+
+---
+
 ## 热重载
 
 支持通过 `SIGHUP` 信号触发配置热重载，无需重启服务。
@@ -409,6 +444,7 @@ kill -HUP <pid>
 - `lobster_forward_whitelist` — 龙虾转发白名单
 - `groups` — 用户分组
 - `analyze` — 离线滥用分析配置（评分权重 / 阈值 / 时间窗 / 内部仓库 / 重试上限）
+- `websearch` — WebSearch 联网搜索配置（开关 / SearXNG 地址 / 语言 / 结果数 / 超时 / max_uses）
 
 **不可热更新的配置项（需重启）：**
 

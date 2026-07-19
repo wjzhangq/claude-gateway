@@ -163,3 +163,22 @@ backends:
 #     side: shen
 #   - name: "John Zhang"
 #     side: non
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 网关模拟 web_search server tool（仅 backend 渠道）。
+# Claude Code 声明 Anthropic 的 web_search_20250305 server tool，但 backend 上游
+# 是第三方 Anthropic 兼容中转，不支持该 server tool。启用后网关会：把 server tool
+# 改写成普通 client tool 转发上游 → 拦截模型的 web_search 调用 → 调 SearXNG 搜索 →
+# 结果回填继续请求，循环到无搜索或达 max_uses → 最后向客户端输出原生
+# server_tool_use + web_search_tool_result 块，Claude Code 无需改动即可渲染。
+# enabled=false（默认）时代理侧完全不拦截 web_search。
+# websearch:
+#   enabled: true
+#   provider: searxng
+#   search_url: "https://searxng.example.com/search"
+#   authorization: "Bearer <token>"      # 原样放入 Authorization 头
+#   language: "zh-CN"                     # 默认语言，可被请求覆盖
+#   max_results: 8                        # 每次搜索返回给模型的条数
+#   snippet_max_chars: 800                # 每条结果 content 截断长度
+#   timeout: 10s                          # SearXNG 请求超时
+#   default_max_uses: 5                   # 请求未指定 max_uses 时的上限
