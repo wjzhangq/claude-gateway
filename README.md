@@ -12,8 +12,9 @@
 - **自动降级**：请求失败时自动降级到配置的 fallback 模型（由 `fallback` 配置项指定，路由到 public provider）
 - **用户管理**：基于验证码 + 邀请码的注册登录，支持用户状态和配额管理
 - **API Key 管理**：用户自助创建和管理 API Key，支持按渠道（backend/aws）分类
-- **USD 配额控制**：按用户每日 USD 花费限额，分 backend 和 AWS 独立控制
+- **USD 配额控制**：三级配额体系——全局 `backend_daily_max`、按用户 `user_daily_limits`（可突破全局）、按后端 `backend_daily_limits`（name/prefix 匹配）；backend 与 AWS 渠道独立控制，AWS 另有日/月上限
 - **使用统计**：记录每次请求的 Token 用量和费用，支持按用户/模型/日期查询
+- **Token 归口分析**：将用户归属到业务线（`attr_side`）与负责人（`attr_group`），在「算力洞察 → 组织管理」页按团队/负责人聚合用量
 - **IP 归属记录**：记录每次请求的客户端 IP、城市和是否公司总部（基于 CIDR 判定），城市通过本地缓存 + `check --ip2region` 异步解析
 - **流量离线滥用分析**：对每条成功请求离线打标（任务类型 / 代码方向 / 是否工作相关），规则优先、Haiku 兜底，按人聚合出滥用评分与人工复核队列；分析走旁路，不影响转发链路，且原始请求正文不落库
 - **WebSearch 联网搜索**：backend 渠道在网关层模拟 Anthropic 的 `web_search` server tool，接入 SearXNG 完成搜索并回填，向 Claude Code 输出原生格式，客户端无需改动即可联网
@@ -89,11 +90,13 @@ server:
   mode: release          # debug / release
 
 database:
+  driver: sqlite         # 当前仅支持 sqlite
   path: data/gateway.db  # SQLite 文件路径，自动创建
 
 log:
   level: info            # debug / info / warn / error
   format: json           # json / text
+  dir: /tmp/logs         # 日志输出目录
 
 auth:
   session_secret: ""     # Cookie 签名密钥，必填，建议 openssl rand -hex 32
@@ -109,6 +112,27 @@ downgraded_ttl: 60s      # 降级窗口时长：触发降级后该 Key 在此时
 
 fallback: ""             # 自动降级目标模型名，需在 public_providers 中配置对应模型
 
+# ── 配额控制 ────────────────────────────────────────────────
+backend_daily_max: 200         # backend 渠道全局每人每日 USD 上限，超过拒绝（0 = 不限）
+
+user_daily_limits:             # 指定 itcode 的个人上限，优先级最高，可突破全局
+  - itcode: "zhangsan"
+    backend_daily_usd: 1000    # backend 渠道每日上限（0 = 不覆盖，走默认逻辑）
+    aws_daily_usd: 0           # AWS 渠道每日上限
+    aws_monthly_usd: 2500      # AWS 渠道每月上限（可选）
+
+backend_daily_limits:          # 按后端 name / prefix 匹配的每日上限（name 优先，prefix 取最长匹配）
+  - prefix: "lianxiang"
+    backend_daily_usd: 5000
+  - prefix: "dasheng"
+    backend_daily_usd: 400
+
+groups:                        # 用户分组
+  - id: 0
+    name: "unknown"
+  - id: 1
+    name: "Solutions Center"
+
 backends:
   - name: claude-primary
     url: https://api.anthropic.com
@@ -118,27 +142,72 @@ backends:
 
 validate_backends: false   # 启动时是否检查后端 /v1/models 可用性（默认 false）
 
-model_replacements:      # 模型名称替换规则（客户端请求的模型名 -> 实际转发的模型名）
-  claude-3-5-sonnet: claude-3-5-sonnet-20241022
+model_replacements:      # 模型名称替换规则（请求模型名包含 key 时整体替换为 value）
+  claude-3-5-haiku-20241022: claude-opus-4-5-20251101
+
+backend_model_pricing:   # backend 渠道计费（glob 匹配，USD/1M tokens），无匹配用内置默认（input:3 / output:15）
+  "*haiku*":  { input: 1.00, output: 5.00 }
+  "*sonnet*": { input: 3.00, output: 15.00 }
+  "*opus*":   { input: 5.00, output: 25.00 }
 
 public_providers:        # 第三方兼容服务（可用于 fallback 或直接路由）
   - name: openai
-    openai_url: https://api.openai.com/v1
+    openai_url: https://api.openai.com/v1        # /v1/chat/completions 透明转发
+    anthropic_url: https://api.openai.com/anthropic/v1  # /v1/messages 透明转发
     api_key: "sk-xxx"
     enabled: true
     models:
       - gpt-4o
-      - gpt-4o-mini
+    model_pricing:
+      "gpt-4o": { input: 2.50, output: 10.00, cache: 1.25 }
 
 aws:
-  region: us-east-1
+  region: us-west-2
+  socks5: ""                   # SOCKS5 代理（user:pass@host:port，留空直连）
+  aws_daily_max: 1000          # AWS 渠道全局每人每日 USD 上限
+  aws_monthly_max: 2000        # AWS 渠道全局每人每月 USD 上限
   access_key_id: ""
   secret_access_key: ""
+  cache_enabled: 1             # 启用 prompt caching 注入
+  cache_ttl: 1h
+  model_replace:               # 精确匹配请求模型名 → Bedrock ARN（转发一定替换为 ARN）
+    global.anthropic.claude-opus-4-8: "arn:aws:bedrock:us-west-2:...:application-inference-profile/xxx"
+  model_default:               # 不在 model_replace 时按 glob 从上到下匹配，命中第一条；都不中报模型不存在
+    "*opus*":   "global.anthropic.claude-opus-4-6-v1"
+    "*sonnet*": "global.anthropic.claude-sonnet-4-6"
+    "*haiku*":  "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+  model_pricing:               # AWS 计费（glob，USD/1M tokens，含 cache 读写）
+    "*opus*": { input: 5.00, output: 25.00, cache_read: 0.50, cache_write: 10.00 }
+  model_capabilities:          # 模型能力表（可热加载）：决定 thinking 适配与 output_config 透传
+    - { match: "opus-4",   thinking: "adaptive", output_config: true }
+    - { match: "sonnet-4", thinking: "legacy",   output_config: false }
+  allowed_body_fields:         # 顶层字段白名单，只转发列出字段（留空用内置默认）
+    - anthropic_version
+    - messages
+    - system
+    - max_tokens
+    - thinking
+    - output_config
 
 ip_geo:                        # 请求 IP → 城市 / 是否总部记录（backend + public 渠道）
   cache_file: data/ip2region.json  # IP → 城市本地缓存文件，服务器独占读写
   hq_cidrs:                    # 命中任一网段的 IP 标记为公司总部（is_hq=true）
-    - 111.205.0.0/27
+    - 203.0.113.0/27           # 示例网段，替换为公司出口 IP
+    - 198.51.100.0/24          # VPN 网段也算总部
+
+ranking_hidden_itcodes:        # 用量排名 / user-daily 列表中隐藏（仍计入合计）
+  - "itcode001"
+
+# ── Token 归口 ──────────────────────────────────────────────
+attribution_labels:            # 两条业务线（attr_side）的显示名
+  shen: "业务线 A"
+  non: "业务线 B"
+
+attribution_leaders:           # 组织管理页「负责人」下拉可选项，选中写入 users.attr_group + attr_side
+  - name: "负责人甲"
+    side: shen
+  - name: "负责人乙"
+    side: non
 ```
 
 ### send_code_url 接口规范
@@ -280,12 +349,27 @@ lobster_forward_whitelist:
 
 ```yaml
 aws:
-  region: us-east-1
+  region: us-west-2
+  socks5: ""                   # 可选 SOCKS5 代理
   access_key_id: "AKIA..."
   secret_access_key: "..."
+  aws_daily_max: 1000          # 全局每人每日 USD 上限
+  aws_monthly_max: 2000        # 全局每人每月 USD 上限
+  cache_enabled: 1             # 注入 prompt caching
+  cache_ttl: 1h
+  model_replace:               # 请求模型名 → Bedrock inference-profile ARN
+    global.anthropic.claude-opus-4-8: "arn:aws:bedrock:...:application-inference-profile/xxx"
+  model_default:               # 未精确命中时按 glob 兜底到某个上游模型名
+    "*opus*":   "global.anthropic.claude-opus-4-6-v1"
+    "*sonnet*": "global.anthropic.claude-sonnet-4-6"
+    "*haiku*":  "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 ```
 
-支持的接口与普通代理相同（`/v1/chat/completions`、`/v1/messages`），网关负责协议转换。AWS 用量独立统计，可配置独立的每日 USD 配额（`aws_daily_quota_usd`）。
+支持的接口与普通代理相同（`/v1/chat/completions`、`/v1/messages`），网关负责协议转换。AWS 用量独立统计，可在全局（`aws_daily_max` / `aws_monthly_max`）与按用户（`user_daily_limits[].aws_daily_usd` / `aws_monthly_usd`）两级配置 USD 配额。
+
+**模型映射两步走：** 请求模型名先查 `model_replace`（精确匹配 → ARN）；未命中再按 `model_default`（glob 从上到下取第一个命中）兜底到一个上游模型名，再经 `model_replace` 换成 ARN；都不中则报模型不存在。
+
+**请求体适配：** `model_capabilities` 按 `match` 子串（同时匹配 ARN 与请求模型名）决定 thinking 写法——`adaptive`（新模型，`thinking.type=enabled` 转 adaptive + `output_config.effort`）或 `legacy`（旧模型，保留 enabled 并校正 `max_tokens`）；`output_config: true` 才允许透传该字段。`allowed_body_fields` 是顶层字段白名单，只转发列出字段，其余剥离，避免 Bedrock 报 "Extra inputs are not permitted"。两者均可随 SIGHUP 热加载。
 
 ---
 
@@ -322,8 +406,8 @@ backend 和 public 渠道的每次请求都会记录来源 IP、所属城市和�
 ip_geo:
   cache_file: data/ip2region.json  # IP → 城市本地缓存文件
   hq_cidrs:                        # 命中任一网段即标记 is_hq=true
-    - 111.205.43.224/27
-    - 111.198.161.0/24             # VPN 网段也算总部
+    - 203.0.113.0/27               # 示例网段，替换为公司出口 IP
+    - 198.51.100.0/24              # VPN 网段也算总部
 ```
 
 工作机制：
@@ -359,12 +443,12 @@ analyze:
   haiku_api_key: "<内部分析专用网关 key>"     # 留空则纯规则模式，不做 Haiku 兜底
   haiku_model: "claude-haiku-4-5-20251001"
   analyzer_ua: "claude-gateway-analyzer"      # 代理据此识别分析器自身请求并跳过入队（防自递归）
-  batch_size: 500
+  batch_size: 100
   max_retry: 3
   score:                                       # 滥用评分权重（读时计算，改后即时生效）
-    non_work: 0.6
-    off_hours: 0.15
-    volume: 0.25
+    non_work: 0.6                              # 非工作任务占比权重
+    off_hours: 0.15                            # 非工作时段任务占比权重
+    volume: 0.25                               # 超基线任务量权重
     baseline_tasks: 60
     threshold: 0.5                             # 评分 ≥ 阈值进复核队列
 ```
@@ -397,10 +481,10 @@ websearch:
   search_url: "https://searxng.example.com/search"
   authorization: "Bearer <token>"      # 原样放入 Authorization 头
   language: "zh-CN"                     # 默认语言，可被请求覆盖
-  max_results: 8                        # 每次搜索返回给模型的条数
-  snippet_max_chars: 800                # 每条结果摘要截断长度
+  max_results: 12                       # 每次搜索返回给模型的条数
+  snippet_max_chars: 8000               # 每条结果摘要截断长度
   timeout: 10s                          # SearXNG 请求超时
-  default_max_uses: 5                   # 请求未指定 max_uses 时的单请求搜索上限
+  default_max_uses: 10                  # 请求未指定 max_uses 时的单请求搜索上限
 ```
 
 工作机制（agent loop）：
@@ -494,6 +578,12 @@ kill -HUP <pid>
 - `lobster_auto_forward` — 龙虾自动转发开关
 - `lobster_forward_whitelist` — 龙虾转发白名单
 - `groups` — 用户分组
+- `backend_daily_max` / `user_daily_limits` / `backend_daily_limits` — 配额上限
+- `backend_model_pricing` — backend 渠道计费
+- `aws`（除凭证外）— region/代理、配额、缓存、`model_replace` / `model_default` / `model_pricing` / `model_capabilities` / `allowed_body_fields`
+- `ip_geo` — IP 归属地记录（`hq_cidrs` 等）
+- `ranking_hidden_itcodes` — 用量排名隐藏列表
+- `attribution_labels` / `attribution_leaders` — Token 归口业务线与负责人
 - `analyze` — 离线滥用分析配置（评分权重 / 阈值 / 时间窗 / 内部仓库 / 重试上限）
 - `websearch` — WebSearch 联网搜索配置（开关 / SearXNG 地址 / 语言 / 结果数 / 超时 / max_uses）
 

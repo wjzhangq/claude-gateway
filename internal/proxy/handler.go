@@ -1007,12 +1007,19 @@ func costUSD(model string, inputTokens, outputTokens int, pricing map[string]con
 // resolvePricing matches a model name against glob patterns in the pricing map.
 func resolvePricing(model string, pricing map[string]config.ModelPricingEntry) config.ModelPricingEntry {
 	m := strings.ToLower(model)
+	bestPattern := ""
+	var bestEntry config.ModelPricingEntry
 	for pattern, entry := range pricing {
 		if matched, _ := filepath.Match(pattern, m); matched {
-			return entry
+			if len(pattern) > len(bestPattern) {
+				bestPattern = pattern
+				bestEntry = entry
+			}
 		}
 	}
-	// default fallback
+	if bestPattern != "" {
+		return bestEntry
+	}
 	return config.ModelPricingEntry{Input: 3.0, Output: 15.0}
 }
 
