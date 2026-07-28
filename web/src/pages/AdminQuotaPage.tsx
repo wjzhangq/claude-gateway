@@ -1,47 +1,73 @@
 import { useEffect, useState } from 'react'
-import { adminGetConfigLimits, adminUpdateConfigLimits } from '../api'
+import { adminGetConfigLimits, adminUpdateConfigLimits, adminListQuotaOverrides, adminUpsertQuotaOverride, adminDeleteQuotaOverride } from '../api'
 import { toast } from '../components/Toast'
 
-interface UserLimit {
+interface QuotaOverride {
+  id: number
+  user_id: number
   itcode: string
-  backend_daily_usd: number
-  aws_daily_usd: number
-  aws_monthly_usd: number
+  name: string
+  quota_usd: number
+  is_temporary: boolean
+  expires_at: string | null
+  note: string
+  is_expired: boolean
+  created_at: string
+  updated_at: string
 }
 
-interface LimitsData {
-  backend_daily_max: number
-  aws_daily_max: number
-  aws_monthly_max: number
-  user_daily_limits: UserLimit[]
+interface OverrideForm {
+  itcode: string
+  quota_usd: string
+  is_temporary: boolean
+  expires_at: string
+  note: string
 }
+
+const emptyForm = (): OverrideForm => ({
+  itcode: '',
+  quota_usd: '',
+  is_temporary: false,
+  expires_at: '',
+  note: '',
+})
 
 export default function AdminQuotaPage() {
-  const [data, setData] = useState<LimitsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [backendMax, setBackendMax] = useState('')
   const [awsDailyMax, setAwsDailyMax] = useState('')
   const [awsMonthlyMax, setAwsMonthlyMax] = useState('')
-  const [editIdx, setEditIdx] = useState<number | null>(null)
-  const [editBackend, setEditBackend] = useState('')
-  const [editAwsDaily, setEditAwsDaily] = useState('')
-  const [editAwsMonthly, setEditAwsMonthly] = useState('')
 
-  const fetchData = () => {
+  const [overrides, setOverrides] = useState<QuotaOverride[]>([])
+  const [overridesLoading, setOverridesLoading] = useState(true)
+  const [showModal, setShowModal] = useState(false)
+  const [editItcode, setEditItcode] = useState<string | null>(null)
+  const [form, setForm] = useState<OverrideForm>(emptyForm())
+  const [formSaving, setFormSaving] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
+
+  const fetchGlobal = () => {
     setLoading(true)
     adminGetConfigLimits()
       .then((res) => {
-        setData(res.data)
         setBackendMax(String(res.data.backend_daily_max))
         setAwsDailyMax(String(res.data.aws_daily_max))
         setAwsMonthlyMax(String(res.data.aws_monthly_max ?? 0))
       })
-      .catch(() => setData(null))
+      .catch(() => {})
       .finally(() => setLoading(false))
   }
 
-  useEffect(() => { fetchData() }, [])
+  const fetchOverrides = () => {
+    setOverridesLoading(true)
+    adminListQuotaOverrides()
+      .then((res) => setOverrides(res.data.overrides || []))
+      .catch(() => setOverrides([]))
+      .finally(() => setOverridesLoading(false))
+  }
+
+  useEffect(() => { fetchGlobal(); fetchOverrides() }, [])
 
   const saveGlobal = async () => {
     setSaving(true)
@@ -52,45 +78,65 @@ export default function AdminQuotaPage() {
         aws_monthly_max: Number(awsMonthlyMax),
       })
       toast('全局额度已更新')
-      fetchData()
+      fetchGlobal()
     } catch { /* handled by interceptor */ }
     setSaving(false)
   }
 
-  const saveUser = async (idx: number) => {
-    if (!data) return
-    const user = data.user_daily_limits[idx]
-    setSaving(true)
+  const openAdd = () => {
+    setEditItcode(null)
+    setForm(emptyForm())
+    setShowModal(true)
+  }
+
+  const openEdit = (o: QuotaOverride) => {
+    setEditItcode(o.itcode)
+    setForm({
+      itcode: o.itcode,
+      quota_usd: String(o.quota_usd),
+      is_temporary: o.is_temporary,
+      expires_at: o.expires_at ?? '',
+      note: o.note,
+    })
+    setShowModal(true)
+  }
+
+  const handleSubmit = async () => {
+    const itcode = editItcode ?? form.itcode.trim()
+    if (!itcode) { toast('请输入用户 Itcode'); return }
+    const quota = parseFloat(form.quota_usd)
+    if (isNaN(quota) || quota < 0) { toast('请输入有效的配额金额'); return }
+    if (form.is_temporary && !form.expires_at) { toast('临时额度需要指定到期日期'); return }
+
+    setFormSaving(true)
     try {
-      await adminUpdateConfigLimits({
-        user_limits: [{
-          itcode: user.itcode,
-          backend_daily_usd: Number(editBackend),
-          aws_daily_usd: Number(editAwsDaily),
-          aws_monthly_usd: Number(editAwsMonthly),
-        }],
+      await adminUpsertQuotaOverride(itcode, {
+        quota_usd: quota,
+        is_temporary: form.is_temporary,
+        expires_at: form.is_temporary ? form.expires_at : '',
+        note: form.note,
       })
-      toast(`${user.itcode} 额度已更新`)
-      setEditIdx(null)
-      fetchData()
+      toast(editItcode ? '额度已更新' : '额度已添加')
+      setShowModal(false)
+      fetchOverrides()
     } catch { /* handled by interceptor */ }
-    setSaving(false)
+    setFormSaving(false)
   }
 
-  const startEdit = (idx: number) => {
-    if (!data) return
-    const u = data.user_daily_limits[idx]
-    setEditIdx(idx)
-    setEditBackend(String(u.backend_daily_usd))
-    setEditAwsDaily(String(u.aws_daily_usd))
-    setEditAwsMonthly(String(u.aws_monthly_usd ?? 0))
+  const handleDelete = async (itcode: string) => {
+    try {
+      await adminDeleteQuotaOverride(itcode)
+      toast('额度覆盖已删除')
+      setDeleteConfirm(null)
+      fetchOverrides()
+    } catch { /* handled by interceptor */ }
   }
 
   return (
     <div className="p-8">
       <div className="mb-7">
         <h2 className="text-xl font-bold text-gray-900">额度设置</h2>
-        <p className="text-sm text-gray-400 mt-0.5">管理全局额度上限和用户额度覆盖</p>
+        <p className="text-sm text-gray-400 mt-0.5">管理全局额度上限和每用户 Backend 额度覆盖</p>
       </div>
 
       {/* 全局设置 */}
@@ -142,106 +188,100 @@ export default function AdminQuotaPage() {
         </div>
       </div>
 
-      {/* 用户额度表格 */}
+      {/* 每用户 Backend 额度覆盖 */}
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-gray-100">
-          <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">用户额度覆盖</h3>
-          <p className="text-xs text-gray-400 mt-0.5">这些用户的额度优先于全局上限生效。AWS 月限 &gt; 0 时启用月计费，否则使用日限。</p>
+        <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">每用户 Backend 额度覆盖</h3>
+            <p className="text-xs text-gray-400 mt-0.5">优先于全局上限生效。支持永久或临时（指定到期日）。</p>
+          </div>
+          <button
+            onClick={openAdd}
+            className="px-3 py-1.5 bg-red-600 text-white text-xs font-medium rounded-lg hover:bg-red-700 transition"
+          >
+            + 添加覆盖
+          </button>
         </div>
-        <table className="w-full">
+        <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50/80 text-xs text-gray-500 uppercase tracking-wide">
-              <th className="text-left px-6 py-3 font-medium">ITCode</th>
-              <th className="text-right px-6 py-3 font-medium">Backend 每日 (USD)</th>
-              <th className="text-right px-6 py-3 font-medium">AWS 每日 (USD)</th>
-              <th className="text-right px-6 py-3 font-medium">AWS 每月 (USD)</th>
+              <th className="text-left px-6 py-3 font-medium">Itcode</th>
+              <th className="text-left px-6 py-3 font-medium">姓名</th>
+              <th className="text-right px-6 py-3 font-medium">每日配额 (USD)</th>
+              <th className="text-center px-6 py-3 font-medium">类型</th>
+              <th className="text-center px-6 py-3 font-medium">到期日期</th>
+              <th className="text-center px-6 py-3 font-medium">状态</th>
+              <th className="text-left px-6 py-3 font-medium">备注</th>
               <th className="text-center px-6 py-3 font-medium">操作</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
-            {loading ? (
+            {overridesLoading ? (
               Array.from({ length: 3 }).map((_, i) => (
                 <tr key={i}>
-                  {[100, 80, 80, 80, 60].map((w, j) => (
+                  {[90, 70, 70, 60, 80, 60, 100, 80].map((w, j) => (
                     <td key={j} className="px-6 py-3.5">
                       <div className="skeleton h-3.5 rounded" style={{ width: w }} />
                     </td>
                   ))}
                 </tr>
               ))
-            ) : data?.user_daily_limits.length === 0 ? (
+            ) : overrides.length === 0 ? (
               <tr>
-                <td colSpan={5} className="text-center py-8 text-gray-400 text-sm">
-                  暂无用户额度覆盖配置
+                <td colSpan={8} className="text-center py-8 text-gray-400 text-sm">
+                  暂无额度覆盖配置
                 </td>
               </tr>
             ) : (
-              data?.user_daily_limits.map((u, idx) => (
-                <tr key={u.itcode} className="hover:bg-gray-50/50 transition-colors">
-                  <td className="px-6 py-3.5 text-sm font-medium text-gray-900">{u.itcode}</td>
-                  <td className="px-6 py-3.5 text-right">
-                    {editIdx === idx ? (
-                      <input
-                        type="number"
-                        value={editBackend}
-                        onChange={(e) => setEditBackend(e.target.value)}
-                        className="w-28 px-2 py-1 border border-gray-200 rounded text-sm text-right focus:ring-2 focus:ring-red-500/20 focus:border-red-400 outline-none"
-                      />
-                    ) : (
-                      <span className="text-sm text-gray-700">${u.backend_daily_usd}</span>
-                    )}
+              overrides.map((o) => (
+                <tr key={o.itcode} className={`hover:bg-gray-50/50 transition-colors${o.is_expired ? ' opacity-50' : ''}`}>
+                  <td className="px-6 py-3.5 font-medium text-gray-900">{o.itcode}</td>
+                  <td className="px-6 py-3.5 text-gray-500">{o.name || '—'}</td>
+                  <td className="px-6 py-3.5 text-right font-medium text-gray-800">${o.quota_usd.toFixed(2)}</td>
+                  <td className="px-6 py-3.5 text-center">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${
+                      o.is_temporary
+                        ? 'bg-amber-50 text-amber-700 ring-amber-100'
+                        : 'bg-blue-50 text-blue-700 ring-blue-100'
+                    }`}>
+                      {o.is_temporary ? '临时' : '永久'}
+                    </span>
                   </td>
-                  <td className="px-6 py-3.5 text-right">
-                    {editIdx === idx ? (
-                      <input
-                        type="number"
-                        value={editAwsDaily}
-                        onChange={(e) => setEditAwsDaily(e.target.value)}
-                        className="w-28 px-2 py-1 border border-gray-200 rounded text-sm text-right focus:ring-2 focus:ring-red-500/20 focus:border-red-400 outline-none"
-                      />
-                    ) : (
-                      <span className="text-sm text-gray-700">${u.aws_daily_usd}</span>
-                    )}
-                  </td>
-                  <td className="px-6 py-3.5 text-right">
-                    {editIdx === idx ? (
-                      <input
-                        type="number"
-                        value={editAwsMonthly}
-                        onChange={(e) => setEditAwsMonthly(e.target.value)}
-                        className="w-28 px-2 py-1 border border-amber-200 rounded text-sm text-right focus:ring-2 focus:ring-amber-500/20 focus:border-amber-400 outline-none"
-                      />
-                    ) : (
-                      <span className={`text-sm ${u.aws_monthly_usd > 0 ? 'text-amber-600 font-medium' : 'text-gray-400'}`}>
-                        {u.aws_monthly_usd > 0 ? `$${u.aws_monthly_usd}` : '—'}
-                      </span>
-                    )}
+                  <td className="px-6 py-3.5 text-center text-gray-500 text-xs">
+                    {o.expires_at ?? '—'}
                   </td>
                   <td className="px-6 py-3.5 text-center">
-                    {editIdx === idx ? (
-                      <div className="flex items-center justify-center gap-2">
-                        <button
-                          onClick={() => saveUser(idx)}
-                          disabled={saving}
-                          className="text-xs px-2.5 py-1 bg-red-600 text-white rounded hover:bg-red-700 disabled:opacity-50 transition"
-                        >
-                          保存
-                        </button>
-                        <button
-                          onClick={() => setEditIdx(null)}
-                          className="text-xs px-2.5 py-1 text-gray-500 hover:text-gray-700 transition"
-                        >
-                          取消
-                        </button>
-                      </div>
-                    ) : (
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 ${
+                      o.is_expired
+                        ? 'bg-gray-100 text-gray-500 ring-gray-200'
+                        : 'bg-green-50 text-green-700 ring-green-100'
+                    }`}>
+                      {o.is_expired ? '已过期' : '有效'}
+                    </span>
+                  </td>
+                  <td className="px-6 py-3.5 text-gray-400 text-xs max-w-[160px] truncate" title={o.note}>{o.note || '—'}</td>
+                  <td className="px-6 py-3.5 text-center">
+                    <div className="flex items-center justify-center gap-2">
                       <button
-                        onClick={() => startEdit(idx)}
-                        className="text-xs px-2.5 py-1 text-red-600 hover:text-red-800 hover:bg-red-50 rounded transition"
+                        onClick={() => openEdit(o)}
+                        className="text-xs text-red-600 hover:text-red-800 transition"
                       >
                         编辑
                       </button>
-                    )}
+                      {deleteConfirm === o.itcode ? (
+                        <span className="flex items-center gap-1 text-xs">
+                          <button onClick={() => handleDelete(o.itcode)} className="text-red-600 hover:text-red-800 font-medium">确认</button>
+                          <button onClick={() => setDeleteConfirm(null)} className="text-gray-400 hover:text-gray-600">取消</button>
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => setDeleteConfirm(o.itcode)}
+                          className="text-xs text-gray-400 hover:text-red-600 transition"
+                        >
+                          删除
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))
@@ -249,6 +289,103 @@ export default function AdminQuotaPage() {
           </tbody>
         </table>
       </div>
+
+      {/* 新增/编辑弹窗 */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 backdrop-blur-sm" onClick={() => setShowModal(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[460px] p-6 border border-gray-100" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-base font-bold text-gray-900">{editItcode ? '编辑额度覆盖' : '添加额度覆盖'}</h3>
+              <button onClick={() => setShowModal(false)} className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors text-sm">✕</button>
+            </div>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm text-gray-600 mb-1.5 font-medium">用户 Itcode</label>
+                <input
+                  value={form.itcode}
+                  onChange={(e) => setForm((f) => ({ ...f, itcode: e.target.value }))}
+                  disabled={editItcode !== null}
+                  placeholder="输入用户 itcode"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-red-500/20 focus:border-red-400 outline-none transition disabled:bg-gray-50 disabled:text-gray-400"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-1.5 font-medium">每日配额 (USD)</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="50"
+                  value={form.quota_usd}
+                  onChange={(e) => setForm((f) => ({ ...f, quota_usd: e.target.value }))}
+                  placeholder="例如 600"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-red-500/20 focus:border-red-400 outline-none transition"
+                />
+              </div>
+              <div>
+                <label className="block text-sm text-gray-600 mb-2 font-medium">配额类型</label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={!form.is_temporary}
+                      onChange={() => setForm((f) => ({ ...f, is_temporary: false, expires_at: '' }))}
+                      className="accent-red-600"
+                    />
+                    <span className="text-sm text-gray-700">永久</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      checked={form.is_temporary}
+                      onChange={() => setForm((f) => ({ ...f, is_temporary: true }))}
+                      className="accent-red-600"
+                    />
+                    <span className="text-sm text-gray-700">临时（有到期时间）</span>
+                  </label>
+                </div>
+              </div>
+              {form.is_temporary && (
+                <div>
+                  <label className="block text-sm text-gray-600 mb-1.5 font-medium">到期日期</label>
+                  <input
+                    type="date"
+                    value={form.expires_at}
+                    onChange={(e) => setForm((f) => ({ ...f, expires_at: e.target.value }))}
+                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-red-500/20 focus:border-red-400 outline-none transition"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">到期后该用户恢复默认全局配额</p>
+                </div>
+              )}
+              <div>
+                <label className="block text-sm text-gray-600 mb-1.5 font-medium">备注 <span className="text-gray-400 font-normal">（可选）</span></label>
+                <textarea
+                  value={form.note}
+                  onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
+                  rows={2}
+                  maxLength={200}
+                  placeholder="添加备注说明"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:ring-2 focus:ring-red-500/20 focus:border-red-400 outline-none transition resize-none"
+                />
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setShowModal(false)}
+                className="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-100 transition"
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSubmit}
+                disabled={formSaving}
+                className="px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 disabled:opacity-50 transition"
+              >
+                {formSaving ? '保存中...' : '确认'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

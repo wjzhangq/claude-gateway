@@ -41,6 +41,7 @@ type KeyStore struct {
 	awsDailyCostDate string              // "YYYY-MM-DD" of the current AWS daily cost window
 	awsMonthlyCosts  map[int64]float64   // userID -> this month's accumulated AWS cost (USD)
 	awsMonthlyCostMonth string           // "YYYY-MM" of the current AWS monthly cost window
+	quotaOverrides   map[int64]float64   // userID -> active quota_usd override (0 = no override)
 }
 
 // NewKeyStore creates an empty KeyStore.
@@ -50,6 +51,7 @@ func NewKeyStore() *KeyStore {
 		dailyCosts:      make(map[int64]float64),
 		awsDailyCosts:   make(map[int64]float64),
 		awsMonthlyCosts: make(map[int64]float64),
+		quotaOverrides:  make(map[int64]float64),
 	}
 }
 
@@ -397,4 +399,44 @@ func GenerateKey() (string, error) {
 		b[i] = unambiguousChars[b[i]%n]
 	}
 	return "sk-" + string(b), nil
+}
+
+// ── Quota override cache ──────────────────────────────────────────────────────
+
+// LoadQuotaOverrides replaces the in-memory quota override map from a DB snapshot.
+// Non-active (expired) overrides are excluded. Call at startup and at midnight.
+func (ks *KeyStore) LoadQuotaOverrides(overrides []*model.UserQuotaOverride) {
+	today := time.Now().Format("2006-01-02")
+	m := make(map[int64]float64, len(overrides))
+	for _, o := range overrides {
+		expired := o.IsTemporary && o.ExpiresAt != nil && *o.ExpiresAt < today
+		if !expired {
+			m[o.UserID] = o.QuotaUSD
+		}
+	}
+	ks.mu.Lock()
+	ks.quotaOverrides = m
+	ks.mu.Unlock()
+}
+
+// GetQuotaOverride returns (quota, true) when an active override exists for userID.
+func (ks *KeyStore) GetQuotaOverride(userID int64) (float64, bool) {
+	ks.mu.RLock()
+	v, ok := ks.quotaOverrides[userID]
+	ks.mu.RUnlock()
+	return v, ok
+}
+
+// SetQuotaOverride updates the in-memory cache after an admin upsert.
+func (ks *KeyStore) SetQuotaOverride(userID int64, quotaUSD float64) {
+	ks.mu.Lock()
+	ks.quotaOverrides[userID] = quotaUSD
+	ks.mu.Unlock()
+}
+
+// DeleteQuotaOverride removes an override from the cache after an admin delete.
+func (ks *KeyStore) DeleteQuotaOverride(userID int64) {
+	ks.mu.Lock()
+	delete(ks.quotaOverrides, userID)
+	ks.mu.Unlock()
 }

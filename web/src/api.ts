@@ -172,6 +172,18 @@ export const adminUpdateConfigLimits = (data: {
   user_limits?: { itcode: string; backend_daily_usd: number; aws_daily_usd: number; aws_monthly_usd: number }[]
 }) => api.put('/admin/api/config/limits', data)
 
+// ===== Admin Quota Overrides =====
+export const adminListQuotaOverrides = () =>
+  api.get('/admin/api/quota/overrides')
+export const adminUpsertQuotaOverride = (itcode: string, data: {
+  quota_usd: number
+  is_temporary: boolean
+  expires_at: string
+  note: string
+}) => api.put(`/admin/api/quota/overrides/${itcode}`, data)
+export const adminDeleteQuotaOverride = (itcode: string) =>
+  api.delete(`/admin/api/quota/overrides/${itcode}`)
+
 // ===== Admin Performance Test =====
 export const adminStartPerfTest = (config: {
   channels: { name: string; model: string }[]

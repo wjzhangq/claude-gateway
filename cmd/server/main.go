@@ -24,6 +24,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/migration"
 	"github.com/wjzhangq/claude-gateway/internal/model"
 	"github.com/wjzhangq/claude-gateway/internal/perftest"
 	"github.com/wjzhangq/claude-gateway/internal/proxy"
@@ -74,6 +75,19 @@ func main() {
 	} else {
 		keyStore.InitDailyCosts(today, dailyCosts)
 		logger.Infof("init daily costs: loaded %d user records for %s", len(dailyCosts), today)
+	}
+
+	// Load quota overrides into KeyStore cache
+	if overrides, err := database.ListUserQuotaOverrides(); err != nil {
+		logger.Warnf("init quota overrides: %v", err)
+	} else {
+		keyStore.LoadQuotaOverrides(overrides)
+		logger.Infof("init quota overrides: loaded %d records", len(overrides))
+	}
+
+	// One-time migration: import config.yaml user_daily_limits into user_quota_overrides
+	if err := migration.MigrateConfigYamlQuotas(cfg, database, keyStore); err != nil {
+		logger.Warnf("quota migration from config.yaml: %v", err)
 	}
 
 	// Seed today's AWS daily costs from aws_usage_logs
@@ -150,6 +164,12 @@ func main() {
 			timer := time.NewTimer(time.Until(next))
 			<-timer.C
 			keyStore.ResetDailyCosts()
+			// Reload quota overrides to clear expired temporary overrides
+			if overrides, err := database.ListUserQuotaOverrides(); err != nil {
+				logger.Warnf("midnight quota override reload: %v", err)
+			} else {
+				keyStore.LoadQuotaOverrides(overrides)
+			}
 			logger.Infof("daily cost counters reset for new day: %s", time.Now().Format("2006-01-02"))
 		}
 	}()
@@ -425,6 +445,12 @@ func main() {
 		adminAPI.POST("/insight/org/batch", insightH.BatchUpdateOrgTags)
 		adminAPI.GET("/insight/attribution", insightH.GetAttribution)
 		adminAPI.GET("/insight/abuse", insightH.GetAbuseInsight)
+
+		// Quota overrides: per-user backend daily spend cap stored in DB
+		quotaH := handler.NewQuotaOverrideHandler(database, keyStore)
+		adminAPI.GET("/quota/overrides", quotaH.List)
+		adminAPI.PUT("/quota/overrides/:itcode", quotaH.Upsert)
+		adminAPI.DELETE("/quota/overrides/:itcode", quotaH.Delete)
 	}
 
 	// Admin AWS API

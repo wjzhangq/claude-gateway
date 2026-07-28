@@ -113,6 +113,10 @@ var migrations = []migration{
 	{47, `ALTER TABLE users ADD COLUMN attr_side   TEXT    NOT NULL DEFAULT ''`}, // 归口团队: ''|'shen'|'non'
 	{48, `ALTER TABLE users ADD COLUMN attr_group  TEXT    NOT NULL DEFAULT ''`}, // 归口负责人组名
 	{49, `ALTER TABLE users ADD COLUMN is_departed INTEGER NOT NULL DEFAULT 0`},  // 离职标记
+	{50, quotaOverrideSchema},
+	{51, `INSERT OR IGNORE INTO user_quota_overrides (user_id, quota_usd, is_temporary, note)
+SELECT id, daily_quota_usd, 0, 'migrated from users.daily_quota_usd'
+FROM users WHERE daily_quota_usd > 0`},
 }
 
 // pendingAnalysisSchema is the to-analyze queue (= the incremental watermark; it
@@ -159,6 +163,23 @@ CREATE TABLE IF NOT EXISTS perf_test_results (
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_perf_test_results_run_id ON perf_test_results(run_id);
+`
+
+const quotaOverrideSchema = `
+CREATE TABLE IF NOT EXISTS user_quota_overrides (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL UNIQUE REFERENCES users(id),
+    quota_usd    REAL    NOT NULL CHECK(quota_usd >= 0),
+    is_temporary INTEGER NOT NULL DEFAULT 0 CHECK(is_temporary IN (0,1)),
+    expires_at   TEXT,
+    note         TEXT    NOT NULL DEFAULT '',
+    created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS quota_migration_flags (
+    key        TEXT PRIMARY KEY,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 `
 
 func (d *DB) runMigrations() error {

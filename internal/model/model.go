@@ -141,6 +141,22 @@ type AWSUsageLog struct {
 	CreatedAt        time.Time `db:"created_at"        json:"created_at"`
 }
 
+// UserQuotaOverride stores a per-user backend daily spend cap that takes priority
+// over both the global BackendDailyMax and users.daily_quota_usd.
+type UserQuotaOverride struct {
+	ID          int64   `db:"id"           json:"id"`
+	UserID      int64   `db:"user_id"      json:"user_id"`
+	Itcode      string  `db:"-"            json:"itcode"` // from JOIN with users
+	Name        string  `db:"-"            json:"name"`   // from JOIN with users
+	QuotaUSD    float64 `db:"quota_usd"    json:"quota_usd"`
+	IsTemporary bool    `db:"is_temporary" json:"is_temporary"`
+	ExpiresAt   *string `db:"expires_at"   json:"expires_at"` // "YYYY-MM-DD" or nil
+	Note        string  `db:"note"         json:"note"`
+	IsExpired   bool    `db:"-"            json:"is_expired"` // computed
+	CreatedAt   string  `db:"created_at"   json:"created_at"`
+	UpdatedAt   string  `db:"updated_at"   json:"updated_at"`
+}
+
 // AWSDailyStats aggregates AWS usage per user per model per day.
 type AWSDailyStats struct {
 	ID               int64   `db:"id"                json:"id"`
