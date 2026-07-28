@@ -29,7 +29,8 @@ func MigrateConfigYamlQuotas(cfg *config.Config, database *db.DB, store *auth.Ke
 		}
 		user, err := database.GetUserByItcode(limit.Itcode)
 		if err != nil {
-			return fmt.Errorf("lookup user %s: %w", limit.Itcode, err)
+			logger.Warnf("quota migration: lookup user %q failed, skipping: %v", limit.Itcode, err)
+			continue
 		}
 		if user == nil {
 			logger.Warnf("quota migration: user %q not found in DB, skipping", limit.Itcode)

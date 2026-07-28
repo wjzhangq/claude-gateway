@@ -403,14 +403,18 @@ func GenerateKey() (string, error) {
 
 // ── Quota override cache ──────────────────────────────────────────────────────
 
+// isQuotaExpired reports whether an override has passed its expiry date (inclusive).
+func isQuotaExpired(o *model.UserQuotaOverride, today string) bool {
+	return o.IsTemporary && o.ExpiresAt != nil && *o.ExpiresAt <= today
+}
+
 // LoadQuotaOverrides replaces the in-memory quota override map from a DB snapshot.
 // Non-active (expired) overrides are excluded. Call at startup and at midnight.
 func (ks *KeyStore) LoadQuotaOverrides(overrides []*model.UserQuotaOverride) {
 	today := time.Now().Format("2006-01-02")
 	m := make(map[int64]float64, len(overrides))
 	for _, o := range overrides {
-		expired := o.IsTemporary && o.ExpiresAt != nil && *o.ExpiresAt < today
-		if !expired {
+		if !isQuotaExpired(o, today) {
 			m[o.UserID] = o.QuotaUSD
 		}
 	}
