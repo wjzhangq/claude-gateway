@@ -586,9 +586,13 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	if info, ok := keyInfo.(*auth.KeyInfo); ok {
 		c.Header("X-Gateway-Model", reqModel)
 		c.Header("X-Gateway-Channel", info.Channel)
-		quota := info.DailyQuotaUSD
+		var quota float64
 		if info.Channel == "aws" {
 			quota = info.AWSDailyQuotaUSD
+		} else if dbOverride, hasOverride := h.keyStore.GetQuotaOverride(info.UserID); hasOverride {
+			quota = dbOverride
+		} else {
+			quota = info.DailyQuotaUSD
 		}
 		c.Header("X-Gateway-Daily-Quota", strconv.FormatFloat(quota, 'f', 4, 64))
 	}
@@ -662,7 +666,7 @@ func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstr
 	// Try config-based fallback to public provider
 	if cfg != nil && cfg.Fallback != "" {
 		fallbackModel := cfg.Fallback
-		provider := cfg.LookupPublicProvider(fallbackModel)
+		provider := cfg.LookupPublicProvider(fallbackModel, "")
 		if provider != nil {
 			newBody := h.replaceModelInBody(body, originalModel, fallbackModel)
 			if newBody == nil {

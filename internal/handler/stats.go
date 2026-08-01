@@ -175,11 +175,14 @@ func (h *StatsHandler) GetMyDashboard(c *gin.Context) {
 		return
 	}
 
-	// Effective backend daily limit:
-	// 1. If user appears in config.user_daily_limits with backend_daily_usd > 0, use that value directly.
-	// 2. Otherwise fall back to min(global BackendDailyMax, per-user DailyQuotaUSD), 0 = unlimited.
+	// Effective backend daily limit (mirrors proxy enforcement priority):
+	// 1. DB quota override (user_quota_overrides table, set by admin).
+	// 2. YAML user_daily_limits entry for this itcode.
+	// 3. min(global BackendDailyMax, per-user DailyQuotaUSD), 0 = unlimited.
 	var effectiveBackendLimit float64
-	if override := h.config.LookupUserDailyLimit(user.Itcode); override != nil && override.BackendDailyUSD > 0 {
+	if dbOverride, hasOverride := h.keyStore.GetQuotaOverride(userID); hasOverride {
+		effectiveBackendLimit = dbOverride
+	} else if override := h.config.LookupUserDailyLimit(user.Itcode); override != nil && override.BackendDailyUSD > 0 {
 		effectiveBackendLimit = override.BackendDailyUSD
 	} else {
 		globalMax := h.config.BackendDailyMax
@@ -256,9 +259,14 @@ func (h *StatsHandler) GetMyQuota(c *gin.Context) {
 		return
 	}
 
-	// ── Backend daily limit (mirrors GetMyDashboard logic) ───────────────────
+	// ── Backend daily limit (mirrors proxy enforcement priority) ────────────────
+	// 1. DB quota override (user_quota_overrides table, set by admin).
+	// 2. YAML user_daily_limits entry for this itcode.
+	// 3. min(global BackendDailyMax, per-user DailyQuotaUSD), 0 = unlimited.
 	var backendLimit float64
-	if override := h.config.LookupUserDailyLimit(user.Itcode); override != nil && override.BackendDailyUSD > 0 {
+	if dbOverride, hasOverride := h.keyStore.GetQuotaOverride(userID); hasOverride {
+		backendLimit = dbOverride
+	} else if override := h.config.LookupUserDailyLimit(user.Itcode); override != nil && override.BackendDailyUSD > 0 {
 		backendLimit = override.BackendDailyUSD
 	} else {
 		globalMax := h.config.BackendDailyMax
