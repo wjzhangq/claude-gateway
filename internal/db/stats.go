@@ -13,10 +13,10 @@ import (
 func (d *DB) InsertUsageLog(log *model.UsageLog) error {
 	_, err := d.Exec(
 		`INSERT INTO usage_logs
-		 (user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, error_reason, ip, city, is_hq, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (user_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, error_reason, ip, city, is_hq, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.UserID, log.APIKeyID, log.Model, log.Backend,
-		log.InputTokens, log.OutputTokens, log.TotalTokens,
+		log.InputTokens, log.OutputTokens, log.TotalTokens, log.CacheReadTokens, log.CacheWriteTokens,
 		log.CostUSD, log.StatusCode, log.Latency,
 		log.IsOpenClaw, log.IsDowngraded, log.UA, log.ErrorReason,
 		log.IP, log.City, log.IsHQ,
@@ -42,8 +42,8 @@ func (d *DB) BatchInsertUsageLogs(logs []*model.UsageLog) error {
 	defer tx.Rollback() // 兜底：Commit 成功后为 no-op；任何错误路径都保证清理事务，避免连接残留事务
 	stmt, err := tx.PrepareContext(ctx,
 		`INSERT INTO usage_logs
-		 (user_id, group_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, error_reason, ip, city, is_hq, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		 (user_id, group_id, api_key_id, model, backend, input_tokens, output_tokens, total_tokens, cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, is_openclaw, is_downgraded, ua, error_reason, ip, city, is_hq, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare stmt: %w", err)
 	}
@@ -67,7 +67,7 @@ func (d *DB) BatchInsertUsageLogs(logs []*model.UsageLog) error {
 		}
 		res, err := stmt.ExecContext(ctx,
 			log.UserID, log.GroupID, log.APIKeyID, log.Model, log.Backend,
-			log.InputTokens, log.OutputTokens, log.TotalTokens,
+			log.InputTokens, log.OutputTokens, log.TotalTokens, log.CacheReadTokens, log.CacheWriteTokens,
 			log.CostUSD, log.StatusCode, log.Latency,
 			log.IsOpenClaw, log.IsDowngraded, log.UA, log.ErrorReason,
 			log.IP, log.City, log.IsHQ, ts,

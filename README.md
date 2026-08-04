@@ -12,7 +12,7 @@
 - **自动降级**：请求失败时自动降级到配置的 fallback 模型（由 `fallback` 配置项指定，路由到 public provider）
 - **用户管理**：基于验证码 + 邀请码的注册登录，支持用户状态和配额管理
 - **API Key 管理**：用户自助创建和管理 API Key，支持按渠道（backend/aws）分类
-- **USD 配额控制**：三级配额体系——全局 `backend_daily_max`、按用户 `user_daily_limits`（可突破全局）、按后端 `backend_daily_limits`（name/prefix 匹配）；backend 与 AWS 渠道独立控制，AWS 另有日/月上限
+- **USD 配额控制**：三级配额体系——全局 `backend_daily_max`、按用户覆盖（数据库管理，支持永久/临时到期，可突破全局）、按后端 `backend_daily_limits`（name/prefix 匹配）；backend 与 AWS 渠道独立控制，AWS 另有日/月上限
 - **使用统计**：记录每次请求的 Token 用量和费用，支持按用户/模型/日期查询
 - **Token 归口分析**：将用户归属到业务线（`attr_side`）与负责人（`attr_group`），在「算力洞察 → 组织管理」页按团队/负责人聚合用量
 - **IP 归属记录**：记录每次请求的客户端 IP、城市和是否公司总部（基于 CIDR 判定），城市通过本地缓存 + `check --ip2region` 异步解析
@@ -115,11 +115,8 @@ fallback: ""             # 自动降级目标模型名，需在 public_providers
 # ── 配额控制 ────────────────────────────────────────────────
 backend_daily_max: 200         # backend 渠道全局每人每日 USD 上限，超过拒绝（0 = 不限）
 
-user_daily_limits:             # 指定 itcode 的个人上限，优先级最高，可突破全局
-  - itcode: "zhangsan"
-    backend_daily_usd: 1000    # backend 渠道每日上限（0 = 不覆盖，走默认逻辑）
-    aws_daily_usd: 0           # AWS 渠道每日上限
-    aws_monthly_usd: 2500      # AWS 渠道每月上限（可选）
+# 按用户的 backend 每日 USD 覆盖通过管理后台「配额管理」页设置，存入数据库
+# user_daily_limits（旧字段）首次启动时自动迁移到数据库，后续不再读取
 
 backend_daily_limits:          # 按后端 name / prefix 匹配的每日上限（name 优先，prefix 取最长匹配）
   - prefix: "lianxiang"
@@ -292,7 +289,8 @@ curl http://localhost:8080/v1/messages \
 
 ### 管理员功能
 
-- **用户管理**：创建用户、修改角色/状态/配额，启用/禁用 AWS 渠道权限
+- **用户管理**：创建用户、修改角色/状态，启用/禁用 AWS 渠道权限
+- **配额管理**：在「配额管理」页为指定用户设置 backend 每日 USD 覆盖（永久或临时到期），可突破全局上限；列表展示当前所有覆盖，支持修改和删除
 - **申请审批**：审批或拒绝用户的模型使用申请
 - **全局统计**：查看所有用户的用量数据
 - **DB Explorer**：在线执行只读 SQL 查询（底层使用只读连接，无法执行写操作）
@@ -365,7 +363,7 @@ aws:
     "*haiku*":  "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 ```
 
-支持的接口与普通代理相同（`/v1/chat/completions`、`/v1/messages`），网关负责协议转换。AWS 用量独立统计，可在全局（`aws_daily_max` / `aws_monthly_max`）与按用户（`user_daily_limits[].aws_daily_usd` / `aws_monthly_usd`）两级配置 USD 配额。
+支持的接口与普通代理相同（`/v1/chat/completions`、`/v1/messages`），网关负责协议转换。AWS 用量独立统计，可在全局（`aws_daily_max` / `aws_monthly_max`）与按用户（管理后台「配额管理」页的 `aws_daily_usd` / `aws_monthly_usd` 覆盖）两级配置 USD 配额。
 
 **模型映射两步走：** 请求模型名先查 `model_replace`（精确匹配 → ARN）；未命中再按 `model_default`（glob 从上到下取第一个命中）兜底到一个上游模型名，再经 `model_replace` 换成 ARN；都不中则报模型不存在。
 
@@ -578,7 +576,7 @@ kill -HUP <pid>
 - `lobster_auto_forward` — 龙虾自动转发开关
 - `lobster_forward_whitelist` — 龙虾转发白名单
 - `groups` — 用户分组
-- `backend_daily_max` / `user_daily_limits` / `backend_daily_limits` — 配额上限
+- `backend_daily_max` / `backend_daily_limits` — 配额上限（按用户覆盖通过管理后台数据库管理，不在热重载范围）
 - `backend_model_pricing` — backend 渠道计费
 - `aws`（除凭证外）— region/代理、配额、缓存、`model_replace` / `model_default` / `model_pricing` / `model_capabilities` / `allowed_body_fields`
 - `ip_geo` — IP 归属地记录（`hq_cidrs` 等）

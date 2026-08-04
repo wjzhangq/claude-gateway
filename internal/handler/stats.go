@@ -13,6 +13,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/auth"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/quota"
 )
 
 // StatsHandler serves usage statistics endpoints.
@@ -175,31 +176,10 @@ func (h *StatsHandler) GetMyDashboard(c *gin.Context) {
 		return
 	}
 
-	// Effective backend daily limit (mirrors proxy enforcement priority):
-	// 1. DB quota override (user_quota_overrides table, set by admin).
-	// 2. YAML user_daily_limits entry for this itcode.
-	// 3. min(global BackendDailyMax, per-user DailyQuotaUSD), 0 = unlimited.
-	var effectiveBackendLimit float64
-	if dbOverride, hasOverride := h.keyStore.GetQuotaOverride(userID); hasOverride {
-		effectiveBackendLimit = dbOverride
-	} else if override := h.config.LookupUserDailyLimit(user.Itcode); override != nil && override.BackendDailyUSD > 0 {
-		effectiveBackendLimit = override.BackendDailyUSD
-	} else {
-		globalMax := h.config.BackendDailyMax
-		userMax := user.DailyQuotaUSD
-		switch {
-		case globalMax > 0 && userMax > 0:
-			if globalMax < userMax {
-				effectiveBackendLimit = globalMax
-			} else {
-				effectiveBackendLimit = userMax
-			}
-		case globalMax > 0:
-			effectiveBackendLimit = globalMax
-		case userMax > 0:
-			effectiveBackendLimit = userMax
-		}
-	}
+	// Effective backend daily limit — same resolution as proxy enforcement
+	// (internal/quota): DB override first, then global backend_daily_max.
+	// YAML user_daily_limits and users.daily_quota_usd are NOT consulted.
+	effectiveBackendLimit := quota.ResolveBackendDaily(h.keyStore, userID, h.config.BackendDailyMax)
 
 	backendUsed := h.keyStore.GetDailyCost(userID)
 	backendRemaining := 0.0
@@ -260,30 +240,10 @@ func (h *StatsHandler) GetMyQuota(c *gin.Context) {
 	}
 
 	// ── Backend daily limit (mirrors proxy enforcement priority) ────────────────
-	// 1. DB quota override (user_quota_overrides table, set by admin).
-	// 2. YAML user_daily_limits entry for this itcode.
-	// 3. min(global BackendDailyMax, per-user DailyQuotaUSD), 0 = unlimited.
-	var backendLimit float64
-	if dbOverride, hasOverride := h.keyStore.GetQuotaOverride(userID); hasOverride {
-		backendLimit = dbOverride
-	} else if override := h.config.LookupUserDailyLimit(user.Itcode); override != nil && override.BackendDailyUSD > 0 {
-		backendLimit = override.BackendDailyUSD
-	} else {
-		globalMax := h.config.BackendDailyMax
-		userMax := user.DailyQuotaUSD
-		switch {
-		case globalMax > 0 && userMax > 0:
-			if globalMax < userMax {
-				backendLimit = globalMax
-			} else {
-				backendLimit = userMax
-			}
-		case globalMax > 0:
-			backendLimit = globalMax
-		case userMax > 0:
-			backendLimit = userMax
-		}
-	}
+	// Same resolution as proxy enforcement (internal/quota): DB override first,
+	// then global backend_daily_max. YAML user_daily_limits and
+	// users.daily_quota_usd are NOT consulted.
+	backendLimit := quota.ResolveBackendDaily(h.keyStore, userID, h.config.BackendDailyMax)
 
 	backendUsed := h.keyStore.GetDailyCost(userID)
 	var backendRemaining float64

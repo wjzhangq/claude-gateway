@@ -23,16 +23,21 @@ func MigrateConfigYamlQuotas(cfg *config.Config, database *db.DB, store *auth.Ke
 	}
 
 	migrated := 0
+	lookupFailed := false
 	for _, limit := range cfg.UserDailyLimits {
 		if limit.BackendDailyUSD <= 0 {
 			continue
 		}
 		user, err := database.GetUserByItcode(limit.Itcode)
 		if err != nil {
-			logger.Warnf("quota migration: lookup user %q failed, skipping: %v", limit.Itcode, err)
+			// Transient DB error — leave the flag unset so the next startup
+			// retries instead of silently dropping this user's limit.
+			logger.Warnf("quota migration: lookup user %q failed, will retry next start: %v", limit.Itcode, err)
+			lookupFailed = true
 			continue
 		}
 		if user == nil {
+			// Permanently missing user — nothing to retry, don't block the flag.
 			logger.Warnf("quota migration: user %q not found in DB, skipping", limit.Itcode)
 			continue
 		}
@@ -45,6 +50,9 @@ func MigrateConfigYamlQuotas(cfg *config.Config, database *db.DB, store *auth.Ke
 		migrated++
 	}
 
+	if lookupFailed {
+		return fmt.Errorf("quota migration incomplete: some user lookups failed, will retry next start")
+	}
 	if err := database.MarkQuotaMigrationDone(); err != nil {
 		return fmt.Errorf("mark quota migration done: %w", err)
 	}

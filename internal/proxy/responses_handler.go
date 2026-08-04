@@ -114,7 +114,8 @@ func (h *Handler) HandleResponses(c *gin.Context, body []byte) {
 	}
 
 	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
-		res.Usage.InputTokens, res.Usage.OutputTokens, time.Since(start),
+		res.Usage.InputTokens, res.Usage.OutputTokens,
+		res.Usage.CacheReadInputTokens, res.Usage.CacheCreationInputTokens, time.Since(start),
 		false, false, false, c.Request.Header.Get("User-Agent"), c.ClientIP(), body)
 
 	if sse != nil {

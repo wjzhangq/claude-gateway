@@ -207,7 +207,7 @@ func (r *Runner) runAWSCell(ctx context.Context, model string, inputTokens, maxT
 }
 
 func (r *Runner) runPublicCell(ctx context.Context, _, model string, inputTokens, maxTokens int, result *CellResult) {
-	provider := r.config.LookupPublicProvider(model)
+	provider := r.config.LookupPublicProvider(model, "")
 	if provider == nil {
 		result.Status = "error"
 		result.ErrorMsg = fmt.Sprintf("no public provider found for model %s", model)

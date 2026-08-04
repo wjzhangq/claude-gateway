@@ -120,13 +120,15 @@ type IPGeoConfig struct {
 //   - OpenAIURL:     for /v1/chat/completions requests
 //   - AnthropicURL:  for /v1/messages requests
 type PublicProvider struct {
-	Name         string                       `yaml:"name"`
-	OpenAIURL    string                       `yaml:"openai_url"`    // base URL for OpenAI-compatible API
-	AnthropicURL string                       `yaml:"anthropic_url"` // base URL for Anthropic-compatible API
-	APIKey       string                       `yaml:"api_key"`
-	Enabled      bool                         `yaml:"enabled"`
-	Models       []string                     `yaml:"models"`        // supported model names (exact match)
-	ModelPricing map[string]ModelPricingEntry `yaml:"model_pricing"` // model name -> pricing per 1M tokens
+	Name           string                       `yaml:"name"`
+	OpenAIURL      string                       `yaml:"openai_url"`      // base URL for OpenAI-compatible API
+	AnthropicURL   string                       `yaml:"anthropic_url"`   // base URL for Anthropic-compatible API
+	APIKey         string                       `yaml:"api_key"`
+	Enabled        bool                         `yaml:"enabled"`
+	Models         []string                     `yaml:"models"`          // supported model names (exact match)
+	AllowedItcodes []string                     `yaml:"allowed_itcodes"` // if non-empty, restrict access to these itcodes
+	AllowedModels  []string                     `yaml:"allowed_models"`  // if non-empty, only these models are restricted; others remain open
+	ModelPricing   map[string]ModelPricingEntry `yaml:"model_pricing"`   // model name -> pricing per 1M tokens
 }
 
 // AttributionLeader is one selectable 负责人 (attribution group leader) for the
@@ -403,8 +405,54 @@ func (c *Config) IsLobsterWhitelisted(itcode string) bool {
 	return false
 }
 
-// LookupPublicProvider returns the PublicProvider that serves the given model, or nil.
-func (c *Config) LookupPublicProvider(model string) *PublicProvider {
+// LookupPublicProvider returns the PublicProvider that serves the given model for the given user, or nil.
+// Pass an empty itcode to bypass access restrictions (e.g. for system-level fallback routing).
+func (c *Config) LookupPublicProvider(model, itcode string) *PublicProvider {
+	for i := range c.PublicProviders {
+		p := &c.PublicProviders[i]
+		if !p.Enabled {
+			continue
+		}
+		for _, m := range p.Models {
+			if m != model {
+				continue
+			}
+			// No itcode restrictions configured — open to all.
+			if len(p.AllowedItcodes) == 0 {
+				return p
+			}
+			// Determine if this specific model is subject to the restriction.
+			modelRestricted := len(p.AllowedModels) == 0
+			if !modelRestricted {
+				for _, am := range p.AllowedModels {
+					if am == model {
+						modelRestricted = true
+						break
+					}
+				}
+			}
+			if !modelRestricted {
+				return p
+			}
+			// Model is restricted — check itcode. Empty itcode (system call) bypasses.
+			if itcode == "" {
+				return p
+			}
+			for _, allowed := range p.AllowedItcodes {
+				if allowed == itcode {
+					return p
+				}
+			}
+			return nil // model found but user not allowed
+		}
+	}
+	return nil
+}
+
+// IsPublicModel reports whether model is served by any enabled public provider,
+// regardless of user restrictions. Used to distinguish "access denied" (403) from
+// "model not found" (fall through to backend routing).
+func (c *Config) IsPublicModel(model string) bool {
 	for i := range c.PublicProviders {
 		p := &c.PublicProviders[i]
 		if !p.Enabled {
@@ -412,11 +460,45 @@ func (c *Config) LookupPublicProvider(model string) *PublicProvider {
 		}
 		for _, m := range p.Models {
 			if m == model {
-				return p
+				return true
 			}
 		}
 	}
-	return nil
+	return false
+}
+
+// IsModelRestrictedForItcode reports whether model from the given providerName is
+// access-restricted and itcode is NOT in the allowlist. Returns true when the
+// model should be hidden from this user's /v1/models response.
+func (c *Config) IsModelRestrictedForItcode(providerName, model, itcode string) bool {
+	for i := range c.PublicProviders {
+		p := &c.PublicProviders[i]
+		if p.Name != providerName || !p.Enabled {
+			continue
+		}
+		if len(p.AllowedItcodes) == 0 {
+			return false
+		}
+		modelRestricted := len(p.AllowedModels) == 0
+		if !modelRestricted {
+			for _, am := range p.AllowedModels {
+				if am == model {
+					modelRestricted = true
+					break
+				}
+			}
+		}
+		if !modelRestricted {
+			return false
+		}
+		for _, allowed := range p.AllowedItcodes {
+			if strings.TrimSpace(allowed) == itcode {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // PublicModelList returns all model names from enabled public providers.

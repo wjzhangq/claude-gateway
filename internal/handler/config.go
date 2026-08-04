@@ -23,11 +23,18 @@ func NewConfigHandler(cfgPath string, cfg *config.Config, reloadFn func() error)
 }
 
 type limitsResponse struct {
-	BackendDailyMax    float64                `json:"backend_daily_max"`
-	AWSDailyMax        float64                `json:"aws_daily_max"`
-	AWSMonthlyMax      float64                `json:"aws_monthly_max"`
-	UserDailyLimits    []userLimitResponse    `json:"user_daily_limits"`
-	BackendDailyLimits []backendLimitResponse `json:"backend_daily_limits"`
+	BackendDailyMax             float64                       `json:"backend_daily_max"`
+	AWSDailyMax                 float64                       `json:"aws_daily_max"`
+	AWSMonthlyMax               float64                       `json:"aws_monthly_max"`
+	UserDailyLimits             []userLimitResponse           `json:"user_daily_limits"`
+	BackendDailyLimits          []backendLimitResponse        `json:"backend_daily_limits"`
+	PublicProviderRestrictions  []providerRestrictionResponse `json:"public_provider_restrictions"`
+}
+
+type providerRestrictionResponse struct {
+	Name          string   `json:"name"`
+	AllowedModels []string `json:"allowed_models"`
+	AllowedItcodes []string `json:"allowed_itcodes"`
 }
 
 type userLimitResponse struct {
@@ -61,12 +68,23 @@ func (h *ConfigHandler) GetLimits(c *gin.Context) {
 			DailyUSD: l.DailyUSD,
 		}
 	}
+	var restrictions []providerRestrictionResponse
+	for _, p := range h.cfg.PublicProviders {
+		if len(p.AllowedItcodes) > 0 || len(p.AllowedModels) > 0 {
+			restrictions = append(restrictions, providerRestrictionResponse{
+				Name:           p.Name,
+				AllowedModels:  p.AllowedModels,
+				AllowedItcodes: p.AllowedItcodes,
+			})
+		}
+	}
 	c.JSON(http.StatusOK, limitsResponse{
-		BackendDailyMax:    h.cfg.BackendDailyMax,
-		AWSDailyMax:        h.cfg.AWS.AWSDailyMax,
-		AWSMonthlyMax:      h.cfg.AWS.AWSMonthlyMax,
-		UserDailyLimits:    limits,
-		BackendDailyLimits: backendLimits,
+		BackendDailyMax:            h.cfg.BackendDailyMax,
+		AWSDailyMax:                h.cfg.AWS.AWSDailyMax,
+		AWSMonthlyMax:              h.cfg.AWS.AWSMonthlyMax,
+		UserDailyLimits:            limits,
+		BackendDailyLimits:         backendLimits,
+		PublicProviderRestrictions: restrictions,
 	})
 }
 

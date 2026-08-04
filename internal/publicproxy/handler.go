@@ -2,7 +2,6 @@ package publicproxy
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -16,8 +15,10 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/quota"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
 	"github.com/wjzhangq/claude-gateway/internal/tokenest"
+	"github.com/wjzhangq/claude-gateway/internal/usage"
 )
 
 // Handler transparently forwards requests to public third-party providers
@@ -60,14 +61,24 @@ func (h *Handler) getCfg() *config.Config {
 	return h.cfg
 }
 
-// MatchModel checks if the model is served by a public provider.
-// Returns the provider if found, nil otherwise.
-func (h *Handler) MatchModel(model string) *config.PublicProvider {
+// MatchModel checks if the model is served by a public provider and the user is allowed.
+// Returns the provider if found and access granted, nil otherwise.
+func (h *Handler) MatchModel(model, itcode string) *config.PublicProvider {
 	cfg := h.getCfg()
 	if cfg == nil {
 		return nil
 	}
-	return cfg.LookupPublicProvider(model)
+	return cfg.LookupPublicProvider(model, itcode)
+}
+
+// IsPublicModel reports whether model belongs to any enabled public provider,
+// ignoring user restrictions.
+func (h *Handler) IsPublicModel(model string) bool {
+	cfg := h.getCfg()
+	if cfg == nil {
+		return false
+	}
+	return cfg.IsPublicModel(model)
 }
 
 // Forward transparently proxies the request to the appropriate public provider.
@@ -153,7 +164,7 @@ func (h *Handler) Forward(c *gin.Context, path string, body []byte, model string
 }
 
 // Models returns the list of public models as OpenAI-compatible model objects.
-func (h *Handler) Models() []gin.H {
+func (h *Handler) Models(itcode string) []gin.H {
 	cfg := h.getCfg()
 	if cfg == nil {
 		return nil
@@ -166,6 +177,10 @@ func (h *Handler) Models() []gin.H {
 			continue
 		}
 		for _, m := range p.Models {
+			// If this model is access-restricted, only include it for allowed itcodes.
+			if cfg.IsModelRestrictedForItcode(p.Name, m, itcode) {
+				continue
+			}
 			models = append(models, gin.H{
 				"id":       m,
 				"object":   "model",
@@ -187,7 +202,8 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 	flusher, canFlush := c.Writer.(http.Flusher)
 	ctx := c.Request.Context()
 
-	var totalIn, totalOut int
+	// acc merges usage across SSE events field-by-field (see internal/usage).
+	var acc usage.Accumulator
 	var outCounts tokenest.Counts
 	// linesBuf accumulates bytes until a complete SSE line is formed
 	var linesBuf []byte
@@ -207,29 +223,28 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 			}
 			linesBuf = append(linesBuf, buf[:n]...)
 			// parse complete lines from linesBuf, keep remainder
-			linesBuf = consumeSSELines(linesBuf, &totalIn, &totalOut, &outCounts)
+			linesBuf = consumeSSELines(linesBuf, &acc, &outCounts)
 		}
 		if err != nil {
 			break
 		}
 	}
 	// parse any remaining bytes
-	consumeSSELines(linesBuf, &totalIn, &totalOut, &outCounts)
+	consumeSSELines(linesBuf, &acc, &outCounts)
 
-	if totalIn == 0 {
-		totalIn = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
-	}
-	if totalOut == 0 {
-		totalOut = outCounts.Estimate(tokenest.Default)
+	// Estimate only when the stream carried no usage data at all.
+	if !acc.SawUsage {
+		acc.Input = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
+		acc.Output = outCounts.Estimate(tokenest.Default)
 	}
 
-	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, totalIn, totalOut, time.Since(start), c.ClientIP())
+	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, acc.Input, acc.Output, acc.CacheRead, acc.CacheWrite, time.Since(start), c.ClientIP())
 }
 
 // consumeSSELines parses complete newline-terminated SSE lines from data,
-// updating in/out token counters on every data: event that contains usage.
+// merging usage into acc on every data: event that reports it.
 // Returns the unconsumed remainder (partial last line).
-func consumeSSELines(data []byte, in, out *int, outCounts *tokenest.Counts) []byte {
+func consumeSSELines(data []byte, acc *usage.Accumulator, outCounts *tokenest.Counts) []byte {
 	for {
 		idx := bytes.IndexByte(data, '\n')
 		if idx < 0 {
@@ -245,13 +260,7 @@ func consumeSSELines(data []byte, in, out *int, outCounts *tokenest.Counts) []by
 		if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
 			continue
 		}
-		i, o := parseBodyTokens(payload)
-		if i > 0 {
-			*in = i
-		}
-		if o > 0 {
-			*out = o
-		}
+		acc.Add(usage.ParseTokens(payload))
 		if t := tokenest.ExtractDeltaText(payload); t != "" {
 			outCounts.Add(t)
 		}
@@ -269,39 +278,17 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *
 	}
 	c.Writer.Write(respBody)
 
-	in, out := parseBodyTokens(respBody)
-	if in == 0 {
+	in, out, cacheRead, cacheWrite := usage.ParseTokens(respBody)
+	if in == 0 && out == 0 && cacheRead == 0 && cacheWrite == 0 {
 		in = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
-	}
-	if out == 0 {
 		out = tokenest.EstimateString(tokenest.ExtractResponseText(respBody), tokenest.Default)
 	}
-	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, in, out, time.Since(start), c.ClientIP())
+	h.emitUsage(keyInfo, keyStr, provider, model, statusCode, in, out, cacheRead, cacheWrite, time.Since(start), c.ClientIP())
 }
 
-// parseBodyTokens extracts token counts from a non-streaming JSON response.
-// Handles both OpenAI and Anthropic response formats.
-func parseBodyTokens(body []byte) (input, output int) {
-	var r struct {
-		Usage struct {
-			// OpenAI format
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			// Anthropic format
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return 0, 0
-	}
-	input = r.Usage.PromptTokens + r.Usage.InputTokens
-	output = r.Usage.CompletionTokens + r.Usage.OutputTokens
-	return
-}
-
-// costUSD estimates cost based on the provider's model_pricing config.
-func costUSD(provider *config.PublicProvider, model string, inputTokens, outputTokens int) float64 {
+// costUSD estimates cost based on the provider's model_pricing config,
+// including prompt-cache tokens when the provider reports them.
+func costUSD(provider *config.PublicProvider, model string, inputTokens, outputTokens, cacheRead, cacheWrite int) float64 {
 	if provider == nil || provider.ModelPricing == nil {
 		return 0
 	}
@@ -309,11 +296,18 @@ func costUSD(provider *config.PublicProvider, model string, inputTokens, outputT
 	if !ok {
 		return 0
 	}
-	return (float64(inputTokens)*pricing.Input + float64(outputTokens)*pricing.Output) / 1_000_000
+	// Entries without explicit cache prices derive them from the standard
+	// ratios (read = 10% of input, write = 125%).
+	if pricing.CacheRead == 0 && pricing.CacheWrite == 0 {
+		pricing.CacheRead = pricing.Input * 0.1
+		pricing.CacheWrite = pricing.Input * 1.25
+	}
+	return (float64(inputTokens)*pricing.Input + float64(outputTokens)*pricing.Output +
+		float64(cacheRead)*pricing.CacheRead + float64(cacheWrite)*pricing.CacheWrite) / 1_000_000
 }
 
 func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config.PublicProvider,
-	model string, statusCode, inputTokens, outputTokens int, latency time.Duration, clientIP string) {
+	model string, statusCode, inputTokens, outputTokens, cacheRead, cacheWrite int, latency time.Duration, clientIP string) {
 
 	if h.collector == nil || keyInfo == nil {
 		return
@@ -324,7 +318,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config
 	}
 
 	total := inputTokens + outputTokens
-	cost := costUSD(provider, model, inputTokens, outputTokens)
+	cost := costUSD(provider, model, inputTokens, outputTokens, cacheRead, cacheWrite)
 
 	var city string
 	var isHQ bool
@@ -333,27 +327,64 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config
 	}
 
 	h.collector.Emit(stats.Record{
-		UserID:       info.UserID,
-		GroupID:      info.GroupID,
-		APIKeyID:     info.KeyID,
-		KeyStr:       keyStr,
-		Model:        model,
-		Backend:      "public:" + provider.Name,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		TotalTokens:  total,
-		CostUSD:      cost,
-		StatusCode:   statusCode,
-		Latency:      latency,
-		IP:           clientIP,
-		City:         city,
-		IsHQ:         isHQ,
+		UserID:           info.UserID,
+		GroupID:          info.GroupID,
+		APIKeyID:         info.KeyID,
+		KeyStr:           keyStr,
+		Model:            model,
+		Backend:          "public:" + provider.Name,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		TotalTokens:      total,
+		CacheReadTokens:  cacheRead,
+		CacheWriteTokens: cacheWrite,
+		CostUSD:          cost,
+		StatusCode:       statusCode,
+		Latency:          latency,
+		IP:               clientIP,
+		City:             city,
+		IsHQ:             isHQ,
 	})
 
 	// Accumulate daily cost for per-user quota tracking
 	if cost > 0 && statusCode < 400 {
 		h.keyStore.AddDailyCost(info.UserID, cost)
 	}
+}
+
+// CheckDailyLimit enforces the shared per-user daily spending quota on the
+// public channel. Public-provider spend accumulates into the same daily
+// bucket as the backend channel, so exceeding the limit rejects public
+// requests too — with the same 429 body the backend channel returns.
+// Returns true when the request was rejected (caller must stop processing).
+func (h *Handler) CheckDailyLimit(c *gin.Context, keyInfo interface{}) bool {
+	info, ok := keyInfo.(*auth.KeyInfo)
+	if !ok || info == nil {
+		return false
+	}
+	cfg := h.getCfg()
+	globalMax := 0.0
+	if cfg != nil {
+		globalMax = cfg.BackendDailyMax
+	}
+	effectiveLimit := quota.ResolveBackendDaily(h.keyStore, info.UserID, globalMax)
+	if effectiveLimit <= 0 {
+		return false
+	}
+	todayCost := h.keyStore.GetDailyCost(info.UserID)
+	if todayCost < effectiveLimit {
+		return false
+	}
+	logger.Warnf("daily backend limit exceeded (public channel): user_id=%d today=%.4f limit=%.4f",
+		info.UserID, todayCost, effectiveLimit)
+	c.JSON(http.StatusTooManyRequests, gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    "rate_limit_error",
+			"message": "Daily backend spending limit exceeded. Please try again tomorrow.",
+		},
+	})
+	return true
 }
 
 // buildTargetURL constructs the full upstream URL.

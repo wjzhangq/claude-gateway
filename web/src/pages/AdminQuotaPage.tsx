@@ -2,6 +2,12 @@ import { useEffect, useState } from 'react'
 import { adminGetConfigLimits, adminUpdateConfigLimits, adminListQuotaOverrides, adminUpsertQuotaOverride, adminDeleteQuotaOverride } from '../api'
 import { toast } from '../components/Toast'
 
+interface ProviderRestriction {
+  name: string
+  allowed_models: string[]
+  allowed_itcodes: string[]
+}
+
 interface QuotaOverride {
   id: number
   user_id: number
@@ -38,6 +44,7 @@ export default function AdminQuotaPage() {
   const [backendMax, setBackendMax] = useState('')
   const [awsDailyMax, setAwsDailyMax] = useState('')
   const [awsMonthlyMax, setAwsMonthlyMax] = useState('')
+  const [restrictions, setRestrictions] = useState<ProviderRestriction[]>([])
 
   const [overrides, setOverrides] = useState<QuotaOverride[]>([])
   const [overridesLoading, setOverridesLoading] = useState(true)
@@ -54,6 +61,7 @@ export default function AdminQuotaPage() {
         setBackendMax(String(res.data.backend_daily_max))
         setAwsDailyMax(String(res.data.aws_daily_max))
         setAwsMonthlyMax(String(res.data.aws_monthly_max ?? 0))
+        setRestrictions(res.data.public_provider_restrictions ?? [])
       })
       .catch(() => {})
       .finally(() => setLoading(false))
@@ -289,6 +297,40 @@ export default function AdminQuotaPage() {
           </tbody>
         </table>
       </div>
+
+      {/* 模型访问限制（来自 config.yaml） */}
+      {restrictions.length > 0 && (
+        <div className="mt-6 bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100">
+            <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">模型访问限制</h3>
+            <p className="text-xs text-gray-400 mt-0.5">来自 config.yaml，仅特定用户可访问的 Public Provider 模型</p>
+          </div>
+          <div className="divide-y divide-gray-50">
+            {restrictions.map((r) => (
+              <div key={r.name} className="px-6 py-4">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-sm font-semibold text-gray-800">{r.name}</span>
+                  {r.allowed_models.length > 0 && r.allowed_models.map((m) => (
+                    <span key={m} className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-purple-50 text-purple-700 ring-1 ring-purple-100">
+                      {m}
+                    </span>
+                  ))}
+                </div>
+                <div>
+                  <p className="text-xs text-gray-400 mb-2">可访问用户（{r.allowed_itcodes.length} 人）</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {r.allowed_itcodes.map((itcode) => (
+                      <span key={itcode} className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-gray-100 text-gray-700">
+                        {itcode}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 新增/编辑弹窗 */}
       {showModal && (

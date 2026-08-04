@@ -75,9 +75,10 @@ func (h *QuotaOverrideHandler) Upsert(c *gin.Context) {
 		return
 	}
 
-	// Sync in-memory cache — use same expiry semantics as LoadQuotaOverrides (expires_at inclusive)
+	// Sync in-memory cache — same expiry semantics as LoadQuotaOverrides and the
+	// admin page: the expiry date itself is still a valid day.
 	today := time.Now().Format("2006-01-02")
-	if req.IsTemporary && expiresAt != nil && *expiresAt <= today {
+	if req.IsTemporary && expiresAt != nil && *expiresAt < today {
 		h.keyStore.DeleteQuotaOverride(user.ID)
 	} else {
 		h.keyStore.SetQuotaOverride(user.ID, req.QuotaUSD)

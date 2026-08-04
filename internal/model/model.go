@@ -52,10 +52,12 @@ type UsageLog struct {
 	APIKeyID     int64     `db:"api_key_id"    json:"api_key_id"`
 	Model        string    `db:"model"         json:"model"`
 	Backend      string    `db:"backend"       json:"backend"`
-	InputTokens  int       `db:"input_tokens"  json:"input_tokens"`
-	OutputTokens int       `db:"output_tokens" json:"output_tokens"`
-	TotalTokens  int       `db:"total_tokens"  json:"total_tokens"`
-	CostUSD      float64   `db:"cost_usd"      json:"cost_usd"`
+	InputTokens      int       `db:"input_tokens"       json:"input_tokens"`
+	OutputTokens     int       `db:"output_tokens"      json:"output_tokens"`
+	TotalTokens      int       `db:"total_tokens"       json:"total_tokens"`
+	CacheReadTokens  int       `db:"cache_read_tokens"  json:"cache_read_tokens"`  // prompt-cache read (discount price)
+	CacheWriteTokens int       `db:"cache_write_tokens" json:"cache_write_tokens"` // prompt-cache creation (premium price)
+	CostUSD          float64   `db:"cost_usd"           json:"cost_usd"`
 	StatusCode   int       `db:"status_code"   json:"status_code"`
 	Latency      int64     `db:"latency_ms"    json:"latency_ms"`
 	IsOpenClaw   bool      `db:"is_openclaw"   json:"is_openclaw"`

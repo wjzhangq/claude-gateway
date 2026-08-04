@@ -403,9 +403,12 @@ func GenerateKey() (string, error) {
 
 // ── Quota override cache ──────────────────────────────────────────────────────
 
-// isQuotaExpired reports whether an override has passed its expiry date (inclusive).
+// isQuotaExpired reports whether an override has passed its expiry date.
+// The expiry date itself is still valid — an override expiring "2026-08-04"
+// works through that day and lapses at midnight (consistent with the
+// is_expired flag shown on the admin page, see db.computeIsExpired).
 func isQuotaExpired(o *model.UserQuotaOverride, today string) bool {
-	return o.IsTemporary && o.ExpiresAt != nil && *o.ExpiresAt <= today
+	return o.IsTemporary && o.ExpiresAt != nil && *o.ExpiresAt < today
 }
 
 // LoadQuotaOverrides replaces the in-memory quota override map from a DB snapshot.

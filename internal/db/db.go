@@ -117,6 +117,11 @@ var migrations = []migration{
 	{51, `INSERT OR IGNORE INTO user_quota_overrides (user_id, quota_usd, is_temporary, note)
 SELECT id, daily_quota_usd, 0, 'migrated from users.daily_quota_usd'
 FROM users WHERE daily_quota_usd > 0`},
+	// Prompt-cache token accounting (backend channel). Mirrors the columns that
+	// already exist on aws_usage_logs. NOT NULL DEFAULT 0 → zero risk to
+	// existing rows; cache-aware cost billing starts with these columns.
+	{52, `ALTER TABLE usage_logs ADD COLUMN cache_read_tokens  INTEGER NOT NULL DEFAULT 0`},
+	{53, `ALTER TABLE usage_logs ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`},
 }
 
 // pendingAnalysisSchema is the to-analyze queue (= the incremental watermark; it

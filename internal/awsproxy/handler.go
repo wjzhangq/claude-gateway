@@ -20,6 +20,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
+	"github.com/wjzhangq/claude-gateway/internal/usage"
 )
 
 // Handler forwards requests to AWS Bedrock.
@@ -282,7 +283,7 @@ func (h *Handler) syncMessages(c *gin.Context, body []byte, bedrockModel, reqMod
 		return
 	}
 
-	in, out, cacheRead, cacheWrite := parseAnthropicUsage(respBytes)
+	in, out, cacheRead, cacheWrite := usage.ParseTokens(respBytes)
 	statusCode := http.StatusOK
 
 	c.Header("Content-Type", "application/json")
@@ -322,7 +323,7 @@ func (h *Handler) streamMessages(c *gin.Context, body []byte, bedrockModel, reqM
 		case *types.ResponseStreamMemberChunk:
 			chunk := v.Value.Bytes
 			// Extract token counts from known event types
-			in2, out2, cr2, cw2 := parseAnthropicUsage(chunk)
+			in2, out2, cr2, cw2 := usage.ParseTokens(chunk)
 			if in2 > 0 {
 				inputTokens = in2
 			}
@@ -490,7 +491,7 @@ func (h *Handler) streamChatCompletions(c *gin.Context, body []byte, bedrockMode
 			chunk := v.Value.Bytes
 
 			// Accumulate token counts
-			in2, out2, cr2, cw2 := parseAnthropicUsage(chunk)
+			in2, out2, cr2, cw2 := usage.ParseTokens(chunk)
 			if in2 > 0 {
 				inputTokens = in2
 			}
@@ -1141,34 +1142,6 @@ func convertThinkingToAdaptive(m map[string]json.RawMessage) {
 	}
 }
 
-
-func parseAnthropicUsage(data []byte) (input, output, cacheRead, cacheWrite int) {
-	var r struct {
-		Usage struct {
-			InputTokens              int `json:"input_tokens"`
-			OutputTokens             int `json:"output_tokens"`
-			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-		} `json:"usage"`
-		Message struct {
-			Usage struct {
-				InputTokens              int `json:"input_tokens"`
-				OutputTokens             int `json:"output_tokens"`
-				CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-				CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-			} `json:"usage"`
-		} `json:"message"`
-	}
-	if err := json.Unmarshal(data, &r); err != nil {
-		return
-	}
-	// message_start event nests usage under "message"
-	input = r.Usage.InputTokens + r.Message.Usage.InputTokens
-	output = r.Usage.OutputTokens + r.Message.Usage.OutputTokens
-	cacheRead = r.Usage.CacheReadInputTokens + r.Message.Usage.CacheReadInputTokens
-	cacheWrite = r.Usage.CacheCreationInputTokens + r.Message.Usage.CacheCreationInputTokens
-	return
-}
 
 // extractKeyInfo returns the key info and raw key string from context.
 func extractKeyInfo(c *gin.Context) (*auth.KeyInfo, string) {

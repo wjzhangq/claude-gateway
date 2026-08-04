@@ -22,9 +22,11 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
+	"github.com/wjzhangq/claude-gateway/internal/quota"
 	"github.com/wjzhangq/claude-gateway/internal/sanitize"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
 	"github.com/wjzhangq/claude-gateway/internal/tokenest"
+	"github.com/wjzhangq/claude-gateway/internal/usage"
 	"github.com/wjzhangq/claude-gateway/internal/websearch"
 )
 
@@ -319,22 +321,18 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// Check if we're in the downgraded period (skip original model and go directly to GPT)
 	inDowngradedPeriod := autoDowngrade && keyStr != "" && h.keyStore.IsDowngraded(keyStr)
 
-	// Check per-user daily backend spending limit
+	// Check per-user daily backend spending limit.
+	// Resolution is centralized in internal/quota so the enforced limit always
+	// equals the limit shown on the dashboard / /api/quota / response headers.
 	if info, ok := keyInfo.(*auth.KeyInfo); ok {
 		h.mu.RLock()
-		cfg := h.config
+		globalMax := 0.0
+		if h.config != nil {
+			globalMax = h.config.BackendDailyMax
+		}
 		h.mu.RUnlock()
 
-		// Effective daily limit resolution (highest priority first):
-		// 1. DB quota override via keyStore (set by admin, permanent or temporary).
-		// 2. Global BackendDailyMax from config (users.daily_quota_usd is deprecated).
-		effectiveLimit := 0.0
-		if quota, hasOverride := h.keyStore.GetQuotaOverride(info.UserID); hasOverride {
-			effectiveLimit = quota
-		} else if cfg != nil && cfg.BackendDailyMax > 0 {
-			effectiveLimit = cfg.BackendDailyMax
-		}
-
+		effectiveLimit := quota.ResolveBackendDaily(h.keyStore, info.UserID, globalMax)
 		if effectiveLimit > 0 {
 			todayCost := h.keyStore.GetDailyCost(info.UserID)
 			if todayCost >= effectiveLimit {
@@ -586,15 +584,21 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	if info, ok := keyInfo.(*auth.KeyInfo); ok {
 		c.Header("X-Gateway-Model", reqModel)
 		c.Header("X-Gateway-Channel", info.Channel)
-		var quota float64
+		var quotaUSD float64
 		if info.Channel == "aws" {
-			quota = info.AWSDailyQuotaUSD
-		} else if dbOverride, hasOverride := h.keyStore.GetQuotaOverride(info.UserID); hasOverride {
-			quota = dbOverride
+			quotaUSD = info.AWSDailyQuotaUSD
 		} else {
-			quota = info.DailyQuotaUSD
+			// Same resolution as enforcement and dashboard — DB override first,
+			// then global backend_daily_max (0 = unlimited).
+			h.mu.RLock()
+			globalMax := 0.0
+			if h.config != nil {
+				globalMax = h.config.BackendDailyMax
+			}
+			h.mu.RUnlock()
+			quotaUSD = quota.ResolveBackendDaily(h.keyStore, info.UserID, globalMax)
 		}
-		c.Header("X-Gateway-Daily-Quota", strconv.FormatFloat(quota, 'f', 4, 64))
+		c.Header("X-Gateway-Daily-Quota", strconv.FormatFloat(quotaUSD, 'f', 4, 64))
 	}
 
 	c.Status(resp.StatusCode)
@@ -825,7 +829,10 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 
 	flusher, canFlush := c.Writer.(http.Flusher)
 	ctx := c.Request.Context()
-	var lastIn, lastOut int
+	// acc merges usage across SSE events field-by-field. Anthropic reports
+	// input_tokens (+ cache tokens) once in message_start, then only
+	// output_tokens in message_delta — a wholesale overwrite would lose input.
+	var acc usage.Accumulator
 	var outCounts tokenest.Counts
 	buf := make([]byte, streamReadBufSize)
 	// partial holds bytes of an incomplete SSE line across reads
@@ -860,8 +867,8 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 				if len(payload) == 0 || bytes.Equal(payload, []byte("[DONE]")) {
 					continue
 				}
-				if i, o := parseBodyTokens(payload); i > 0 || o > 0 {
-					lastIn, lastOut = i, o
+				if i, o, cr, cw := usage.ParseTokens(payload); i > 0 || o > 0 || cr > 0 || cw > 0 {
+					acc.Add(i, o, cr, cw)
 				}
 				if t := tokenest.ExtractDeltaText(payload); t != "" {
 					outCounts.Add(t)
@@ -873,20 +880,23 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 	}
 
-	if lastIn == 0 {
-		lastIn = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
-	}
-	if lastOut == 0 {
-		lastOut = outCounts.Estimate(tokenest.Default)
+	// Estimate only when the stream carried NO usage data at all. A legitimate
+	// cache-hit response can report input_tokens=0 with large cache_read — that
+	// must not trigger estimation (which would bill the full prompt text).
+	if !acc.SawUsage {
+		acc.Input = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
+		acc.Output = outCounts.Estimate(tokenest.Default)
+		logger.Warnf("stream carried no usage, estimated tokens: backend=%s model=%s in=%d out=%d",
+			backendName, model, acc.Input, acc.Output)
 	}
 	// rawZero after fallback: a genuinely empty stream (no request text, no
 	// streamed delta content). This avoids flagging truncated-but-successful
 	// streams — where usage tokens never arrived but real deltas did — as
 	// "backend zero tokens".
-	rawZero := lastIn == 0 && lastOut == 0
+	rawZero := acc.Input == 0 && acc.Output == 0
 
 	latency := time.Since(start)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, lastIn, lastOut, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP(), reqBody)
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, acc.Input, acc.Output, acc.CacheRead, acc.CacheWrite, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP(), reqBody)
 
 	if statusCode >= 400 || rawZero {
 		msg := "backend zero tokens"
@@ -914,16 +924,15 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 	}
 
-	in, out := parseBodyTokens(respBody)
-	rawZero := in == 0 && out == 0
-	if in == 0 {
+	in, out, cacheRead, cacheWrite := usage.ParseTokens(respBody)
+	sawUsage := in > 0 || out > 0 || cacheRead > 0 || cacheWrite > 0
+	rawZero := !sawUsage
+	if !sawUsage {
 		in = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
-	}
-	if out == 0 {
 		out = tokenest.EstimateString(tokenest.ExtractResponseText(respBody), tokenest.Default)
 	}
 	latency := time.Since(start)
-	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP(), reqBody)
+	h.emitUsage(keyInfo, keyStr, backendName, model, statusCode, in, out, cacheRead, cacheWrite, latency, isOpenClaw, isHermes, isDowngraded, c.Request.Header.Get("User-Agent"), c.ClientIP(), reqBody)
 
 	if statusCode >= 400 || rawZero {
 		msg := "backend zero tokens"
@@ -934,37 +943,25 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 	}
 }
 
-// parseBodyTokens extracts token counts from a non-streaming JSON response.
-// Handles both OpenAI and Anthropic response formats.
-func parseBodyTokens(body []byte) (input, output int) {
-	var r struct {
-		Usage struct {
-			// OpenAI format
-			PromptTokens     int `json:"prompt_tokens"`
-			CompletionTokens int `json:"completion_tokens"`
-			// Anthropic format
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return 0, 0
-	}
-	input = r.Usage.PromptTokens + r.Usage.InputTokens
-	output = r.Usage.CompletionTokens + r.Usage.OutputTokens
-	return
-}
-
-// costUSD estimates cost based on token counts and model.
+// costUSD estimates cost based on token counts and model, including prompt
+// cache tokens (cache_read at a discount, cache_write at a premium).
 // If pricing map is provided, it uses glob-pattern matching (same as AWS channel).
 // Falls back to built-in prices when no pattern matches.
-func costUSD(model string, inputTokens, outputTokens int, pricing map[string]config.ModelPricingEntry) float64 {
+func costUSD(model string, inputTokens, outputTokens, cacheRead, cacheWrite int, pricing map[string]config.ModelPricingEntry) float64 {
 	if len(pricing) > 0 {
 		p := resolvePricing(model, pricing)
-		return (float64(inputTokens)*p.Input + float64(outputTokens)*p.Output) / 1_000_000
+		// Entries that configure only input/output derive cache prices from the
+		// standard Anthropic ratios (read = 10% of input, write = 125%).
+		if p.CacheRead == 0 && p.CacheWrite == 0 {
+			p.CacheRead = p.Input * 0.1
+			p.CacheWrite = p.Input * 1.25
+		}
+		return (float64(inputTokens)*p.Input + float64(outputTokens)*p.Output +
+			float64(cacheRead)*p.CacheRead + float64(cacheWrite)*p.CacheWrite) / 1_000_000
 	}
 
-	// Built-in fallback prices (per 1M tokens)
+	// Built-in fallback prices (per 1M tokens); cache follows Anthropic's
+	// standard ratios: read = 10% of input price, write = 125%.
 	inputPrice := 3.0
 	outputPrice := 15.0
 
@@ -988,7 +985,8 @@ func costUSD(model string, inputTokens, outputTokens int, pricing map[string]con
 		inputPrice, outputPrice = 0.5, 1.5
 	}
 
-	return (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice) / 1_000_000
+	return (float64(inputTokens)*inputPrice + float64(outputTokens)*outputPrice +
+		float64(cacheRead)*inputPrice*0.1 + float64(cacheWrite)*inputPrice*1.25) / 1_000_000
 }
 
 // resolvePricing matches a model name against glob patterns in the pricing map.
@@ -1010,7 +1008,7 @@ func resolvePricing(model string, pricing map[string]config.ModelPricingEntry) c
 	return config.ModelPricingEntry{Input: 3.0, Output: 15.0}
 }
 
-func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens int, latency time.Duration, isOpenClaw, isHermes, isDowngraded bool, userAgent, clientIP string, reqBody []byte) {
+func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model string, statusCode, inputTokens, outputTokens, cacheRead, cacheWrite int, latency time.Duration, isOpenClaw, isHermes, isDowngraded bool, userAgent, clientIP string, reqBody []byte) {
 	if h.collector == nil || keyInfo == nil {
 		return
 	}
@@ -1049,7 +1047,7 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 			}
 		}
 	}
-	cost := costUSD(model, inputTokens, outputTokens, pricing)
+	cost := costUSD(model, inputTokens, outputTokens, cacheRead, cacheWrite, pricing)
 	ua := parseUA(userAgent, isOpenClaw, isHermes)
 	// For DB is_openclaw field: both openclaw and hermes count as lobster traffic
 	isLobster := isOpenClaw || isHermes
@@ -1068,10 +1066,12 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 		KeyStr:       keyStr,
 		Model:        model,
 		Backend:      backendName,
-		InputTokens:  inputTokens,
-		OutputTokens: outputTokens,
-		TotalTokens:  total,
-		CostUSD:      cost,
+		InputTokens:      inputTokens,
+		OutputTokens:     outputTokens,
+		TotalTokens:      total,
+		CacheReadTokens:  cacheRead,
+		CacheWriteTokens: cacheWrite,
+		CostUSD:          cost,
 		StatusCode:   statusCode,
 		Latency:      latency,
 		IsOpenClaw:   isLobster,

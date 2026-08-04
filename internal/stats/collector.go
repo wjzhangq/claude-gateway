@@ -16,26 +16,28 @@ const (
 
 // Record holds the data for a single API call to be persisted.
 type Record struct {
-	UserID       int64
-	GroupID      int
-	APIKeyID     int64
-	KeyStr       string // raw key string, used to update KeyStore.LastUsedAt
-	Model        string
-	Backend      string
-	InputTokens  int
-	OutputTokens int
-	TotalTokens  int
-	CostUSD      float64
-	StatusCode   int
-	Latency      time.Duration
-	IsOpenClaw   bool
-	IsDowngraded bool
-	UA           string
-	ErrorReason  string
-	IP           string
-	City         string
-	IsHQ         bool
-	CreatedAt    time.Time
+	UserID           int64
+	GroupID          int
+	APIKeyID         int64
+	KeyStr           string // raw key string, used to update KeyStore.LastUsedAt
+	Model            string
+	Backend          string
+	InputTokens      int
+	OutputTokens     int
+	TotalTokens      int
+	CacheReadTokens  int // prompt-cache read tokens (billed at a discount)
+	CacheWriteTokens int // prompt-cache creation tokens (billed at a premium)
+	CostUSD          float64
+	StatusCode       int
+	Latency          time.Duration
+	IsOpenClaw       bool
+	IsDowngraded     bool
+	UA               string
+	ErrorReason      string
+	IP               string
+	City             string
+	IsHQ             bool
+	CreatedAt        time.Time
 
 	// Feature 004: offline abuse analysis. The proxy fills these on the response
 	// path (not the forward hot path). SignalJSON is the marshaled classify.Signal;
@@ -141,10 +143,12 @@ func recordToLog(r Record) *model.UsageLog {
 		APIKeyID:     r.APIKeyID,
 		Model:        r.Model,
 		Backend:      r.Backend,
-		InputTokens:  r.InputTokens,
-		OutputTokens: r.OutputTokens,
-		TotalTokens:  r.TotalTokens,
-		CostUSD:      r.CostUSD,
+		InputTokens:      r.InputTokens,
+		OutputTokens:     r.OutputTokens,
+		TotalTokens:      r.TotalTokens,
+		CacheReadTokens:  r.CacheReadTokens,
+		CacheWriteTokens: r.CacheWriteTokens,
+		CostUSD:          r.CostUSD,
 		StatusCode:   r.StatusCode,
 		Latency:      r.Latency.Milliseconds(),
 		IsOpenClaw:   r.IsOpenClaw,

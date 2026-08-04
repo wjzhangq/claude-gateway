@@ -287,7 +287,13 @@ func main() {
 
 			// For /models endpoint, return public models alongside channel models
 			if strings.HasSuffix(path, "/models") && c.Request.Method == "GET" {
-				publicModels := publicH.Models()
+				var itcode string
+				if ki, ok := c.Get(middleware.CtxKeyInfo); ok {
+					if info, ok := ki.(*auth.KeyInfo); ok {
+						itcode = info.Itcode
+					}
+				}
+				publicModels := publicH.Models(itcode)
 				serveModelsWithPublic(c, ch, awsProxyH, proxyH, publicModels)
 				return
 			}
@@ -309,17 +315,30 @@ func main() {
 					// routed to its provider. Without this, the lock only takes effect
 					// inside the backend channel handler — too late to reach the public
 					// provider routing below. ReplaceModelInBody is idempotent.
+					var itcode string
 					if ki, ok := c.Get(middleware.CtxKeyInfo); ok {
-						if info, ok := ki.(*auth.KeyInfo); ok && info.LockedModel != "" && info.LockedModel != reqJSON.Model {
-							logger.Infof("applying locked model %s (was %s) before routing", info.LockedModel, reqJSON.Model)
-							body = proxy.ReplaceModelInBody(body, reqJSON.Model, info.LockedModel)
-							reqJSON.Model = info.LockedModel
+						if info, ok := ki.(*auth.KeyInfo); ok {
+							itcode = info.Itcode
+							if info.LockedModel != "" && info.LockedModel != reqJSON.Model {
+								logger.Infof("applying locked model %s (was %s) before routing", info.LockedModel, reqJSON.Model)
+								body = proxy.ReplaceModelInBody(body, reqJSON.Model, info.LockedModel)
+								reqJSON.Model = info.LockedModel
+							}
 						}
 					}
 
-					if provider := publicH.MatchModel(reqJSON.Model); provider != nil {
+					if provider := publicH.MatchModel(reqJSON.Model, itcode); provider != nil {
+						// Public spend counts toward the shared daily quota —
+						// enforce it here since public routing bypasses the
+						// backend channel's own check.
+						if ki, ok := c.Get(middleware.CtxKeyInfo); ok && publicH.CheckDailyLimit(c, ki) {
+							return
+						}
 						logger.Infof("routing to public provider %s for model %s", provider.Name, reqJSON.Model)
 						publicH.Forward(c, path, body, reqJSON.Model, provider)
+						return
+					} else if publicH.IsPublicModel(reqJSON.Model) {
+						c.JSON(403, gin.H{"error": "model access denied"})
 						return
 					}
 				}
