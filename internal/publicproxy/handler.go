@@ -223,14 +223,14 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 			}
 			linesBuf = append(linesBuf, buf[:n]...)
 			// parse complete lines from linesBuf, keep remainder
-			linesBuf = consumeSSELines(linesBuf, &acc, &outCounts)
+			linesBuf, acc = consumeSSELines(linesBuf, acc, &outCounts)
 		}
 		if err != nil {
 			break
 		}
 	}
 	// parse any remaining bytes
-	consumeSSELines(linesBuf, &acc, &outCounts)
+	_, acc = consumeSSELines(linesBuf, acc, &outCounts)
 
 	// Estimate only when the stream carried no usage data at all.
 	if !acc.SawUsage {
@@ -243,8 +243,8 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 
 // consumeSSELines parses complete newline-terminated SSE lines from data,
 // merging usage into acc on every data: event that reports it.
-// Returns the unconsumed remainder (partial last line).
-func consumeSSELines(data []byte, acc *usage.Accumulator, outCounts *tokenest.Counts) []byte {
+// Returns the unconsumed remainder (partial last line) and updated accumulator.
+func consumeSSELines(data []byte, acc usage.Accumulator, outCounts *tokenest.Counts) ([]byte, usage.Accumulator) {
 	for {
 		idx := bytes.IndexByte(data, '\n')
 		if idx < 0 {
@@ -265,7 +265,7 @@ func consumeSSELines(data []byte, acc *usage.Accumulator, outCounts *tokenest.Co
 			outCounts.Add(t)
 		}
 	}
-	return data
+	return data, acc
 }
 
 func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *config.PublicProvider,
