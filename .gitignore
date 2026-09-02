@@ -60,3 +60,4 @@ config/config.yaml
 .gitnexus
 .codegraph
 /data
+.agents

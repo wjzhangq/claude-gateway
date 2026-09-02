@@ -235,7 +235,7 @@ func main() {
 	statsH := handler.NewStatsHandler(database, cfg, keyStore)
 	appH := handler.NewApplicationHandler(database, keyStore)
 	awsStatsH := handler.NewAWSStatsHandler(database, cfg, keyStore)
-	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore)
+	dbExplorerH := handler.NewDBExplorerHandler(database, keyStore, cfg)
 	insightH := handler.NewInsightHandler(database, cfg)
 	analyzeH := handler.NewAnalysisHandler(database, cfg.Analyze.MaxRetry)
 	configH := handler.NewConfigHandler(cfgPath, cfg, func() error {
@@ -494,6 +494,8 @@ func main() {
 	{
 		dbAPI.GET("/schema", dbExplorerH.GetSchema)
 		dbAPI.POST("/query", dbExplorerH.ExecuteQuery)
+		dbAPI.GET("/errors/recent", dbExplorerH.GetRecentErrors)
+		dbAPI.GET("/logs/recent", dbExplorerH.GetRecentLogs)
 	}
 
 	// Backend quota sync API (session_secret auth, called by cmd/check)
