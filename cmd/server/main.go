@@ -564,16 +564,11 @@ func main() {
 			retryAfterUnix := proxy.ParseRetryAfter(b.RetryAfter, time.Now())
 			found := lb.SetHealthStatusDetailed(b.Name, b.Healthy, b.LatencyMs, b.ObservedCode, retryAfterUnix)
 			// Attribute any inference-probe cost to the backend's spend so budget
-			// accounting stays closed (FR-010).
+			// accounting stays closed (FR-010). Probe records are NOT written to
+			// usage_logs: they have no user/key, and pollute request counts, error
+			// rates and per-user joins (user_id=0 breaks itcode LEFT JOINs).
 			if b.ProbeCostUSD > 0 {
 				lb.AddProbeCost(b.Name, b.ProbeCostUSD)
-				collector.Emit(stats.Record{
-					Model:       "__probe__",
-					Backend:     b.Name,
-					StatusCode:  b.ObservedCode,
-					CostUSD:     b.ProbeCostUSD,
-					ErrorReason: "probe",
-				})
 			}
 			results = append(results, gin.H{"name": b.Name, "found": found, "healthy": b.Healthy})
 		}

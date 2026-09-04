@@ -209,7 +209,7 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backen
 	joinArgs := append(args, pageSize, offset)
 
 	rows, err := d.Query(
-		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.task_type, l.work_related, l.code_direction, l.created_at
+		`SELECT l.id, l.user_id, COALESCE(u.itcode, '') AS itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.task_type, l.work_related, l.code_direction, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+joinWhere+` ORDER BY l.created_at DESC LIMIT ? OFFSET ?`, joinArgs...)
 	if err != nil {
 		return nil, 0, err
@@ -257,7 +257,7 @@ func (d *DB) ListUsageLogsAll(userID int64, startDate, endDate, modelFilter, bac
 	}
 
 	rows, err := d.Query(
-		`SELECT l.id, l.user_id, u.itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.task_type, l.work_related, l.code_direction, l.created_at
+		`SELECT l.id, l.user_id, COALESCE(u.itcode, '') AS itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.task_type, l.work_related, l.code_direction, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+where+` ORDER BY l.created_at ASC`, args...)
 	if err != nil {
 		return nil, err

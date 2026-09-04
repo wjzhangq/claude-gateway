@@ -254,7 +254,7 @@ func (d *DB) ListAllAPIKeys(userID int64, page, pageSize int) ([]*APIKeyWithUser
 
 	queryArgs := append(args, pageSize, offset)
 	rows, err := d.Query(
-		`SELECT k.id, k.user_id, u.itcode, u.name, COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
+		`SELECT k.id, k.user_id, COALESCE(u.itcode, ''), COALESCE(u.name, ''), COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
 		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
 		 LEFT JOIN users u ON u.id = k.user_id
@@ -507,7 +507,7 @@ func (d *DB) ListAllAPIKeysByChannel(channel string, userID int64, page, pageSiz
 
 	queryArgs := append(args, pageSize, offset)
 	rows, err := d.Query(
-		`SELECT k.id, k.user_id, u.itcode, u.name, COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
+		`SELECT k.id, k.user_id, COALESCE(u.itcode, ''), COALESCE(u.name, ''), COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
 		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
 		 LEFT JOIN users u ON u.id = k.user_id
