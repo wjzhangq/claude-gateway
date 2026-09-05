@@ -16,7 +16,13 @@ type DB struct {
 
 // Init opens (or creates) the SQLite database at path and runs migrations.
 func Init(path string) (*DB, error) {
-	sqlDB, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)&_pragma=busy_timeout(5000)&_txlock=immediate")
+	sqlDB, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)"+
+		"&_pragma=foreign_keys(on)"+
+		"&_pragma=busy_timeout(5000)"+
+		"&_txlock=immediate"+
+		"&_pragma=cache_size(-65536)"+       // 64MB cache (from ~2MB default)
+		"&_pragma=wal_autocheckpoint(5000)"+ // reduce checkpoint frequency (from 1000 pages)
+		"&_pragma=mmap_size(268435456)")      // 256MB mmap for read performance
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}

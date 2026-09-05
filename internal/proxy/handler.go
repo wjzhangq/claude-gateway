@@ -1033,6 +1033,11 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	// SC-001 (no measurable P99 impact) holds. Only successful requests are
 	// analyzed (user constraint "logs only handle successful ones"), and the
 	// analyzer's own Haiku calls are skipped to prevent self-recursion (FR, R6).
+	//
+	// OPTIMIZATION NOTE: ParseRequest + Extract on 6-9w token bodies (240-360KB JSON)
+	// can consume ~5-10ms CPU per request. With actual usage at 0.0008% (5/611547),
+	// consider disabling this feature if CPU spikes persist. The primary bottleneck
+	// is SQLite batch-insert lock time, not classification.
 	var signalJSON, requestRole string
 	if analyzeCfg.Enabled && statusCode < 400 && len(reqBody) > 0 &&
 		!(analyzeCfg.AnalyzerUA != "" && userAgent == analyzeCfg.AnalyzerUA) {

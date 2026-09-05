@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	batchSize    = 100             // flush when this many records accumulate
-	batchTimeout = 5 * time.Second // or after this duration
+	batchSize    = 50              // flush when this many records accumulate (smaller batches → shorter tx lock time)
+	batchTimeout = 3 * time.Second // or after this duration
 )
 
 // Record holds the data for a single API call to be persisted.
