@@ -22,13 +22,14 @@ import (
 
 // AuthHandler handles login/logout and verification code flows.
 type AuthHandler struct {
-	db        *db.DB
-	codeStore *auth.CodeStore
-	cfg       *config.AuthConfig
+	db           *db.DB
+	codeStore    *auth.CodeStore
+	sessionStore *auth.SessionStore
+	cfg          *config.AuthConfig
 }
 
-func NewAuthHandler(database *db.DB, cs *auth.CodeStore, cfg *config.AuthConfig) *AuthHandler {
-	return &AuthHandler{db: database, codeStore: cs, cfg: cfg}
+func NewAuthHandler(database *db.DB, cs *auth.CodeStore, ss *auth.SessionStore, cfg *config.AuthConfig) *AuthHandler {
+	return &AuthHandler{db: database, codeStore: cs, sessionStore: ss, cfg: cfg}
 }
 
 // SendCode godoc: POST /api/auth/send-code
@@ -151,14 +152,17 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	sess := sessions.Default(c)
 	sess.Set("user_id", user.ID)
 	sess.Set("user_role", user.Role)
-	// Override session MaxAge when user requests "remember me" (7 days)
+	// Set session MaxAge: 7 days for remember_me, 1 day otherwise
+	maxAge := 86400 // 1 day default
 	if req.RememberMe {
-		sess.Options(sessions.Options{
-			MaxAge:   7 * 24 * 60 * 60, // 604800 seconds = 7 days
-			Path:     "/",
-			HttpOnly: true,
-		})
+		maxAge = 7 * 24 * 60 * 60 // 7 days
 	}
+	sess.Options(sessions.Options{
+		MaxAge:   maxAge,
+		Path:     "/",
+		HttpOnly: false, // Allow JavaScript access so we can read and store in localStorage
+		SameSite: http.SameSiteLaxMode,
+	})
 	if err := sess.Save(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session error"})
 		return

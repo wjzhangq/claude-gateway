@@ -1,17 +1,87 @@
 import axios from 'axios'
 import { toast } from './components/Toast'
 
+// Get cookie value by name
+function getCookie(name: string): string | null {
+  const matches = document.cookie.match(new RegExp(
+    '(?:^|; )' + name.replace(/([.$?*|{}()[\]\\/+^])/g, '\\$1') + '=([^;]*)'
+  ))
+  return matches ? decodeURIComponent(matches[1]) : null
+}
+
+// Set cookie
+function setCookie(name: string, value: string, days: number) {
+  const expires = new Date()
+  expires.setTime(expires.getTime() + days * 24 * 60 * 60 * 1000)
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; expires=${expires.toUTCString()}; SameSite=Lax`
+}
+
+// Sync cookie with localStorage before each request
+function syncSessionFromLocalStorage() {
+  const stored = localStorage.getItem('gateway_session_cookie')
+  if (stored) {
+    // Restore cookie from localStorage if it doesn't exist
+    const currentCookie = getCookie('gateway_session')
+    if (!currentCookie) {
+      // Parse stored value and set cookie
+      try {
+        const { value, days } = JSON.parse(stored)
+        setCookie('gateway_session', value, days)
+      } catch (e) {
+        console.error('Failed to restore session cookie:', e)
+      }
+    }
+  }
+}
+
+// Save cookie to localStorage after login
+function saveSessionToLocalStorage(days: number) {
+  const sessionCookie = getCookie('gateway_session')
+  if (sessionCookie) {
+    localStorage.setItem('gateway_session_cookie', JSON.stringify({
+      value: sessionCookie,
+      days: days
+    }))
+    console.log('Session cookie saved to localStorage:', sessionCookie.substring(0, 20) + '...')
+  } else {
+    console.warn('No gateway_session cookie found to save')
+  }
+}
+
 const api = axios.create({
   baseURL: '/',
   withCredentials: true,
   timeout: 15000,
 })
 
+// Restore session cookie from localStorage before each request
+api.interceptors.request.use((config) => {
+  syncSessionFromLocalStorage()
+  return config
+})
+
 api.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    // After successful login, save cookie to localStorage
+    if (res.config.url === '/api/auth/login' && res.status === 200) {
+      // Check if remember_me was true (7 days) or false (1 day)
+      try {
+        const requestData = res.config.data ? JSON.parse(res.config.data) : {}
+        const days = requestData.remember_me ? 7 : 1
+        console.log('Login successful, saving session cookie (remember_me:', requestData.remember_me, ', days:', days, ')')
+        // Delay to ensure cookie is set by browser
+        setTimeout(() => saveSessionToLocalStorage(days), 200)
+      } catch (e) {
+        console.error('Failed to parse login request data:', e)
+      }
+    }
+    return res
+  },
   (err) => {
     const url: string = err.config?.url || ''
     if (err.response?.status === 401 && !url.startsWith('/v1/')) {
+      // Clear stored session on 401
+      localStorage.removeItem('gateway_session_cookie')
       window.location.href = '/login'
     } else if (err.response) {
       const msg = err.response.data?.error || `请求失败 (HTTP ${err.response.status})`

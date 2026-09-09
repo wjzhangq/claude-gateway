@@ -7,7 +7,7 @@ export default function LoginPage() {
   const [itcode, setItcode] = useState('')
   const [code, setCode] = useState('')
   const [inviteCode, setInviteCode] = useState('')
-  const [rememberMe, setRememberMe] = useState(false)
+  const [rememberMe, setRememberMe] = useState(true)
   const [countdown, setCountdown] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')

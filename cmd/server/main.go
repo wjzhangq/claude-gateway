@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -108,6 +109,7 @@ func main() {
 	}
 
 	codeStore := auth.NewCodeStore(cfg.Auth.CodeExpiry)
+	sessionStore := auth.NewSessionStore()
 
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -117,8 +119,15 @@ func main() {
 	r.Use(middleware.RequestLogger())
 
 	store := cookie.NewStore([]byte(cfg.Auth.SessionSecret))
+	// Set default session options for non-remember-me logins
+	store.Options(sessions.Options{
+		Path:     "/",
+		HttpOnly: true,
+		MaxAge:   86400, // 1 day default (overridden to 7 days when remember_me=true)
+		SameSite: http.SameSiteLaxMode,
+	})
 	r.Use(sessions.Sessions("gateway_session", store))
-	r.Use(sessionLoader())
+	r.Use(sessionLoader(sessionStore))
 
 	collector := stats.NewCollector(database, keyStore, 4096)
 
@@ -229,7 +238,7 @@ func main() {
 		}
 	}
 
-	authH := handler.NewAuthHandler(database, codeStore, &cfg.Auth)
+	authH := handler.NewAuthHandler(database, codeStore, sessionStore, &cfg.Auth)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database, keyStore)
 	statsH := handler.NewStatsHandler(database, cfg, keyStore)
@@ -703,14 +712,19 @@ func loadKeyStore(database *db.DB, ks *auth.KeyStore) error {
 	return nil
 }
 
-func sessionLoader() gin.HandlerFunc {
+func sessionLoader(sessionStore *auth.SessionStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sess := sessions.Default(c)
-		if uid := sess.Get("user_id"); uid != nil {
+
+		// Check cookie-based session
+		uid := sess.Get("user_id")
+		role := sess.Get("user_role")
+
+		if uid != nil {
 			c.Set("session_user_id", uid)
 			c.Set(middleware.CtxUserID, uid)
 		}
-		if role := sess.Get("user_role"); role != nil {
+		if role != nil {
 			c.Set(middleware.CtxUserRole, role)
 		}
 		c.Next()
