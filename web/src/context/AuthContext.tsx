@@ -29,7 +29,7 @@ const AuthContext = createContext<AuthContextType>({
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => {
     try {
-      const s = sessionStorage.getItem('user')
+      const s = localStorage.getItem('user')
       return s ? JSON.parse(s) : null
     } catch {
       return null
@@ -38,14 +38,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const handleSetUser = (u: AuthUser | null) => {
     setUser(u)
-    if (u) sessionStorage.setItem('user', JSON.stringify(u))
-    else sessionStorage.removeItem('user')
+    if (u) localStorage.setItem('user', JSON.stringify(u))
+    else localStorage.removeItem('user')
   }
 
   // Refresh user info from server on mount so changes (e.g. aws_enabled) are reflected
   // without requiring a re-login.
   useEffect(() => {
-    if (!sessionStorage.getItem('user')) return
+    if (!localStorage.getItem('user')) return
     getMe()
       .then((res) => {
         const fresh = res.data.user

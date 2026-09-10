@@ -109,7 +109,7 @@ func main() {
 	}
 
 	codeStore := auth.NewCodeStore(cfg.Auth.CodeExpiry)
-	sessionStore := auth.NewSessionStore()
+	sessionStore := auth.NewSessionStore("sessions.json")
 
 	if cfg.Server.Mode == "release" {
 		gin.SetMode(gin.ReleaseMode)
@@ -122,9 +122,10 @@ func main() {
 	// Set default session options for non-remember-me logins
 	store.Options(sessions.Options{
 		Path:     "/",
-		HttpOnly: true,
+		HttpOnly: true, // 防止 XSS 攻击窃取 session
 		MaxAge:   86400, // 1 day default (overridden to 7 days when remember_me=true)
 		SameSite: http.SameSiteLaxMode,
+		Secure:   false, // 生产环境应设为 true（需要 HTTPS）
 	})
 	r.Use(sessions.Sessions("gateway_session", store))
 	r.Use(sessionLoader(sessionStore))
@@ -683,6 +684,20 @@ func main() {
 	go handleReload(sigCh, cfgPath, collector, awsCollector, aggregator, awsAggregator,
 		lb, proxyH, awsProxyH, publicH, statsH, awsStatsH, insightH, analyzeH, database, keyStore, cfg)
 
+	// Graceful shutdown handler
+	shutdownCh := make(chan os.Signal, 1)
+	signal.Notify(shutdownCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-shutdownCh
+		logger.Infof("shutting down gracefully...")
+		if err := sessionStore.Close(); err != nil {
+			logger.Errorf("save sessions on shutdown: %v", err)
+		} else {
+			logger.Infof("sessions saved successfully")
+		}
+		os.Exit(0)
+	}()
+
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Infof("Claude Gateway listening on %s", addr)
 	if err := r.Run(addr); err != nil {
@@ -715,10 +730,24 @@ func loadKeyStore(database *db.DB, ks *auth.KeyStore) error {
 func sessionLoader(sessionStore *auth.SessionStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		sess := sessions.Default(c)
+		sessionID := sess.ID()
 
-		// Check cookie-based session
+		// Check cookie-based session first
 		uid := sess.Get("user_id")
 		role := sess.Get("user_role")
+
+		// If cookie session is empty, try to restore from SessionStore
+		if uid == nil && sessionID != "" {
+			if data, ok := sessionStore.Get(sessionID); ok {
+				uid = data.UserID
+				role = data.UserRole
+				// Restore cookie session from SessionStore
+				sess.Set("user_id", data.UserID)
+				sess.Set("user_role", data.UserRole)
+				_ = sess.Save()
+				logger.Debugf("restored session from store: session_id=%s, user_id=%d", sessionID, data.UserID)
+			}
+		}
 
 		if uid != nil {
 			c.Set("session_user_id", uid)

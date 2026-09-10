@@ -1,6 +1,8 @@
 package auth_test
 
 import (
+	"encoding/json"
+	"os"
 	"testing"
 	"time"
 
@@ -79,5 +81,64 @@ func TestGenerateKey(t *testing.T) {
 	}
 	if key[:3] != "sk-" {
 		t.Fatalf("key should start with sk-: %s", key)
+	}
+}
+
+func TestSessionStore_Persistence(t *testing.T) {
+	tmpFile := t.TempDir() + "/sessions.json"
+
+	// Create store and add sessions
+	store1 := auth.NewSessionStore(tmpFile)
+	store1.Set("sess_001", 123, "admin", 24*time.Hour)
+	store1.Set("sess_002", 456, "user", 7*24*time.Hour)
+
+	// Force save and close
+	if err := store1.Close(); err != nil {
+		t.Fatalf("close store1: %v", err)
+	}
+
+	// Create new store from same file (simulates restart)
+	store2 := auth.NewSessionStore(tmpFile)
+	defer store2.Close()
+
+	// Verify sessions were restored
+	data1, ok1 := store2.Get("sess_001")
+	if !ok1 {
+		t.Fatal("expected sess_001 to be restored")
+	}
+	if data1.UserID != 123 || data1.UserRole != "admin" {
+		t.Fatalf("wrong data for sess_001: %+v", data1)
+	}
+
+	data2, ok2 := store2.Get("sess_002")
+	if !ok2 {
+		t.Fatal("expected sess_002 to be restored")
+	}
+	if data2.UserID != 456 || data2.UserRole != "user" {
+		t.Fatalf("wrong data for sess_002: %+v", data2)
+	}
+}
+
+func TestSessionStore_ExpiredNotLoadedAfterRestart(t *testing.T) {
+	tmpFile := t.TempDir() + "/sessions_expiry.json"
+
+	// Write a pre-expired session directly to the file, simulating
+	// a session that expired while the server was offline.
+	expired := map[string]auth.SessionData{
+		"expired_sess": {UserID: 999, UserRole: "user", ExpiresAt: time.Now().Add(-time.Hour)},
+	}
+	raw, err := json.Marshal(expired)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(tmpFile, raw, 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	store := auth.NewSessionStore(tmpFile)
+	defer store.Close()
+
+	if _, ok := store.Get("expired_sess"); ok {
+		t.Fatal("expected pre-expired session to be filtered out on load")
 	}
 }

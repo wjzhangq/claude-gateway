@@ -61,3 +61,6 @@ config/config.yaml
 .codegraph
 /data
 .agents
+
+# Session store (contains user sessions)
+sessions.json

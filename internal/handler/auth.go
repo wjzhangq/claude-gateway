@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
@@ -160,13 +161,19 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	sess.Options(sessions.Options{
 		MaxAge:   maxAge,
 		Path:     "/",
-		HttpOnly: false, // Allow JavaScript access so we can read and store in localStorage
+		HttpOnly: true, // 恢复 HttpOnly，防止 JS 访问
 		SameSite: http.SameSiteLaxMode,
+		Secure:   false, // 生产环境应设为 true（需要 HTTPS）
 	})
 	if err := sess.Save(); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session error"})
 		return
 	}
+
+	// Store session in SessionStore for server-side tracking (survives restarts)
+	sessionID := sess.ID()
+	h.sessionStore.Set(sessionID, user.ID, user.Role, time.Duration(maxAge)*time.Second)
+	logger.Infof("user %s logged in, session_id=%s, maxAge=%ds", user.Itcode, sessionID, maxAge)
 
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
@@ -182,8 +189,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 // Logout godoc: POST /api/auth/logout
 func (h *AuthHandler) Logout(c *gin.Context) {
 	sess := sessions.Default(c)
+	sessionID := sess.ID()
 	sess.Clear()
 	_ = sess.Save()
+
+	// Remove from SessionStore
+	h.sessionStore.Delete(sessionID)
+	logger.Debugf("user logged out, session_id=%s", sessionID)
+
 	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
 }
 
