@@ -1,7 +1,10 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { sendCode, login } from '../api'
 import { useAuth } from '../context/AuthContext'
+
+const REDIRECT_KEY = 'login_redirect_count'
+const REDIRECT_WINDOW_MS = 5 * 60 * 1000
 
 export default function LoginPage() {
   const [itcode, setItcode] = useState('')
@@ -12,8 +15,49 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const { setUser } = useAuth()
+  const { user, setUser } = useAuth()
   const navigate = useNavigate()
+
+  // 检查并更新跳转计数，返回 true 表示允许跳转
+  const canRedirect = (): boolean => {
+    try {
+      const stored = localStorage.getItem(REDIRECT_KEY)
+      const now = Date.now()
+
+      if (!stored) {
+        localStorage.setItem(REDIRECT_KEY, JSON.stringify({ count: 1, timestamp: now }))
+        return true
+      }
+
+      const data = JSON.parse(stored) as { count: number; timestamp: number }
+
+      // 超过5分钟窗口，重置计数
+      if (now - data.timestamp > REDIRECT_WINDOW_MS) {
+        localStorage.setItem(REDIRECT_KEY, JSON.stringify({ count: 1, timestamp: now }))
+        return true
+      }
+
+      // 5分钟内跳转次数过多（阈值设为3次）
+      if (data.count >= 3) {
+        console.warn('[LoginPage] Redirect loop detected, blocking auto-redirect')
+        return false
+      }
+
+      // 增加计数
+      localStorage.setItem(REDIRECT_KEY, JSON.stringify({ count: data.count + 1, timestamp: data.timestamp }))
+      return true
+    } catch (e) {
+      console.error('[LoginPage] Failed to check redirect count:', e)
+      return true // 出错时保守允许跳转
+    }
+  }
+
+  // 检查登录状态，如果已登录则跳转到 dashboard
+  useEffect(() => {
+    if (user && canRedirect()) {
+      navigate('/dashboard', { replace: true })
+    }
+  }, [user, navigate])
 
   const startCountdown = () => {
     setCountdown(60)
