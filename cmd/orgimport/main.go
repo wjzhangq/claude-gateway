@@ -255,7 +255,7 @@ func readJSON(path string, v interface{}) error {
 }
 
 func openDB(path string) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on")
+	db, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_foreign_keys=on&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
