@@ -304,8 +304,11 @@ func (d *DB) GetUserDailyCostRanking(date string, limit int, hidden []string) (*
 
 	hiddenClause, hiddenArgs := hiddenItcodeClause("u.itcode", hidden)
 
-	// Top N users
-	listArgs := []interface{}{date}
+	// Top N users.
+	// Range predicate on created_at (text, YYYY-MM-DD prefix) instead of
+	// SUBSTR(created_at,1,10) = ? so the query can use idx_usage_logs_created_at
+	// instead of full-scanning the table. Lexicographically equivalent.
+	listArgs := []interface{}{date, date}
 	listArgs = append(listArgs, hiddenArgs...)
 	listArgs = append(listArgs, limit)
 	rows, err := d.Query(
@@ -315,7 +318,7 @@ func (d *DB) GetUserDailyCostRanking(date string, limit int, hidden []string) (*
 		        SUM(CASE WHEN l.is_openclaw THEN l.cost_usd ELSE 0 END) as oc_cost_usd
 		 FROM usage_logs l
 		 LEFT JOIN users u ON u.id = l.user_id
-		 WHERE SUBSTR(l.created_at, 1, 10) = ?`+hiddenClause+`
+		 WHERE l.created_at >= ? AND l.created_at < date(?, '+1 day')`+hiddenClause+`
 		 GROUP BY l.user_id
 		 ORDER BY cost_usd DESC
 		 LIMIT ?`, listArgs...)
@@ -342,7 +345,7 @@ func (d *DB) GetUserDailyCostRanking(date string, limit int, hidden []string) (*
 	var totalReqs int
 	err = d.QueryRow(
 		`SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0), COUNT(*)
-		 FROM usage_logs WHERE SUBSTR(created_at, 1, 10) = ?`, date).Scan(&totalCost, &ocCost, &totalReqs)
+		 FROM usage_logs WHERE created_at >= ? AND created_at < date(?, '+1 day')`, date, date).Scan(&totalCost, &ocCost, &totalReqs)
 	if err != nil {
 		return nil, fmt.Errorf("get daily totals: %w", err)
 	}
