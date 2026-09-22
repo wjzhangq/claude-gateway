@@ -1,21 +1,25 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"runtime"
 	"time"
 
+	"github.com/wjzhangq/claude-gateway/internal/logger"
 	_ "modernc.org/sqlite"
 )
 
 // DB wraps the sql.DB connection and a separate read-only connection.
 type DB struct {
-	*sql.DB
-	readonlyDB *sql.DB
+	db            *sql.DB
+	readonlyDB    *sql.DB
+	slowThreshold int64 // milliseconds
 }
 
 // Init opens (or creates) the SQLite database at path and runs migrations.
-func Init(path string) (*DB, error) {
+func Init(path string, slowQueryThresholdMs int) (*DB, error) {
 	sqlDB, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)"+
 		"&_pragma=foreign_keys(on)"+
 		"&_pragma=busy_timeout(5000)"+
@@ -42,7 +46,11 @@ func Init(path string) (*DB, error) {
 	roDB.SetMaxOpenConns(4)
 	roDB.SetMaxIdleConns(2)
 
-	d := &DB{sqlDB, roDB}
+	d := &DB{
+		db:            sqlDB,
+		readonlyDB:    roDB,
+		slowThreshold: int64(slowQueryThresholdMs),
+	}
 	if err := d.runMigrations(); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -56,7 +64,120 @@ func (d *DB) Close() error {
 	if d.readonlyDB != nil {
 		d.readonlyDB.Close()
 	}
-	return d.DB.Close()
+	return d.db.Close()
+}
+
+// getCaller returns the file:line of the caller at the given skip level.
+func getCaller(skip int) string {
+	_, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return "unknown"
+	}
+	// Extract just the filename (not full path) for brevity
+	for i := len(file) - 1; i > 0; i-- {
+		if file[i] == '/' {
+			file = file[i+1:]
+			break
+		}
+	}
+	return fmt.Sprintf("%s:%d", file, line)
+}
+
+// Query executes a query that returns rows, with slow query logging.
+func (d *DB) Query(query string, args ...interface{}) (*sql.Rows, error) {
+	start := time.Now()
+	caller := getCaller(2)
+	rows, err := d.db.Query(query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return rows, err
+}
+
+// QueryContext executes a query with context that returns rows, with slow query logging.
+func (d *DB) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	start := time.Now()
+	caller := getCaller(2)
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return rows, err
+}
+
+// QueryRow executes a query that returns at most one row, with slow query logging.
+func (d *DB) QueryRow(query string, args ...interface{}) *sql.Row {
+	start := time.Now()
+	caller := getCaller(2)
+	row := d.db.QueryRow(query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return row
+}
+
+// QueryRowContext executes a query with context that returns at most one row, with slow query logging.
+func (d *DB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	start := time.Now()
+	caller := getCaller(2)
+	row := d.db.QueryRowContext(ctx, query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return row
+}
+
+// Exec executes a query without returning rows, with slow query logging.
+func (d *DB) Exec(query string, args ...interface{}) (sql.Result, error) {
+	start := time.Now()
+	caller := getCaller(2)
+	result, err := d.db.Exec(query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return result, err
+}
+
+// ExecContext executes a query with context without returning rows, with slow query logging.
+func (d *DB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	start := time.Now()
+	caller := getCaller(2)
+	result, err := d.db.ExecContext(ctx, query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return result, err
+}
+
+// Begin starts a transaction (no timing - tx methods are not wrapped).
+func (d *DB) Begin() (*sql.Tx, error) {
+	return d.db.Begin()
+}
+
+// BeginTx starts a transaction with context (no timing - tx methods are not wrapped).
+func (d *DB) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error) {
+	return d.db.BeginTx(ctx, opts)
+}
+
+// Ping verifies the database connection.
+func (d *DB) Ping() error {
+	return d.db.Ping()
+}
+
+// SetMaxOpenConns sets the maximum number of open connections.
+func (d *DB) SetMaxOpenConns(n int) {
+	d.db.SetMaxOpenConns(n)
+}
+
+// SetMaxIdleConns sets the maximum number of idle connections.
+func (d *DB) SetMaxIdleConns(n int) {
+	d.db.SetMaxIdleConns(n)
 }
 
 type migration struct {
@@ -194,7 +315,7 @@ CREATE TABLE IF NOT EXISTS quota_migration_flags (
 `
 
 func (d *DB) runMigrations() error {
-	if _, err := d.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+	if _, err := d.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at TEXT NOT NULL
 	)`); err != nil {
@@ -203,16 +324,16 @@ func (d *DB) runMigrations() error {
 
 	for _, m := range migrations {
 		var exists int
-		if err := d.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&exists); err != nil {
+		if err := d.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, m.version).Scan(&exists); err != nil {
 			return fmt.Errorf("check migration %d: %w", m.version, err)
 		}
 		if exists > 0 {
 			continue
 		}
-		if _, err := d.Exec(m.sql); err != nil {
+		if _, err := d.db.Exec(m.sql); err != nil {
 			return fmt.Errorf("migration %d: %w", m.version, err)
 		}
-		if _, err := d.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
+		if _, err := d.db.Exec(`INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)`,
 			m.version, time.Now().UTC().Format(time.RFC3339)); err != nil {
 			return fmt.Errorf("record migration %d: %w", m.version, err)
 		}

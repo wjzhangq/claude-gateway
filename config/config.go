@@ -152,7 +152,8 @@ type ServerConfig struct {
 }
 
 type DatabaseConfig struct {
-	Path string `yaml:"path"`
+	Path                 string `yaml:"path"`
+	SlowQueryThresholdMs int    `yaml:"slow_query_threshold_ms"`
 }
 
 type LogConfig struct {
@@ -306,7 +307,8 @@ func defaultConfig() *Config {
 			Mode: "release",
 		},
 		Database: DatabaseConfig{
-			Path: "data/gateway.db",
+			Path:                 "data/gateway.db",
+			SlowQueryThresholdMs: 1000,
 		},
 		Log: LogConfig{
 			Level:  "info",

@@ -239,6 +239,73 @@ func LogBackendRequest(msg string, fields logrus.Fields, fileOnlyKeys ...string)
 	}
 }
 
+// Slow query log: daily-rotated files for queries exceeding the threshold.
+var (
+	slowQueryLogDir string
+	slowQueryMu     sync.Mutex
+	slowQueryDate   string
+	slowQueryFile   *os.File
+	slowQueryLogger *logrus.Logger
+)
+
+// InitSlowQueryLog sets up daily-rotated slow query log files in dir.
+// If dir is empty, slow query file logging is disabled.
+func InitSlowQueryLog(dir string) {
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		log.Errorf("failed to create log dir %s: %v", dir, err)
+		return
+	}
+	slowQueryLogDir = dir
+	slowQueryLogger = newFileLogger()
+	slowQueryMu.Lock()
+	rotateSlowQueryIfNeeded()
+	slowQueryMu.Unlock()
+	log.Infof("slow query log dir initialized: %s", dir)
+}
+
+func rotateSlowQueryIfNeeded() {
+	today := time.Now().Format("2006-01-02")
+	if today == slowQueryDate && slowQueryFile != nil {
+		return
+	}
+	if slowQueryFile != nil {
+		slowQueryFile.Close()
+	}
+	filename := filepath.Join(slowQueryLogDir, fmt.Sprintf("slow-query-%s.log", today))
+	f, err := os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Errorf("failed to open slow query log file %s: %v", filename, err)
+		slowQueryFile = nil
+		return
+	}
+	slowQueryFile = f
+	slowQueryDate = today
+	slowQueryLogger.SetOutput(f)
+}
+
+// LogSlowQuery writes a slow query entry to the daily log file.
+// durationMs is the query execution time in milliseconds.
+// query is the SQL statement.
+// location is the code location (file:line) where the query was executed.
+func LogSlowQuery(durationMs int64, query string, location string) {
+	if slowQueryLogDir == "" {
+		return
+	}
+	slowQueryMu.Lock()
+	rotateSlowQueryIfNeeded()
+	if slowQueryFile != nil {
+		slowQueryLogger.WithFields(logrus.Fields{
+			"duration_ms": durationMs,
+			"sql":         query,
+			"caller":      location,
+		}).Warn("slow query")
+	}
+	slowQueryMu.Unlock()
+}
+
 // Get returns the configured logrus logger.
 func Get() *logrus.Logger { return log }
 

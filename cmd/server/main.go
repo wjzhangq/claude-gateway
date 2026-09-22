@@ -47,12 +47,13 @@ func main() {
 	logger.Init(cfg.Log.Level, cfg.Log.Format)
 	logger.InitErrorLog(cfg.Log.Dir)
 	logger.InitBackendLog(cfg.Log.Dir)
+	logger.InitSlowQueryLog(cfg.Log.Dir)
 
 	if err := os.MkdirAll("data", 0755); err != nil {
 		logger.Fatalf("create data dir: %v", err)
 	}
 
-	database, err := db.Init(cfg.Database.Path)
+	database, err := db.Init(cfg.Database.Path, cfg.Database.SlowQueryThresholdMs)
 	if err != nil {
 		logger.Fatalf("failed to init database: %v", err)
 	}

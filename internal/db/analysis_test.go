@@ -12,7 +12,7 @@ import (
 // newTestDB opens a fresh migrated SQLite database in a temp dir.
 func newTestDB(t *testing.T) *DB {
 	t.Helper()
-	d, err := Init(filepath.Join(t.TempDir(), "test.db"))
+	d, err := Init(filepath.Join(t.TempDir(), "test.db"), 1000)
 	if err != nil {
 		t.Fatalf("init db: %v", err)
 	}
