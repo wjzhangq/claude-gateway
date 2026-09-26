@@ -22,6 +22,8 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -2091,8 +2093,8 @@ type runResult struct {
 	CleanScore  [2]int            // [correct, total]
 
 	// diagnostics
-	MissRate     float64 // miss rate
-	DistractRate float64 // distract rate
+	MissRate      float64 // miss rate
+	DistractRate  float64 // distract rate
 	FormatErrRate float64
 
 	// temperature info
@@ -2185,16 +2187,109 @@ func countCleanFalsePositives(results []questionResult) int {
 }
 
 // ──────────────────────────────────────────────────────────────────
+// Persistence: save results to a daily JSON file
+// ──────────────────────────────────────────────────────────────────
+
+// runResultJSON is the JSON-serializable summary of one (channel, model) run.
+// Only aggregate metrics are kept — per-question RawResponse is omitted to
+// keep the saved file small.
+type runResultJSON struct {
+	Channel       string            `json:"channel"`
+	Model         string            `json:"model"`
+	S             int               `json:"s"`
+	SMax          int               `json:"s_max"`
+	P             float64           `json:"p"`
+	R             float64           `json:"r"`
+	MissRate      float64           `json:"miss_rate"`
+	DistractRate  float64           `json:"distract_rate"`
+	FormatErrRate float64           `json:"format_err_rate"`
+	TempOmitted   bool              `json:"temp_omitted"`
+	Judgment      string            `json:"judgment"`
+	ScoreByDiff   map[string][2]int `json:"score_by_diff"`
+	CleanScore    [2]int            `json:"clean_score"`
+}
+
+// probeRecord is one complete modelprobe run, saved to the daily JSON file.
+type probeRecord struct {
+	RunAt       string                              `json:"run_at"`
+	ConfigPath  string                              `json:"config_path"`
+	Models      []string                            `json:"models"`
+	Backends    []string                            `json:"backends"`
+	TimeoutSec  int                                 `json:"timeout_sec"`
+	Concurrency int                                 `json:"concurrency"`
+	ControlRuns map[string]runResultJSON            `json:"control_runs"`
+	BackendRuns map[string]map[string]runResultJSON `json:"backend_runs"`
+}
+
+// toJSON converts a runResult to its JSON-serializable summary.
+func (r *runResult) toJSON() runResultJSON {
+	return runResultJSON{
+		Channel:       r.Channel,
+		Model:         r.Model,
+		S:             r.S,
+		SMax:          r.SMax,
+		P:             r.P,
+		R:             r.R,
+		MissRate:      r.MissRate,
+		DistractRate:  r.DistractRate,
+		FormatErrRate: r.FormatErrRate,
+		TempOmitted:   r.TempOmitted,
+		Judgment:      judgment(r.R),
+		ScoreByDiff:   r.ScoreByDiff,
+		CleanScore:    r.CleanScore,
+	}
+}
+
+// saveResults appends rec to <logDir>/modelprobe-YYYY-MM-DD.json as one
+// entry in a JSON array (one array element per run on that day). Writes are
+// atomic via a temp file + rename, matching the pattern used for the ipgeo
+// cache file.
+func saveResults(logDir string, rec probeRecord) (string, error) {
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return "", fmt.Errorf("create log dir: %w", err)
+	}
+	date := time.Now().Format("2006-01-02")
+	path := filepath.Join(logDir, fmt.Sprintf("modelprobe-%s.json", date))
+
+	// Load existing records for today (if any); tolerate a missing or
+	// unreadable file by starting a fresh array.
+	var records []json.RawMessage
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &records)
+	}
+
+	newEntry, err := json.Marshal(rec)
+	if err != nil {
+		return "", fmt.Errorf("marshal record: %w", err)
+	}
+	records = append(records, json.RawMessage(newEntry))
+
+	out, err := json.MarshalIndent(records, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal array: %w", err)
+	}
+
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0644); err != nil {
+		return "", fmt.Errorf("write temp file: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return "", fmt.Errorf("rename temp file: %w", err)
+	}
+	return path, nil
+}
+
+// ──────────────────────────────────────────────────────────────────
 // Caller: backend (plain HTTP)
 // ──────────────────────────────────────────────────────────────────
 
 type backendCaller struct {
-	name    string
-	url     string
-	apiKey  string
-	client  *http.Client
-	noTemp  bool // set to true if backend rejected temperature
-	mu      sync.Mutex
+	name   string
+	url    string
+	apiKey string
+	client *http.Client
+	noTemp bool // set to true if backend rejected temperature
+	mu     sync.Mutex
 }
 
 // call sends one question to the backend channel. Returns raw JSON text response.
@@ -2284,10 +2379,10 @@ func (b *backendCaller) doRequest(ctx context.Context, req msgRequest) (string, 
 // ──────────────────────────────────────────────────────────────────
 
 type awsCaller struct {
-	client  *awsproxy.BedrockClient
-	cfg     *config.AWSConfig
-	noTemp  bool
-	mu      sync.Mutex
+	client *awsproxy.BedrockClient
+	cfg    *config.AWSConfig
+	noTemp bool
+	mu     sync.Mutex
 }
 
 func (a *awsCaller) call(ctx context.Context, model, system, userMsg string) (string, error) {
@@ -2603,7 +2698,7 @@ func printResults(models []string, backendNames []string, controlRuns map[string
 		// Diagnostics
 		fmt.Println("Diagnostics:")
 		diagRows := []struct {
-			label string
+			label  string
 			getter func(r *runResult) float64
 		}{
 			{"  漏报率 M", func(r *runResult) float64 { return r.MissRate }},
@@ -2681,6 +2776,7 @@ func main() {
 	timeoutSec := flag.Int("timeout", 60, "per-request timeout in seconds")
 	concurrency := flag.Int("concurrency", 5, "max concurrent requests per channel")
 	verbose := flag.Bool("v", false, "verbose: print each question raw response")
+	saveFlag := flag.Bool("save", false, "save run results to a daily JSON file in log.dir configured in config")
 	flag.Parse()
 
 	cfg, err := config.Load(*cfgPath)
@@ -2791,6 +2887,43 @@ func main() {
 
 	// Print results
 	printResults(models, backends, controlRuns, backendRuns)
+
+	// Save results to daily JSON file if -save is set.
+	// NOTE: printResults() assigns rr.R for all backend runs, so this call
+	// must come after printResults() to capture the correct R values.
+	if *saveFlag {
+		if cfg.Log.Dir == "" {
+			fmt.Println("\nWARN: -save specified but log.dir is not configured in config — skipping save.")
+		} else {
+			rec := probeRecord{
+				RunAt:       time.Now().Format("2006-01-02 15:04:05"),
+				ConfigPath:  *cfgPath,
+				Models:      models,
+				Backends:    backends,
+				TimeoutSec:  *timeoutSec,
+				Concurrency: *concurrency,
+				ControlRuns: map[string]runResultJSON{},
+				BackendRuns: map[string]map[string]runResultJSON{},
+			}
+			for model, rr := range controlRuns {
+				rec.ControlRuns[model] = rr.toJSON()
+			}
+			for bn, runs := range backendRuns {
+				rec.BackendRuns[bn] = map[string]runResultJSON{}
+				for model, rr := range runs {
+					if rr == nil {
+						continue
+					}
+					rec.BackendRuns[bn][model] = rr.toJSON()
+				}
+			}
+			if path, err := saveResults(cfg.Log.Dir, rec); err != nil {
+				fmt.Printf("\nERROR: save results: %v\n", err)
+			} else {
+				fmt.Printf("\nResults saved → %s\n", path)
+			}
+		}
+	}
 
 	// Summary: check for errors
 	hasErr := false
