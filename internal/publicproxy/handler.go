@@ -16,6 +16,7 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
 	"github.com/wjzhangq/claude-gateway/internal/quota"
+	"github.com/wjzhangq/claude-gateway/internal/sanitize"
 	"github.com/wjzhangq/claude-gateway/internal/stats"
 	"github.com/wjzhangq/claude-gateway/internal/tokenest"
 	"github.com/wjzhangq/claude-gateway/internal/usage"
@@ -217,11 +218,16 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, provider *
 		}
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			c.Writer.Write(buf[:n])
+			chunk := buf[:n]
+			// Sanitize upstream domains from error responses (status >= 400)
+			if statusCode >= 400 {
+				chunk = sanitize.RemoveUpstreamDomains(chunk)
+			}
+			c.Writer.Write(chunk)
 			if canFlush {
 				flusher.Flush()
 			}
-			linesBuf = append(linesBuf, buf[:n]...)
+			linesBuf = append(linesBuf, chunk...)
 			// parse complete lines from linesBuf, keep remainder
 			linesBuf, acc = consumeSSELines(linesBuf, acc, &outCounts)
 		}
@@ -276,6 +282,12 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, provider *
 		logger.Errorf("read public provider response: %v", err)
 		return
 	}
+
+	// Sanitize upstream domains from error responses (status >= 400)
+	if statusCode >= 400 {
+		respBody = sanitize.RemoveUpstreamDomains(respBody)
+	}
+
 	c.Writer.Write(respBody)
 
 	in, out, cacheRead, cacheWrite := usage.ParseTokens(respBody)

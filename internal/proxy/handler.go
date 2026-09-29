@@ -846,13 +846,18 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		}
 		n, err := resp.Body.Read(buf)
 		if n > 0 {
-			c.Writer.Write(buf[:n])
+			chunk := buf[:n]
+			// Sanitize upstream domains from error responses (status >= 400)
+			if statusCode >= 400 {
+				chunk = sanitize.RemoveUpstreamDomains(chunk)
+			}
+			c.Writer.Write(chunk)
 			if canFlush {
 				flusher.Flush()
 			}
-			respBuf = append(respBuf, buf[:n]...)
+			respBuf = append(respBuf, chunk...)
 			// Parse SSE lines incrementally for token counting
-			partial = append(partial, buf[:n]...)
+			partial = append(partial, chunk...)
 			for {
 				idx := bytes.IndexByte(partial, '\n')
 				if idx < 0 {
@@ -913,6 +918,12 @@ func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendNam
 		logger.Errorf("read response body: %v", err)
 		return
 	}
+
+	// Sanitize upstream domains from error responses (status >= 400)
+	if statusCode >= 400 {
+		respBody = sanitize.RemoveUpstreamDomains(respBody)
+	}
+
 	c.Writer.Write(respBody)
 
 	// Decompress gzip for parsing/logging; the raw bytes have already been forwarded above.
