@@ -47,7 +47,7 @@ const navLinkClass = ({ isActive }: { isActive: boolean }) =>
   }`
 
 export default function Layout() {
-  const { user, isAdmin, isAWSEnabled, setUser } = useAuth()
+  const { user, isAdmin, isAWSEnabled, isAWSChannelClosed, setUser } = useAuth()
   const navigate = useNavigate()
 
   const handleLogout = async () => {
@@ -83,7 +83,14 @@ export default function Layout() {
 
           {isAWSEnabled && (
             <>
-              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">AWS</p>
+              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
+                AWS
+                {isAWSChannelClosed && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-red-100 text-red-600 normal-case tracking-normal">
+                    已关闭
+                  </span>
+                )}
+              </p>
               <div className="space-y-0.5">
                 {awsUserNav.map((item) => (
                   <NavLink key={item.to} to={item.to} className={navLinkClass}>
@@ -112,7 +119,14 @@ export default function Layout() {
                   </NavLink>
                 ))}
               </div>
-              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest">AWS 管理</p>
+              <p className="px-3 pt-5 pb-2 text-[10px] font-semibold text-gray-400 uppercase tracking-widest flex items-center gap-1.5">
+                AWS 管理
+                {isAWSChannelClosed && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-red-100 text-red-600 normal-case tracking-normal">
+                    已关闭
+                  </span>
+                )}
+              </p>
               <div className="space-y-0.5">
                 {awsAdminNav.map((item) => (
                   <NavLink key={item.to} to={item.to} className={navLinkClass}>

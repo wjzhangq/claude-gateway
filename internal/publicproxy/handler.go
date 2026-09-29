@@ -318,7 +318,12 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config
 	}
 
 	total := inputTokens + outputTokens
-	cost := costUSD(provider, model, inputTokens, outputTokens, cacheRead, cacheWrite)
+
+	// Calculate cost: only charge for successful requests (statusCode < 400)
+	cost := 0.0
+	if statusCode < 400 {
+		cost = costUSD(provider, model, inputTokens, outputTokens, cacheRead, cacheWrite)
+	}
 
 	var city string
 	var isHQ bool
@@ -346,8 +351,8 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr string, provider *config
 		IsHQ:             isHQ,
 	})
 
-	// Accumulate daily cost for per-user quota tracking
-	if cost > 0 && statusCode < 400 {
+	// Accumulate daily cost for per-user quota tracking (统一统计所有请求)
+	if cost > 0 {
 		h.keyStore.AddDailyCost(info.UserID, cost)
 	}
 }

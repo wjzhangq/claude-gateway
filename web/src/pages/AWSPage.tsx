@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { getAWSDashboard } from '../api'
+import { useAuth } from '../context/AuthContext'
+import AWSClosedBanner from '../components/AWSClosedBanner'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
@@ -24,6 +26,8 @@ interface DashboardData {
   today_stats: DailyStat[]
   aws_monthly_limit?: number
   aws_monthly_remaining?: number
+  aws_channel_closed?: boolean
+  aws_closed_message?: string
 }
 
 function StatCard({ label, value, accent }: { label: string; value: string | number; accent: 'red' | 'blue' | 'purple' | 'amber' }) {
@@ -44,6 +48,7 @@ function StatCard({ label, value, accent }: { label: string; value: string | num
 }
 
 export default function AWSPage() {
+  const { isAWSChannelClosed } = useAuth()
   const [data, setData] = useState<DashboardData | null>(null)
   const [loading, setLoading] = useState(true)
 
@@ -74,6 +79,11 @@ export default function AWSPage() {
         <h2 className="text-xl font-bold text-gray-900">AWS 仪表盘</h2>
         <p className="text-sm text-gray-400 mt-0.5">AWS Bedrock 渠道使用概览</p>
       </div>
+
+      {/* AWS channel closed notice */}
+      {(isAWSChannelClosed || data?.aws_channel_closed) && (
+        <AWSClosedBanner message={data?.aws_closed_message} />
+      )}
 
       {/* OpenClaw notice */}
       <div className="mb-5 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-2.5">

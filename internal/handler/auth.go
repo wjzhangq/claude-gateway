@@ -27,10 +27,11 @@ type AuthHandler struct {
 	codeStore    *auth.CodeStore
 	sessionStore *auth.SessionStore
 	cfg          *config.AuthConfig
+	rootCfg      *config.Config // full config for aws_channel_closed etc.
 }
 
-func NewAuthHandler(database *db.DB, cs *auth.CodeStore, ss *auth.SessionStore, cfg *config.AuthConfig) *AuthHandler {
-	return &AuthHandler{db: database, codeStore: cs, sessionStore: ss, cfg: cfg}
+func NewAuthHandler(database *db.DB, cs *auth.CodeStore, ss *auth.SessionStore, cfg *config.AuthConfig, rootCfg *config.Config) *AuthHandler {
+	return &AuthHandler{db: database, codeStore: cs, sessionStore: ss, cfg: cfg, rootCfg: rootCfg}
 }
 
 // SendCode godoc: POST /api/auth/send-code
@@ -177,11 +178,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":          user.ID,
-			"itcode":      user.Itcode,
-			"role":        user.Role,
-			"status":      user.Status,
-			"aws_enabled": user.AWSEnabled,
+			"id":                 user.ID,
+			"itcode":             user.Itcode,
+			"role":               user.Role,
+			"status":             user.Status,
+			"aws_enabled":        user.AWSEnabled,
+			"aws_channel_closed": h.awsChannelClosed(),
 		},
 	})
 }
@@ -200,6 +202,15 @@ func (h *AuthHandler) Logout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
 }
 
+// awsChannelClosed is a convenience accessor: it returns true when the root
+// config declares aws.channel_closed. Safe to call even if rootCfg is nil.
+func (h *AuthHandler) awsChannelClosed() bool {
+	if h.rootCfg == nil {
+		return false
+	}
+	return h.rootCfg.AWS.ChannelClosed
+}
+
 // Me godoc: GET /api/me — returns up-to-date current user info from DB.
 func (h *AuthHandler) Me(c *gin.Context) {
 	userID := c.GetInt64(middleware.CtxUserID)
@@ -210,11 +221,12 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"user": gin.H{
-			"id":          user.ID,
-			"itcode":      user.Itcode,
-			"role":        user.Role,
-			"status":      user.Status,
-			"aws_enabled": user.AWSEnabled,
+			"id":                 user.ID,
+			"itcode":             user.Itcode,
+			"role":               user.Role,
+			"status":             user.Status,
+			"aws_enabled":        user.AWSEnabled,
+			"aws_channel_closed": h.awsChannelClosed(),
 		},
 	})
 }

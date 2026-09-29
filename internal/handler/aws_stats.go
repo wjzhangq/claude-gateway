@@ -98,6 +98,15 @@ func (h *AWSStatsHandler) GetMyDashboard(c *gin.Context) {
 		}
 		resp["aws_monthly_remaining"] = remaining
 	}
+	// Surface channel closure state so the frontend can show the appropriate banner.
+	if cfg != nil && cfg.AWS.ChannelClosed {
+		resp["aws_channel_closed"] = true
+		msg := cfg.AWS.ClosedMessage
+		if msg == "" {
+			msg = "AWS Bedrock 渠道已关闭，请将 Key 切换回 Backend 渠道后重试。如有疑问请联系管理员。"
+		}
+		resp["aws_closed_message"] = msg
+	}
 	c.JSON(http.StatusOK, resp)
 }
 

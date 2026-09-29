@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { listAWSKeys, createAWSKey, disableKey, enableKey, deleteKey, renameKey, switchKeyChannel, getAWSDashboard } from '../api'
 import { formatTime, formatDate } from '../utils/time'
+import AWSClosedBanner from '../components/AWSClosedBanner'
 
 interface APIKey {
   id: number
@@ -42,6 +43,8 @@ export default function AWSKeysPage() {
     month_cost_usd: number
     aws_monthly_limit: number
     aws_monthly_remaining?: number
+    aws_channel_closed?: boolean
+    aws_closed_message?: string
   } | null>(null)
 
   const handleCopy = (id: number, key: string) => {
@@ -126,6 +129,11 @@ export default function AWSKeysPage() {
           + 创建 AWS Key
         </button>
       </div>
+
+      {/* AWS channel closed notice */}
+      {dashboard?.aws_channel_closed && (
+        <AWSClosedBanner message={dashboard.aws_closed_message} showSwitchButton={false} />
+      )}
 
       {/* 月费用卡片 */}
       {dashboard && dashboard.aws_monthly_limit > 0 && (

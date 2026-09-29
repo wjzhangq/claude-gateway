@@ -32,7 +32,7 @@ function SkeletonRow() {
 }
 
 export default function APIKeysPage() {
-  const { isAWSEnabled } = useAuth()
+  const { isAWSEnabled, isAWSChannelClosed } = useAuth()
   const [keys, setKeys] = useState<APIKey[]>([])
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
@@ -328,7 +328,7 @@ export default function APIKeysPage() {
                       >
                         删除
                       </button>
-                      {isAWSEnabled && (
+                      {isAWSEnabled && !isAWSChannelClosed && (
                         <button
                           onClick={() => handleSwitchChannel(k.id)}
                           className="text-xs text-orange-400 hover:text-orange-600 transition-colors"

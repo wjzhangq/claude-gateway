@@ -85,6 +85,16 @@ func (h *Handler) Passthrough(c *gin.Context) {
 
 // Models handles GET /v1/models — returns model_replace keys plus any extra models.
 func (h *Handler) Models(c *gin.Context) {
+	if closed, msg := h.channelClosed(); closed {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "aws_channel_closed",
+				"message": msg,
+			},
+		})
+		return
+	}
 	cfg := h.awsCfg()
 	models := ListAvailableModels(cfg.ModelReplace)
 
@@ -118,6 +128,23 @@ func (h *Handler) Models(c *gin.Context) {
 func isBlockedClient(userAgent string) bool {
 	ua := strings.ToLower(userAgent)
 	return strings.Contains(ua, "openclaw")
+}
+
+// channelClosed reports whether the AWS channel has been administratively shut
+// down (config aws.channel_closed). When true it also returns the user-facing
+// message to embed in the error response. This check must run before any
+// Bedrock call — including before isBlockedClient — so that the shutdown takes
+// effect even for normally-allowed clients.
+func (h *Handler) channelClosed() (bool, string) {
+	cfg := h.awsCfg()
+	if !cfg.ChannelClosed {
+		return false, ""
+	}
+	msg := cfg.ClosedMessage
+	if msg == "" {
+		msg = "AWS Bedrock 渠道已关闭，请将 Key 切换回 Backend 渠道后重试。如有疑问请联系管理员。"
+	}
+	return true, msg
 }
 
 // checkAWSDailyLimit checks if the user has exceeded the AWS daily spending limit.
@@ -201,6 +228,16 @@ func (h *Handler) checkAWSDailyLimit(c *gin.Context) bool {
 
 // Messages handles POST /v1/messages.
 func (h *Handler) Messages(c *gin.Context) {
+	if closed, msg := h.channelClosed(); closed {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "aws_channel_closed",
+				"message": msg,
+			},
+		})
+		return
+	}
 	if isBlockedClient(c.Request.Header.Get("User-Agent")) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
@@ -357,6 +394,16 @@ func (h *Handler) streamMessages(c *gin.Context, body []byte, bedrockModel, reqM
 
 // ChatCompletions handles POST /v1/chat/completions.
 func (h *Handler) ChatCompletions(c *gin.Context) {
+	if closed, msg := h.channelClosed(); closed {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "aws_channel_closed",
+				"message": msg,
+			},
+		})
+		return
+	}
 	if isBlockedClient(c.Request.Header.Get("User-Agent")) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{
@@ -536,14 +583,14 @@ func (h *Handler) streamChatCompletions(c *gin.Context, body []byte, bedrockMode
 // ─────────────────────────────────────────────
 
 type openAIChatRequest struct {
-	Model       string        `json:"model"`
-	Messages    []openAIMsg   `json:"messages"`
-	MaxTokens   int           `json:"max_tokens,omitempty"`
-	Temperature *float64      `json:"temperature,omitempty"`
-	TopP        *float64      `json:"top_p,omitempty"`
-	Stream      bool          `json:"stream,omitempty"`
-	Stop        []string      `json:"stop,omitempty"`
-	System      string        `json:"system,omitempty"`
+	Model       string      `json:"model"`
+	Messages    []openAIMsg `json:"messages"`
+	MaxTokens   int         `json:"max_tokens,omitempty"`
+	Temperature *float64    `json:"temperature,omitempty"`
+	TopP        *float64    `json:"top_p,omitempty"`
+	Stream      bool        `json:"stream,omitempty"`
+	Stop        []string    `json:"stop,omitempty"`
+	System      string      `json:"system,omitempty"`
 }
 
 type openAIMsg struct {
@@ -562,10 +609,10 @@ type anthropicRequest struct {
 }
 
 type anthropicMessageResponse struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"`
-	Role       string `json:"role"`
-	Content    []struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"`
+	Role    string `json:"role"`
+	Content []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	} `json:"content"`
@@ -858,7 +905,6 @@ func stripEmptyTextBlocks(messages []interface{}) []interface{} {
 	return messages
 }
 
-
 // stripOrphanedToolPairs removes tool_use blocks (by name) from assistant messages
 // and their matching tool_result blocks from subsequent user messages. This prevents
 // TOOL_USE_RESULT_MISMATCH errors when non-standard tools are stripped from the tools
@@ -954,13 +1000,13 @@ func stripOrphanedToolPairs(messages []interface{}, strippedToolNames map[string
 
 // prepareAnthropicBody adapts the incoming request body so it conforms to what
 // Bedrock's Anthropic Messages API accepts. It:
-//   1. Keeps only top-level fields listed in `allow` (the whitelist), stripping
-//      unknown fields like "diagnostics", "stream", "model", etc.
-//   2. Forces anthropic_version to "bedrock-2023-05-31".
-//   3. For adaptive-thinking models (determined by `caps`), converts the legacy
-//      thinking.type="enabled" form into thinking.type="adaptive" + output_config.effort.
-//   4. Performs field-level cleaning on retained fields: non-standard tool types,
-//      cache_control.scope, empty text blocks, system-role hoisting, thinking blocks.
+//  1. Keeps only top-level fields listed in `allow` (the whitelist), stripping
+//     unknown fields like "diagnostics", "stream", "model", etc.
+//  2. Forces anthropic_version to "bedrock-2023-05-31".
+//  3. For adaptive-thinking models (determined by `caps`), converts the legacy
+//     thinking.type="enabled" form into thinking.type="adaptive" + output_config.effort.
+//  4. Performs field-level cleaning on retained fields: non-standard tool types,
+//     cache_control.scope, empty text blocks, system-role hoisting, thinking blocks.
 //
 // `caps` is resolved by AWSConfig.CapsFor() from the model capability table.
 // `allow` is resolved by AWSConfig.BodyFieldAllowlist() (built-in default when empty).
@@ -1142,7 +1188,6 @@ func convertThinkingToAdaptive(m map[string]json.RawMessage) {
 	}
 }
 
-
 // extractKeyInfo returns the key info and raw key string from context.
 func extractKeyInfo(c *gin.Context) (*auth.KeyInfo, string) {
 	raw, _ := c.Get(middleware.CtxKeyInfo)
@@ -1166,7 +1211,13 @@ func (h *Handler) emitUsage(keyInfo *auth.KeyInfo, keyStr, reqModel, bedrockMode
 		return
 	}
 	cfg := h.awsCfg()
-	cost := AWSCostUSD(reqModel, inputTokens, outputTokens, cacheRead, cacheWrite, cfg.ModelPricing)
+
+	// Calculate cost: only charge for successful requests (statusCode < 400)
+	cost := 0.0
+	if statusCode < 400 {
+		cost = AWSCostUSD(reqModel, inputTokens, outputTokens, cacheRead, cacheWrite, cfg.ModelPricing)
+	}
+
 	ua := parseUA(userAgent)
 
 	h.collector.Emit(stats.AWSRecord{
@@ -1187,8 +1238,8 @@ func (h *Handler) emitUsage(keyInfo *auth.KeyInfo, keyStr, reqModel, bedrockMode
 		UA:               ua,
 	})
 
-	// Accumulate AWS daily and monthly cost for per-user quota tracking
-	if cost > 0 && statusCode < 400 {
+	// Accumulate AWS daily and monthly cost for per-user quota tracking (统一统计所有请求)
+	if cost > 0 {
 		h.keyStore.AddAWSDailyCost(keyInfo.UserID, cost)
 		h.keyStore.AddAWSMonthlyCost(keyInfo.UserID, cost)
 	}

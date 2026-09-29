@@ -1052,7 +1052,12 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 			}
 		}
 	}
-	cost := costUSD(model, inputTokens, outputTokens, cacheRead, cacheWrite, pricing)
+	// Calculate cost: only charge for successful requests (statusCode < 400)
+	cost := 0.0
+	if statusCode < 400 {
+		cost = costUSD(model, inputTokens, outputTokens, cacheRead, cacheWrite, pricing)
+	}
+
 	ua := parseUA(userAgent, isOpenClaw, isHermes)
 	// For DB is_openclaw field: both openclaw and hermes count as lobster traffic
 	isLobster := isOpenClaw || isHermes
@@ -1090,8 +1095,8 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 		RequestRole:  requestRole,
 	})
 
-	// Accumulate backend daily cost for per-user quota tracking
-	if cost > 0 && statusCode < 400 {
+	// Accumulate backend daily cost for per-user quota tracking (统一统计所有请求)
+	if cost > 0 {
 		h.keyStore.AddDailyCost(info.UserID, cost)
 	}
 }

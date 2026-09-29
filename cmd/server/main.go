@@ -123,7 +123,7 @@ func main() {
 	// Set default session options for non-remember-me logins
 	store.Options(sessions.Options{
 		Path:     "/",
-		HttpOnly: true, // 防止 XSS 攻击窃取 session
+		HttpOnly: true,  // 防止 XSS 攻击窃取 session
 		MaxAge:   86400, // 1 day default (overridden to 7 days when remember_me=true)
 		SameSite: http.SameSiteLaxMode,
 		Secure:   false, // 生产环境应设为 true（需要 HTTPS）
@@ -240,7 +240,7 @@ func main() {
 		}
 	}
 
-	authH := handler.NewAuthHandler(database, codeStore, sessionStore, &cfg.Auth)
+	authH := handler.NewAuthHandler(database, codeStore, sessionStore, &cfg.Auth, cfg)
 	keyH := handler.NewAPIKeyHandler(database, keyStore)
 	userH := handler.NewUserHandler(database, keyStore)
 	statsH := handler.NewStatsHandler(database, cfg, keyStore)

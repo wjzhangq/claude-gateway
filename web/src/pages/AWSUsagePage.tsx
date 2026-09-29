@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react'
 import { getAWSMyUsage } from '../api'
 import { formatTime } from '../utils/time'
+import { useAuth } from '../context/AuthContext'
+import AWSClosedBanner from '../components/AWSClosedBanner'
 
 interface AWSUsageLog {
   id: number
@@ -31,6 +33,7 @@ function SkeletonRow() {
 }
 
 export default function AWSUsagePage() {
+  const { isAWSChannelClosed } = useAuth()
   const [logs, setLogs] = useState<AWSUsageLog[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -58,6 +61,8 @@ export default function AWSUsagePage() {
         <h2 className="text-xl font-bold text-gray-900">AWS 使用统计</h2>
         <p className="text-sm text-gray-400 mt-0.5">查看你的 AWS Bedrock API 调用记录</p>
       </div>
+
+      {isAWSChannelClosed && <AWSClosedBanner />}
 
       <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-gray-100 flex items-center justify-between">

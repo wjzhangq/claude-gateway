@@ -121,8 +121,8 @@ type IPGeoConfig struct {
 //   - AnthropicURL:  for /v1/messages requests
 type PublicProvider struct {
 	Name           string                       `yaml:"name"`
-	OpenAIURL      string                       `yaml:"openai_url"`      // base URL for OpenAI-compatible API
-	AnthropicURL   string                       `yaml:"anthropic_url"`   // base URL for Anthropic-compatible API
+	OpenAIURL      string                       `yaml:"openai_url"`    // base URL for OpenAI-compatible API
+	AnthropicURL   string                       `yaml:"anthropic_url"` // base URL for Anthropic-compatible API
 	APIKey         string                       `yaml:"api_key"`
 	Enabled        bool                         `yaml:"enabled"`
 	Models         []string                     `yaml:"models"`          // supported model names (exact match)
@@ -188,17 +188,28 @@ type BackendAPI struct {
 
 // AWSConfig holds all AWS Bedrock channel configuration.
 type AWSConfig struct {
-	Region          string                       `yaml:"region"`
-	AccessKeyID     string                       `yaml:"access_key_id"`
-	SecretAccessKey string                       `yaml:"secret_access_key"`
-	CacheEnabled    int                          `yaml:"cache_enabled"`
-	CacheTTL        time.Duration                `yaml:"cache_ttl"`
-	Socks5Proxy     string                       `yaml:"socks5"`          // optional socks5 proxy, e.g. socks5://user:pass@host:port or user:pass@host:port
-	AWSDailyMax     float64                      `yaml:"aws_daily_max"`   // max AWS spend per user per day in USD (0 = unlimited)
-	AWSMonthlyMax   float64                      `yaml:"aws_monthly_max"` // max AWS spend per user per natural month in USD (0 = use daily limit)
-	ModelReplace    map[string]string            `yaml:"model_replace"`   // exact: upstream name -> Bedrock ARN
-	ModelDefault    map[string]string            `yaml:"model_default"`   // glob pattern -> upstream name
-	ModelPricing    map[string]ModelPricingEntry `yaml:"model_pricing"`   // glob pattern -> pricing
+	Region          string        `yaml:"region"`
+	AccessKeyID     string        `yaml:"access_key_id"`
+	SecretAccessKey string        `yaml:"secret_access_key"`
+	CacheEnabled    int           `yaml:"cache_enabled"`
+	CacheTTL        time.Duration `yaml:"cache_ttl"`
+	Socks5Proxy     string        `yaml:"socks5"`          // optional socks5 proxy, e.g. socks5://user:pass@host:port or user:pass@host:port
+	AWSDailyMax     float64       `yaml:"aws_daily_max"`   // max AWS spend per user per day in USD (0 = unlimited)
+	AWSMonthlyMax   float64       `yaml:"aws_monthly_max"` // max AWS spend per user per natural month in USD (0 = use daily limit)
+	// ChannelClosed is a planned-shutdown switch for the whole AWS channel (e.g. the
+	// 2026-09-30 Bedrock decommission). When true, every aws-channel request is
+	// rejected before it reaches Bedrock (internal/awsproxy/handler.go's
+	// Messages/ChatCompletions/Models), and the web UI shows a closure banner
+	// steering users to switch their keys back to the backend channel. Hot-reloadable
+	// via SIGHUP — no rebuild/redeploy needed to flip it on or off.
+	ChannelClosed bool `yaml:"channel_closed"`
+	// ClosedMessage is the user-facing explanation shown in the API error and the
+	// web UI banner when ChannelClosed is true. Empty falls back to a built-in
+	// Chinese default message.
+	ClosedMessage string                       `yaml:"closed_message"`
+	ModelReplace  map[string]string            `yaml:"model_replace"` // exact: upstream name -> Bedrock ARN
+	ModelDefault  map[string]string            `yaml:"model_default"` // glob pattern -> upstream name
+	ModelPricing  map[string]ModelPricingEntry `yaml:"model_pricing"` // glob pattern -> pricing
 	// ModelCapabilities is an ordered list of per-model-family capability rules.
 	// The first entry whose Match substring appears (case-insensitive) in either
 	// the resolved Bedrock model or the requested model name wins. It controls how

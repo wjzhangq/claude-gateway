@@ -135,6 +135,12 @@ backends:
 #     - tool_choice
 #     - thinking
 #     - output_config
+#   # ── 计划性关闭开关（可热加载，SIGHUP 生效）──────────────────────────────
+#   # channel_closed: true 时，所有 channel=aws 的请求在网关层直接拒绝（503），
+#   # 不再转发到 Bedrock；Web 界面同时展示关闭公告，引导用户切换回 backend 渠道。
+#   # 设回 false 即可恢复，无需重新部署。
+#   channel_closed: false
+#   closed_message: "AWS Bedrock 渠道已于 2026-09-30 关闭，请将 Key 切换回 Backend 渠道后重试。"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 流量离线滥用分析（feature 004）。旁路批处理：check --analyze 拉取待分析队列，
