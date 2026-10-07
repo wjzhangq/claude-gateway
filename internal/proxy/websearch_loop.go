@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -332,6 +333,12 @@ func (h *Handler) forwardPlain(c *gin.Context, backend *Backend, upstreamPath st
 	}
 	defer resp.Body.Close()
 	backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
+	// Same client-facing rewrite as forward. RecordRequest already saw the
+	// original status; usage below keeps that status.
+	loggedStatus := resp.StatusCode
+	if maybeRewriteClaudeLoginQuota(c.GetHeader("User-Agent"), resp) {
+		logger.Warnf("rewrote login-quota 403 as 529 for claude client: backend=%s model=%s", backend.Name, reqModel)
+	}
 	for k, vv := range resp.Header {
 		for _, v := range vv {
 			c.Header(k, v)
@@ -339,9 +346,9 @@ func (h *Handler) forwardPlain(c *gin.Context, backend *Backend, upstreamPath st
 	}
 	c.Status(resp.StatusCode)
 	if strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, false, body)
+		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, loggedStatus, start, isOpenClaw, isHermes, false, body)
 	} else {
-		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, false, body)
+		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, loggedStatus, start, isOpenClaw, isHermes, false, body)
 	}
 }
 
@@ -361,15 +368,24 @@ func (h *Handler) webSearchError(c *gin.Context, sse *sseWriter, msg string, err
 
 // webSearchPassRawError forwards a first-round upstream error (already buffered
 // in the loopError) to an Anthropic-protocol client. For SSE it emits an error
-// event; otherwise it relays the status and body verbatim.
+// event (HTTP status is already 200). Otherwise it relays the status and body,
+// rewriting a Claude Code login-quota 403 into 529 overloaded.
 func (h *Handler) webSearchPassRawError(c *gin.Context, sse *sseWriter, lerr *loopError) {
 	if sse != nil {
+		// Streaming web search already committed HTTP 200. Leave that path alone.
 		sse.writeErrorRaw(lerr.RawBody)
 		return
 	}
-	if lerr.ContentType != "" {
-		c.Header("Content-Type", lerr.ContentType)
+	status, body, contentType := lerr.Status, lerr.RawBody, lerr.ContentType
+	if newStatus, newBody, ok := rewriteClaudeLoginQuotaBody(c.GetHeader("User-Agent"), status, body); ok {
+		logger.Warnf("rewrote login-quota 403 as 529 for claude client: websearch passthrough")
+		status, body = newStatus, newBody
+		contentType = "application/json"
+		c.Header("Content-Length", strconv.Itoa(len(body)))
 	}
-	c.Status(lerr.Status)
-	_, _ = c.Writer.Write(lerr.RawBody)
+	if contentType != "" {
+		c.Header("Content-Type", contentType)
+	}
+	c.Status(status)
+	_, _ = c.Writer.Write(body)
 }

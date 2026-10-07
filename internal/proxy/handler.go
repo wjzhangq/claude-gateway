@@ -573,6 +573,14 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// Expose backend name for the request logger
 	c.Set("proxy_backend", backend.Name)
 
+	// Claude Code renders a pre-charge 403 as "Please run /login" and does not
+	// retry it. Rewrite only the client-facing response after failover and
+	// downgrade. Health (recorded above) and usage stay on the original status.
+	loggedStatus := resp.StatusCode
+	if maybeRewriteClaudeLoginQuota(c.GetHeader("User-Agent"), resp) {
+		logger.Warnf("rewrote login-quota 403 as 529 for claude client: backend=%s model=%s", backend.Name, reqModel)
+	}
+
 	// Copy response headers
 	for k, vv := range resp.Header {
 		for _, v := range vv {
@@ -603,12 +611,13 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 
 	c.Status(resp.StatusCode)
 
-	// Stream or buffer
+	// Stream or buffer. loggedStatus is the upstream code (403 for a rewritten
+	// login-quota error) so usage and anomaly logs do not record the 529.
 	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	if isStream {
-		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded, body)
+		h.streamResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, loggedStatus, start, isOpenClaw, isHermes, isDowngraded, body)
 	} else {
-		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, resp.StatusCode, start, isOpenClaw, isHermes, isDowngraded, body)
+		h.bufferResponse(c, resp, backend.Name, reqModel, keyInfo, keyStr, loggedStatus, start, isOpenClaw, isHermes, isDowngraded, body)
 	}
 }
 
@@ -810,14 +819,74 @@ func peekLoginQuotaError(resp *http.Response) ([]byte, bool) {
 	if err != nil {
 		return body, false
 	}
+	return body, isLoginQuotaBody(body)
+}
+
+// isLoginQuotaBody reports whether an upstream 403 body is a pre-charge quota
+// failure rather than a genuine auth rejection.
+func isLoginQuotaBody(body []byte) bool {
 	s := string(body)
-	if strings.Contains(s, "预扣费") ||
+	return strings.Contains(s, "预扣费") ||
 		strings.Contains(s, "/login") ||
 		strings.Contains(s, "API Error: 403") ||
-		strings.Contains(s, "用户剩余额度") {
-		return body, true
+		strings.Contains(s, "用户剩余额度")
+}
+
+// statusOverloaded is Anthropic's overloaded status. Claude Code retries it;
+// it does not retry 403.
+const statusOverloaded = 529
+
+// overloadedErrorBody is the Anthropic overloaded error Claude Code retries.
+var overloadedErrorBody = []byte(`{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`)
+
+// isClaudeCodeUA reports whether the client is Claude Code (User-Agent contains
+// "claude", e.g. "claude-cli/2.1.0 (external, cli)").
+func isClaudeCodeUA(userAgent string) bool {
+	return strings.Contains(strings.ToLower(userAgent), "claude")
+}
+
+// maybeRewriteClaudeLoginQuota replaces a pre-charge 403 with 529 overloaded
+// when the client is Claude Code. Health and usage must already have been
+// recorded from the original status. A non-matching response is left intact,
+// including its body. Returns true when the response was rewritten.
+func maybeRewriteClaudeLoginQuota(ua string, resp *http.Response) bool {
+	if resp == nil || resp.StatusCode != http.StatusForbidden || !isClaudeCodeUA(ua) {
+		return false
 	}
-	return body, false
+	// Leave the original body for the caller to Close (both call sites defer it).
+	// The bytes are copied onto a new reader so the client write sees either the
+	// original payload or the overloaded replacement.
+	orig := resp.Body
+	if orig == nil {
+		return false
+	}
+	body, err := io.ReadAll(orig)
+	if err != nil || !isLoginQuotaBody(body) {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		return false
+	}
+	resp.StatusCode = statusOverloaded
+	resp.Status = fmt.Sprintf("%d Overloaded", statusOverloaded)
+	resp.Body = io.NopCloser(bytes.NewReader(overloadedErrorBody))
+	resp.ContentLength = int64(len(overloadedErrorBody))
+	if resp.Header == nil {
+		resp.Header = make(http.Header)
+	}
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Set("Content-Type", "application/json")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(overloadedErrorBody)))
+	return true
+}
+
+// rewriteClaudeLoginQuotaBody is the already-buffered form of
+// maybeRewriteClaudeLoginQuota, used when the upstream error body was read
+// before the client response is written.
+func rewriteClaudeLoginQuotaBody(ua string, status int, body []byte) (int, []byte, bool) {
+	if status != http.StatusForbidden || !isClaudeCodeUA(ua) || !isLoginQuotaBody(body) {
+		return status, body, false
+	}
+	return statusOverloaded, overloadedErrorBody, true
 }
 
 const streamReadBufSize = 4096
@@ -1081,29 +1150,29 @@ func (h *Handler) emitUsage(keyInfo interface{}, keyStr, backendName, model stri
 	}
 
 	h.collector.Emit(stats.Record{
-		UserID:       info.UserID,
-		GroupID:      info.GroupID,
-		APIKeyID:     info.KeyID,
-		KeyStr:       keyStr,
-		Model:        model,
-		Backend:      backendName,
+		UserID:           info.UserID,
+		GroupID:          info.GroupID,
+		APIKeyID:         info.KeyID,
+		KeyStr:           keyStr,
+		Model:            model,
+		Backend:          backendName,
 		InputTokens:      inputTokens,
 		OutputTokens:     outputTokens,
 		TotalTokens:      total,
 		CacheReadTokens:  cacheRead,
 		CacheWriteTokens: cacheWrite,
 		CostUSD:          cost,
-		StatusCode:   statusCode,
-		Latency:      latency,
-		IsOpenClaw:   isLobster,
-		IsDowngraded: isDowngraded,
-		UA:           ua,
-		ErrorReason:  reasonCode(ClassifyError(statusCode, nil), statusCode, false),
-		IP:           clientIP,
-		City:         city,
-		IsHQ:         isHQ,
-		SignalJSON:   signalJSON,
-		RequestRole:  requestRole,
+		StatusCode:       statusCode,
+		Latency:          latency,
+		IsOpenClaw:       isLobster,
+		IsDowngraded:     isDowngraded,
+		UA:               ua,
+		ErrorReason:      reasonCode(ClassifyError(statusCode, nil), statusCode, false),
+		IP:               clientIP,
+		City:             city,
+		IsHQ:             isHQ,
+		SignalJSON:       signalJSON,
+		RequestRole:      requestRole,
 	})
 
 	// Accumulate backend daily cost for per-user quota tracking (统一统计所有请求)
