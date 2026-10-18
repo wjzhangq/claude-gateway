@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -95,10 +96,30 @@ func (h *UserHandler) CreateUser(c *gin.Context) {
 		AWSDailyQuotaUSD: req.AWSDailyQuotaUSD,
 	}
 	if err := h.db.CreateUser(user); err != nil {
+		if errors.Is(err, db.ErrDuplicateItcode) {
+			// Idempotent create: the user already exists, so treat this as success
+			// and return the existing record unchanged (quota/status/role are not
+			// overwritten — use the edit actions for that).
+			existing, getErr := h.db.GetUserByItcode(db.NormalizeItcode(req.Itcode))
+			if getErr != nil || existing == nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "该 itcode 已存在，但读取用户信息失败"})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"user":    existing,
+				"existed": true,
+				"message": "用户已存在，无需重复添加",
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusCreated, user)
+	c.JSON(http.StatusCreated, gin.H{
+		"user":    user,
+		"existed": false,
+		"message": "添加成功",
+	})
 }
 
 // UpdateUser godoc: PUT /admin/api/users/:id
@@ -178,8 +199,12 @@ func (h *UserHandler) UpdateItcode(c *gin.Context) {
 		return
 	}
 	if err := h.db.UpdateUserItcode(id, req.Itcode); err != nil {
+		if errors.Is(err, db.ErrDuplicateItcode) {
+			c.JSON(http.StatusConflict, gin.H{"error": "该 itcode 已存在，请使用其他 itcode"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"itcode": req.Itcode})
+	c.JSON(http.StatusOK, gin.H{"itcode": db.NormalizeItcode(req.Itcode)})
 }

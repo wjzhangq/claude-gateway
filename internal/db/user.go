@@ -2,12 +2,16 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/wjzhangq/claude-gateway/internal/model"
 )
+
+// ErrDuplicateItcode is returned when attempting to create/update a user with an itcode that already exists.
+var ErrDuplicateItcode = errors.New("itcode already exists")
 
 // parseNullableTime converts a nullable string from SQLite into *time.Time.
 func parseNullableTime(s *string) *time.Time {
@@ -31,7 +35,34 @@ func parseNullableTime(s *string) *time.Time {
 
 // --- User CRUD ---
 
+// NormalizeItcode trims surrounding whitespace and strips an optional @lenovo.com
+// suffix so that "ZhangS1", " zhangs1 " and "zhangs1@lenovo.com" all map to the
+// same stored identity. Case is preserved (SQLite TEXT comparison is case
+// sensitive by default and existing rows keep their original casing).
+func NormalizeItcode(itcode string) string {
+	s := strings.TrimSpace(itcode)
+	if i := strings.Index(s, "@"); i > 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// isUniqueItcodeViolation reports whether err is a SQLite UNIQUE constraint
+// failure on users.itcode. modernc.org/sqlite reports this as
+// "constraint failed: UNIQUE constraint failed: users.itcode (2067)".
+func isUniqueItcodeViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint failed") && strings.Contains(msg, "users.itcode")
+}
+
 func (d *DB) CreateUser(u *model.User) error {
+	u.Itcode = NormalizeItcode(u.Itcode)
+	if u.Itcode == "" {
+		return errors.New("create user: itcode is required")
+	}
 	now := time.Now()
 	res, err := d.Exec(
 		`INSERT INTO users (itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, created_at, updated_at)
@@ -39,6 +70,9 @@ func (d *DB) CreateUser(u *model.User) error {
 		u.Itcode, u.Name, u.Role, u.Status, u.GroupID, u.DailyQuotaUSD, u.AWSDailyQuotaUSD, now, now,
 	)
 	if err != nil {
+		if isUniqueItcodeViolation(err) {
+			return fmt.Errorf("create user %q: %w", u.Itcode, ErrDuplicateItcode)
+		}
 		return fmt.Errorf("create user: %w", err)
 	}
 	u.ID, _ = res.LastInsertId()
@@ -217,8 +251,18 @@ func (d *DB) SearchUsersByItcode(prefix string, limit int) ([]*UserSearchResult,
 
 // UpdateUserItcode changes the itcode of a user.
 func (d *DB) UpdateUserItcode(id int64, itcode string) error {
+	itcode = NormalizeItcode(itcode)
+	if itcode == "" {
+		return errors.New("update itcode: itcode is required")
+	}
 	_, err := d.Exec(`UPDATE users SET itcode=?, updated_at=? WHERE id=?`, itcode, time.Now(), id)
-	return err
+	if err != nil {
+		if isUniqueItcodeViolation(err) {
+			return fmt.Errorf("update itcode to %q: %w", itcode, ErrDuplicateItcode)
+		}
+		return fmt.Errorf("update itcode: %w", err)
+	}
+	return nil
 }
 
 // APIKeyWithUser extends APIKey with user info for admin listing.

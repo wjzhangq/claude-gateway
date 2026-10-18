@@ -147,6 +147,7 @@ export default function AdminUsersPage() {
   const [newStatus, setNewStatus] = useState('pending')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState('')
+  const [successMsg, setSuccessMsg] = useState('')
   const [chartUser, setChartUser] = useState<User | null>(null)
   const [editId, setEditId] = useState<number | null>(null)
   const [editState, setEditState] = useState<EditState>({ role: '', status: '', group_id: 0, name: '' })
@@ -235,17 +236,32 @@ export default function AdminUsersPage() {
     if (!newItcode) { setError('请输入 itcode'); return }
     setCreating(true)
     setError('')
+    setSuccessMsg('')
     try {
-      await adminCreateUser({
+      const res = await adminCreateUser({
         itcode: newItcode,
         role: newRole,
         status: newStatus,
         group_id: newGroup,
       })
-      setShowCreate(false)
-      setNewItcode('')
-      setNewGroup(0)
-      load()
+      // Check if user already existed
+      if (res.data?.existed) {
+        setSuccessMsg('用户已存在，无需重复添加')
+        load() // Refresh list
+        // Auto-close modal after showing message for 2s
+        setTimeout(() => {
+          setShowCreate(false)
+          setNewItcode('')
+          setNewGroup(0)
+          setSuccessMsg('')
+        }, 2000)
+      } else {
+        // New user created
+        setShowCreate(false)
+        setNewItcode('')
+        setNewGroup(0)
+        load()
+      }
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { error?: string } } })?.response?.data?.error
       setError(msg || '创建失败')
@@ -412,6 +428,7 @@ export default function AdminUsersPage() {
               </div>
             </div>
             {error && <p className="text-sm text-red-600">{error}</p>}
+            {successMsg && <p className="text-sm text-green-600">{successMsg}</p>}
             <div className="flex gap-2">
               <button
                 type="submit"
@@ -422,7 +439,11 @@ export default function AdminUsersPage() {
               </button>
               <button
                 type="button"
-                onClick={() => setShowCreate(false)}
+                onClick={() => {
+                  setShowCreate(false)
+                  setError('')
+                  setSuccessMsg('')
+                }}
                 className="px-4 py-2.5 text-sm border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors"
               >
                 取消
