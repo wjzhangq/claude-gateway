@@ -398,6 +398,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 
 	start := time.Now()
 	var resp *http.Response
+	var quotaFinal bool
 
 	// If in downgraded period, skip original model and go directly to GPT
 	if inDowngradedPeriod {
@@ -409,9 +410,10 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			reqModel = fbModel
 		}
 	} else {
-		// Quota exhaustion and login/session prompts are node-level failures:
-		// circuit-break that backend and retry the same request on the next one.
-		backend, resp, err = h.doRequestWithFailover(c, backend, upstreamPath, body, start)
+		// 401, a login-shaped 403, and 429 are node-level: retry this request on
+		// the next backend. Confirmed balance failures are marked after health
+		// accounting so the long quota TTL is not overwritten by the 429 base.
+		backend, resp, err, quotaFinal = h.doRequestWithFailover(c, backend, upstreamPath, body, start)
 		if err != nil && IsClientCanceled(err) {
 			logger.Infof("client canceled request: backend=%s model=%s", backend.Name, reqModel)
 			return
@@ -461,6 +463,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		backend.RecordResultDetailed(ClassifyError(resp.StatusCode, nil), retryAfterUnix, false)
 	} else {
 		backend.RecordResultDetailed(ErrClient, 0, false)
+	}
+	if quotaFinal {
+		h.lb.MarkQuotaExhausted(backend.Name)
 	}
 
 	// Check if we need to retry with downgrade (response indicates failure)
@@ -569,12 +574,7 @@ func (h *Handler) doRequest(c *gin.Context, backend *Backend, upstreamPath, targ
 	// Copy headers, replace Authorization
 	for k, vv := range c.Request.Header {
 		k = http.CanonicalHeaderKey(k)
-		// Drop Accept-Encoding. Backend clients set DisableCompression, so a
-		// gzip body would reach us still compressed and login/quota detection
-		// would miss the prompt. Omitting the header asks the upstream for
-		// identity encoding. SSE stays plain, which is what DisableCompression
-		// is there to preserve.
-		if k == "Authorization" || k == "X-Api-Key" || k == "Accept-Encoding" {
+		if k == "Authorization" || k == "X-Api-Key" {
 			continue
 		}
 		for _, v := range vv {
@@ -588,11 +588,23 @@ func (h *Handler) doRequest(c *gin.Context, backend *Backend, upstreamPath, targ
 	return backend.Client().Do(req)
 }
 
-// doRequestWithFailover sends the request and, on a node-level quota or login
-// prompt, isolates that backend and retries the same body on the next one.
-// The returned backend is the one that produced resp. A canceled request is
-// recorded on the backend that was in flight and returned as err.
-func (h *Handler) doRequestWithFailover(c *gin.Context, backend *Backend, upstreamPath string, body []byte, start time.Time) (*Backend, *http.Response, error) {
+// switchKind is why an upstream response should be retried on another backend.
+type switchKind int
+
+const (
+	switchNone      switchKind = iota
+	switchAuth                 // 401: quarantine this node, still try the next one
+	switchLogin                // login-shaped 403: short isolation, not the quota hard-gate
+	switchQuota                // confirmed balance failure: long quota gate
+	switchRateLimit            // other 429: short isolation
+)
+
+// doRequestWithFailover sends the request and, on 401, a login-shaped 403, or
+// 429, retries the same body on the next backend. quotaFinal is true when the
+// returned response is a confirmed balance failure; the caller must record
+// health first and then MarkQuotaExhausted, so the long quota TTL wins over
+// the 429 base. Abandoned attempts are recorded here.
+func (h *Handler) doRequestWithFailover(c *gin.Context, backend *Backend, upstreamPath string, body []byte, start time.Time) (*Backend, *http.Response, error, bool) {
 	tried := map[string]bool{backend.Name: true}
 	failovers := 0
 	chainDeadline := start.Add(failoverBudgetSecs * time.Second)
@@ -602,69 +614,60 @@ func (h *Handler) doRequestWithFailover(c *gin.Context, backend *Backend, upstre
 		resp, err := h.doRequest(c, backend, upstreamPath, targetURL, body)
 		if err != nil && IsClientCanceled(err) {
 			backend.RecordResult(ErrCanceled)
-			return backend, nil, err
+			return backend, nil, err, false
 		}
 		if err != nil {
-			return backend, nil, err
+			return backend, nil, err, false
 		}
 
-		if resp.StatusCode == http.StatusTooManyRequests {
-			peek, isQuota := peekQuotaExhausted(resp)
-			if isQuota {
-				resp.Body.Close()
-				next, stop := h.nextFailoverBackend(backend, tried, &failovers, chainDeadline)
-				if stop {
-					resp.Body = io.NopCloser(bytes.NewReader(peek))
-					logger.Warnf("quota failover stopped (backend=%s failovers=%d cascade=%v): returning 429", backend.Name, failovers, h.lb.QuotaCascadeActive())
-					return backend, resp, nil
-				}
-				backend.RecordResult(ClassifyError(resp.StatusCode, nil))
-				backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
-				logger.Warnf("backend %s quota exhausted (insufficient balance): failing over to %s", backend.Name, next.Name)
-				backend = next
-				tried[backend.Name] = true
-				continue
-			}
+		kind, peek := classifySwitch(resp)
+		if kind == switchNone {
+			return backend, resp, nil, false
+		}
+		resp.Body.Close()
+		next, stop := h.nextSwitchBackend(tried, &failovers, chainDeadline, kind == switchQuota)
+		if stop {
 			resp.Body = io.NopCloser(bytes.NewReader(peek))
+			logger.Warnf("node failover stopped (backend=%s kind=%d failovers=%d cascade=%v)", backend.Name, kind, failovers, h.lb.QuotaCascadeActive())
+			return backend, resp, nil, kind == switchQuota
 		}
-
-		peek, isLogin := inspectLoginPrompt(resp)
-		if isLogin {
-			resp.Body.Close()
-			next, stop := h.nextFailoverBackend(backend, tried, &failovers, chainDeadline)
-			if stop {
-				presentLoginFailure(resp, peek)
-				logger.Warnf("login failover stopped (backend=%s failovers=%d cascade=%v): returning login prompt", backend.Name, failovers, h.lb.QuotaCascadeActive())
-				return backend, resp, nil
-			}
-			// Login/session prompts are not a bad gateway key. Count them like a
-			// rate limit so the node is isolated without ErrAuth quarantine.
-			code := resp.StatusCode
-			if code < 400 {
-				code = http.StatusForbidden
-			}
-			backend.RecordResult(ErrRateLimit)
-			backend.RecordRequest(code, time.Since(start).Milliseconds())
-			logger.Warnf("backend %s login prompt (status=%d): failing over to %s", backend.Name, resp.StatusCode, next.Name)
-			backend = next
-			tried[backend.Name] = true
-			continue
-		}
-		return backend, resp, nil
+		h.recordAbandoned(backend, kind, resp.StatusCode, resp.Header.Get("Retry-After"), start)
+		logger.Warnf("backend %s node failure (status=%d kind=%d): failing over to %s", backend.Name, resp.StatusCode, kind, next.Name)
+		backend = next
+		tried[backend.Name] = true
 	}
 }
 
-// nextFailoverBackend circuit-breaks current and picks a backend that has not
-// been tried yet. stop is true when the chain must return the current response:
-// no alternate, the per-request cap, the wall-clock budget, or a quota cascade.
-func (h *Handler) nextFailoverBackend(current *Backend, tried map[string]bool, failovers *int, deadline time.Time) (next *Backend, stop bool) {
-	h.lb.MarkQuotaExhausted(current.Name)
+// nextSwitchBackend picks a backend not yet tried. stop is true when the chain
+// must return the current response. A quota cascade fast-fails only a confirmed
+// balance failure; login and 401 still move to the next node.
+func (h *Handler) nextSwitchBackend(tried map[string]bool, failovers *int, deadline time.Time, quota bool) (next *Backend, stop bool) {
 	*failovers++
 	next = h.lb.PickExcluding(tried)
-	if next == nil || *failovers > maxQuotaFailovers || time.Now().After(deadline) || h.lb.QuotaCascadeActive() {
+	if next == nil || *failovers > maxQuotaFailovers || time.Now().After(deadline) || (quota && h.lb.QuotaCascadeActive()) {
 		return nil, true
 	}
 	return next, false
+}
+
+// recordAbandoned accounts for a backend this request is leaving. Confirmed
+// quota is marked after the health write so MarkQuotaExhausted's long TTL is
+// not replaced by the 30s 429 base.
+func (h *Handler) recordAbandoned(backend *Backend, kind switchKind, status int, retryAfter string, start time.Time) {
+	backend.RecordRequest(status, time.Since(start).Milliseconds())
+	switch kind {
+	case switchAuth:
+		backend.RecordResult(ErrAuth)
+	case switchLogin:
+		// Login/pre-charge is not a bad gateway key and not confirmed balance
+		// exhaustion, so it takes the short 403 cooldown instead of the quota gate.
+		backend.RecordResult(ErrForbidden)
+	case switchQuota:
+		backend.RecordResultDetailed(ErrRateLimit, ParseRetryAfter(retryAfter, time.Now()), false)
+		h.lb.MarkQuotaExhausted(backend.Name)
+	case switchRateLimit:
+		backend.RecordResultDetailed(ErrRateLimit, ParseRetryAfter(retryAfter, time.Now()), false)
+	}
 }
 
 // doRequestWithDowngrade retries the request with a downgraded model.
@@ -716,7 +719,7 @@ func (h *Handler) doRequestToProvider(c *gin.Context, targetURL string, body []b
 	// Copy headers, replace Authorization
 	for k, vv := range c.Request.Header {
 		k = http.CanonicalHeaderKey(k)
-		if k == "Authorization" || k == "X-Api-Key" || k == "Accept-Encoding" {
+		if k == "Authorization" || k == "X-Api-Key" {
 			continue
 		}
 		for _, v := range vv {
@@ -799,57 +802,73 @@ func peekQuotaExhausted(resp *http.Response) ([]byte, bool) {
 	if err != nil {
 		return body, false
 	}
-	s := strings.ToLower(string(body))
-	if strings.Contains(s, "exceeded_current_quota_error") ||
-		strings.Contains(s, "insufficient balance") ||
-		strings.Contains(s, "suspended due to") {
-		return body, true
-	}
-	return body, false
-}
-
-// loginPeekMax is how much of an error or HTML body we inspect for a login prompt.
-const loginPeekMax = 8192
-
-// loginPeekSample is the prefix read from a normal 2xx JSON body. Real message
-// payloads are not login prompts; only an error envelope in that prefix is.
-const loginPeekSample = 512
-
-// inspectLoginPrompt reports whether resp is a node login/session prompt.
-// A non-match leaves resp.Body readable, including any bytes already consumed.
-// A match returns the decoded peeked bytes; the caller closes resp.Body.
-func inspectLoginPrompt(resp *http.Response) ([]byte, bool) {
-	if resp == nil || resp.Body == nil || !loginPromptCandidate(resp) {
-		return nil, false
-	}
-	limit := loginPeekMax
-	code := resp.StatusCode
-	if code >= 200 && code < 300 && !isHTMLContent(resp.Header.Get("Content-Type")) && !locationLooksLikeLogin(resp.Header.Get("Location")) {
-		limit = loginPeekSample
-	}
-	orig := resp.Body
-	buf, err := io.ReadAll(io.LimitReader(orig, int64(limit)))
-	if err != nil {
-		resp.Body = stitchBody(buf, orig)
-		return buf, false
-	}
-	// A 2xx body that starts as HTML or an error envelope may have the login
-	// phrase past the short sample. Read the rest of the small prefix.
-	if limit == loginPeekSample && (looksLikeHTML(buf) || looksLikeErrorEnvelope(buf)) {
-		rest, rerr := io.ReadAll(io.LimitReader(orig, int64(loginPeekMax-len(buf))))
-		if rerr == nil {
-			buf = append(buf, rest...)
-		}
-	}
-	decoded := buf
-	if dec, ok := tryGunzip(resp.Header.Get("Content-Encoding"), buf); ok {
+	decoded := body
+	if dec, ok := tryGunzip(resp.Header.Get("Content-Encoding"), body); ok {
 		decoded = dec
 	}
-	if !isLoginPrompt(resp.StatusCode, resp.Header, decoded) {
-		resp.Body = stitchBody(buf, orig)
-		return buf, false
+	return body, isQuotaBody(decoded)
+}
+
+func isQuotaBody(body []byte) bool {
+	s := strings.ToLower(string(body))
+	return strings.Contains(s, "exceeded_current_quota_error") ||
+		strings.Contains(s, "insufficient balance") ||
+		strings.Contains(s, "suspended due to")
+}
+
+// classifySwitch decides whether this response is a node failure the request
+// should leave. 401 and 429 always switch. A 403 switches only when the body
+// is a login/pre-charge prompt. Other statuses, including a normal 200, are
+// left untouched so a model reply that mentions login is not a failover.
+// On a non-match the body stays readable. On a match the caller closes it.
+func classifySwitch(resp *http.Response) (switchKind, []byte) {
+	if resp == nil || resp.Body == nil {
+		return switchNone, nil
 	}
-	return decoded, true
+	code := resp.StatusCode
+	if code != http.StatusUnauthorized && code != http.StatusForbidden && code != http.StatusTooManyRequests {
+		return switchNone, nil
+	}
+	orig := resp.Body
+	raw, err := io.ReadAll(io.LimitReader(orig, 8192))
+	if err != nil {
+		resp.Body = stitchBody(raw, orig)
+		return switchNone, raw
+	}
+	decoded := raw
+	gunzipped := false
+	if dec, ok := tryGunzip(resp.Header.Get("Content-Encoding"), raw); ok {
+		decoded = dec
+		gunzipped = true
+	}
+	var kind switchKind
+	switch code {
+	case http.StatusUnauthorized:
+		kind = switchAuth
+	case http.StatusTooManyRequests:
+		if isQuotaBody(decoded) {
+			kind = switchQuota
+		} else {
+			kind = switchRateLimit
+		}
+	case http.StatusForbidden:
+		if isLoginQuotaBody(decoded) {
+			kind = switchLogin
+		}
+	}
+	if kind == switchNone {
+		resp.Body = stitchBody(raw, orig)
+		return switchNone, raw
+	}
+	// Hand the caller plain bytes when we had to gunzip to see the prompt.
+	// Leaving Content-Encoding set would make the client decode twice.
+	if gunzipped {
+		if resp.Header != nil {
+			resp.Header.Del("Content-Encoding")
+		}
+		return kind, decoded
+	}
+	return kind, raw
 }
 
 // stitchBody puts already-read bytes back in front of the unread remainder and
@@ -861,82 +880,6 @@ func stitchBody(already []byte, rest io.ReadCloser) io.ReadCloser {
 type stitchedBody struct {
 	io.Reader
 	io.Closer
-}
-
-// loginPromptCandidate is true when the status or content type can be a login
-// page. Successful event streams are never candidates: a model may discuss login.
-func loginPromptCandidate(resp *http.Response) bool {
-	ct := strings.ToLower(resp.Header.Get("Content-Type"))
-	if strings.Contains(ct, "text/event-stream") {
-		return false
-	}
-	code := resp.StatusCode
-	switch {
-	case code >= 400:
-		return true
-	case code >= 300 && code < 400:
-		return true
-	case isHTMLContent(ct):
-		return true
-	case code >= 200 && code < 300:
-		return ct == "" || strings.Contains(ct, "json") || strings.Contains(ct, "text/plain")
-	default:
-		return false
-	}
-}
-
-// isLoginPrompt reports a node-level login/session page, as opposed to a normal
-// model response or a genuine invalid-key 401.
-func isLoginPrompt(status int, header http.Header, body []byte) bool {
-	loc := ""
-	ct := ""
-	if header != nil {
-		loc = header.Get("Location")
-		ct = header.Get("Content-Type")
-	}
-	if status >= 300 && status < 400 && locationLooksLikeLogin(loc) {
-		return true
-	}
-	if (isHTMLContent(ct) || looksLikeHTML(body)) && isHTMLLoginPage(body) {
-		return true
-	}
-	if status >= 200 && status < 300 && !looksLikeErrorEnvelope(body) && !isHTMLContent(ct) && !looksLikeHTML(body) {
-		return false
-	}
-	return isLoginQuotaBody(body)
-}
-
-func isHTMLContent(ct string) bool {
-	return strings.Contains(strings.ToLower(ct), "text/html")
-}
-
-func locationLooksLikeLogin(loc string) bool {
-	l := strings.ToLower(loc)
-	return strings.Contains(l, "/login") || strings.Contains(l, "signin") || strings.Contains(l, "sign-in") || strings.Contains(l, "sign_in")
-}
-
-func looksLikeHTML(body []byte) bool {
-	s := strings.TrimSpace(strings.ToLower(string(body)))
-	return strings.HasPrefix(s, "<!doctype") || strings.HasPrefix(s, "<html") || strings.HasPrefix(s, "<head") || strings.HasPrefix(s, "<form")
-}
-
-func looksLikeErrorEnvelope(body []byte) bool {
-	head := strings.ToLower(strings.TrimSpace(string(body)))
-	if len(head) > 120 {
-		head = head[:120]
-	}
-	return strings.Contains(head, `"error"`) || strings.Contains(head, `"type":"error"`) || strings.Contains(head, `"type": "error"`)
-}
-
-func isHTMLLoginPage(body []byte) bool {
-	s := strings.ToLower(string(body))
-	if strings.Contains(s, "<form") && (strings.Contains(s, "password") || strings.Contains(s, "login") || strings.Contains(string(body), "登录")) {
-		return true
-	}
-	if strings.Contains(s, "<title") && (strings.Contains(s, "login") || strings.Contains(s, "sign in") || strings.Contains(string(body), "登录")) {
-		return true
-	}
-	return false
 }
 
 func tryGunzip(contentEncoding string, body []byte) ([]byte, bool) {
@@ -955,51 +898,15 @@ func tryGunzip(contentEncoding string, body []byte) ([]byte, bool) {
 	return dec, true
 }
 
-// presentLoginFailure makes a login prompt safe to hand to the client when no
-// alternate backend is left. HTML and 2xx/3xx login pages become a 403 JSON
-// body the Claude Code rewrite can turn into a retryable 529.
-func presentLoginFailure(resp *http.Response, peeked []byte) {
-	body := peeked
-	if !isLoginQuotaBody(body) {
-		body = []byte(`{"type":"error","error":{"type":"permission_error","message":"Please run /login · API Error: 403"}}`)
-	}
-	if resp.StatusCode < 400 {
-		resp.StatusCode = http.StatusForbidden
-		resp.Status = "403 Forbidden"
-	}
-	resp.Body = io.NopCloser(bytes.NewReader(body))
-	resp.ContentLength = int64(len(body))
-	if resp.Header == nil {
-		resp.Header = make(http.Header)
-	}
-	resp.Header.Del("Content-Encoding")
-	resp.Header.Del("Location")
-	resp.Header.Set("Content-Type", "application/json")
-	resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
-}
-
-// isLoginQuotaBody reports whether an upstream body is a pre-charge quota
-// failure or a login/session prompt rather than a genuine auth rejection.
+// isLoginQuotaBody reports a pre-charge / login prompt. "/login" is matched
+// case-insensitively. "API Error: 403" alone is not a signal: it also appears
+// on unrelated 403s.
 func isLoginQuotaBody(body []byte) bool {
 	s := string(body)
 	low := strings.ToLower(s)
 	return strings.Contains(s, "预扣费") ||
-		strings.Contains(s, "/login") ||
-		strings.Contains(s, "API Error: 403") ||
-		strings.Contains(s, "用户剩余额度") ||
-		strings.Contains(s, "请登录") ||
-		strings.Contains(s, "请重新登录") ||
-		strings.Contains(s, "请先登录") ||
-		strings.Contains(s, "未登录") ||
-		strings.Contains(s, "登录已过期") ||
-		strings.Contains(s, "登录已失效") ||
-		strings.Contains(s, "登录失效") ||
-		strings.Contains(s, "重新登录") ||
-		strings.Contains(low, "please login") ||
-		strings.Contains(low, "please sign in") ||
-		strings.Contains(low, "please log in") ||
-		strings.Contains(low, "session expired") ||
-		strings.Contains(low, "session has expired")
+		strings.Contains(low, "/login") ||
+		strings.Contains(s, "用户剩余额度")
 }
 
 // statusOverloaded is Anthropic's overloaded status. Claude Code retries it;
@@ -1015,12 +922,12 @@ func isClaudeCodeUA(userAgent string) bool {
 	return strings.Contains(strings.ToLower(userAgent), "claude")
 }
 
-// maybeRewriteClaudeLoginQuota replaces a pre-charge 403 or a login-prompt 401
-// with 529 overloaded when the client is Claude Code. Health and usage must
-// already have been recorded from the original status. A non-matching response
-// is left intact, including its body. Returns true when the response was rewritten.
+// maybeRewriteClaudeLoginQuota replaces a pre-charge 403 with 529 overloaded
+// when the client is Claude Code and no other backend could take the request.
+// It is a client retry hint, not the failover itself. Health and usage must
+// already have been recorded from the original status.
 func maybeRewriteClaudeLoginQuota(ua string, resp *http.Response) bool {
-	if resp == nil || !isClaudeCodeUA(ua) || (resp.StatusCode != http.StatusForbidden && resp.StatusCode != http.StatusUnauthorized) {
+	if resp == nil || resp.StatusCode != http.StatusForbidden || !isClaudeCodeUA(ua) {
 		return false
 	}
 	// Leave the original body for the caller to Close (both call sites defer it).
@@ -1053,7 +960,7 @@ func maybeRewriteClaudeLoginQuota(ua string, resp *http.Response) bool {
 // maybeRewriteClaudeLoginQuota, used when the upstream error body was read
 // before the client response is written.
 func rewriteClaudeLoginQuotaBody(ua string, status int, body []byte) (int, []byte, bool) {
-	if (status != http.StatusForbidden && status != http.StatusUnauthorized) || !isClaudeCodeUA(ua) || !isLoginQuotaBody(body) {
+	if status != http.StatusForbidden || !isClaudeCodeUA(ua) || !isLoginQuotaBody(body) {
 		return status, body, false
 	}
 	return statusOverloaded, overloadedErrorBody, true

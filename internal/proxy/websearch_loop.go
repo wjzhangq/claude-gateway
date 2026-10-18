@@ -160,10 +160,11 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 		}
 
 		var resp *http.Response
+		quotaFinal := false
 		if round == 0 {
-			// First round has no tool side effects yet, so a login prompt or
-			// quota error can move to the next backend before the client sees it.
-			backend, resp, err = h.doRequestWithFailover(c, backend, upstreamPath, roundBody, start)
+			// First round has no tool side effects yet, so a login prompt, 401,
+			// or 429 can move to the next backend before the client sees it.
+			backend, resp, err, quotaFinal = h.doRequestWithFailover(c, backend, upstreamPath, roundBody, start)
 			targetURL = strings.TrimRight(backend.URL, "/") + upstreamPath
 		} else {
 			resp, err = h.doRequest(c, backend, upstreamPath, targetURL, roundBody)
@@ -183,6 +184,9 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 		backend.RecordRequest(rawStatus, time.Since(start).Milliseconds())
 		if isValidHealthModel(reqModel) {
 			backend.RecordResultDetailed(ClassifyError(rawStatus, nil), 0, false)
+		}
+		if quotaFinal {
+			h.lb.MarkQuotaExhausted(backend.Name)
 		}
 		if !ok || rawStatus >= 400 {
 			// Upstream error: surface it verbatim on the first round, else stop
@@ -336,7 +340,7 @@ func readMessagesResponse(resp *http.Response) (*websearch.MessagesResponse, []b
 // web-search loop can't run (e.g. body decode failure). It mirrors the tail of
 // forward(): single request, then stream or buffer.
 func (h *Handler) forwardPlain(c *gin.Context, backend *Backend, upstreamPath string, body []byte, reqModel string, keyInfo interface{}, keyStr string, start time.Time, isOpenClaw, isHermes bool) {
-	backend, resp, err := h.doRequestWithFailover(c, backend, upstreamPath, body, start)
+	backend, resp, err, quotaFinal := h.doRequestWithFailover(c, backend, upstreamPath, body, start)
 	if err != nil {
 		// Cancellation is already recorded inside doRequestWithFailover.
 		if IsClientCanceled(err) {
@@ -347,6 +351,9 @@ func (h *Handler) forwardPlain(c *gin.Context, backend *Backend, upstreamPath st
 	}
 	defer resp.Body.Close()
 	backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
+	if quotaFinal {
+		h.lb.MarkQuotaExhausted(backend.Name)
+	}
 	// Same client-facing rewrite as forward. RecordRequest already saw the
 	// original status; usage below keeps that status.
 	loggedStatus := resp.StatusCode

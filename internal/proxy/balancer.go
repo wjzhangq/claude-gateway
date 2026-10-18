@@ -440,6 +440,9 @@ func (lb *LoadBalancer) recordResult(b *Backend, class ErrorClass, retryAfterUni
 	case ErrNone:
 		b.consecErr.Store(0)
 		b.authQuarantineCount.Store(0) // a success clears auth-backoff escalation (FR-020)
+		// A successful response proves the quota hard-gate is stale. Leaving it
+		// set would keep effectiveWeight at 0 until CST midnight.
+		b.quotaExhausted.Store(false)
 		b.lastSuccessAt.Store(now.Unix())
 		// Promote degraded -> healthy after enough consecutive successes.
 		if b.state.Load() == stateDegraded {
@@ -628,36 +631,43 @@ type LoadBalancer struct {
 
 	lastFailsafeAt atomic.Int64 // unix s of last failsafe run (hysteresis)
 
-	quotaReportMu    sync.Mutex // guards quotaReportTimes
-	quotaReportTimes []int64    // unix s of recent quota reports (cascade fast-fail, FR-023)
+	quotaReportMu sync.Mutex    // guards quotaReports
+	quotaReports  []quotaReport // recent confirmed-quota reports, one row per backend
 }
 
-// noteQuotaReport records that a backend just reported a quota failure, for the
-// cascade fast-fail detector (FR-023).
-func (lb *LoadBalancer) noteQuotaReport(now time.Time) {
+// quotaReport is one backend's latest confirmed-quota failure inside the
+// cascade window. The cascade counts backends, not requests: one sick node
+// returning several errors must not freeze failover for the whole fleet.
+type quotaReport struct {
+	name string
+	at   int64
+}
+
+// noteQuotaReport records that a named backend just reported a confirmed quota
+// failure (FR-023). Repeat reports from the same backend refresh its timestamp
+// and do not count as additional backends.
+func (lb *LoadBalancer) noteQuotaReport(name string, now time.Time) {
 	lb.quotaReportMu.Lock()
 	defer lb.quotaReportMu.Unlock()
 	cutoff := now.Unix() - cascadeWindowSecs
-	kept := lb.quotaReportTimes[:0]
-	for _, t := range lb.quotaReportTimes {
-		if t >= cutoff {
-			kept = append(kept, t)
+	kept := lb.quotaReports[:0]
+	for _, r := range lb.quotaReports {
+		if r.at >= cutoff && r.name != name {
+			kept = append(kept, r)
 		}
 	}
-	lb.quotaReportTimes = append(kept, now.Unix())
+	lb.quotaReports = append(kept, quotaReport{name: name, at: now.Unix()})
 }
 
-// quotaCascadeActive reports whether at least quotaCascadeThreshold backends
-// reported quota within the last cascadeWindowSecs — the signal to fast-fail a
-// request instead of walking the remaining backends and adding load at the worst
-// moment (FR-023).
+// quotaCascadeActive reports whether at least quotaCascadeThreshold distinct
+// backends reported quota within the last cascadeWindowSecs (FR-023).
 func (lb *LoadBalancer) quotaCascadeActive(now time.Time) bool {
 	lb.quotaReportMu.Lock()
 	defer lb.quotaReportMu.Unlock()
 	cutoff := now.Unix() - cascadeWindowSecs
 	n := 0
-	for _, t := range lb.quotaReportTimes {
-		if t >= cutoff {
+	for _, r := range lb.quotaReports {
+		if r.at >= cutoff {
 			n++
 		}
 	}
@@ -1076,6 +1086,10 @@ func (lb *LoadBalancer) releaseExpired(now time.Time) {
 		if until > 0 && nowUnix > until {
 			b.setState(stateProbing, now)
 			b.ttlUntil.Store(0)
+			// quotaExhausted is a hard weight gate paired with this TTL. Clear it
+			// or the probing promotion never receives a trial and the node stays
+			// dark until the CST midnight reset.
+			b.quotaExhausted.Store(false)
 			log.Printf("[backend:%s] TTL expired: %s -> probing", b.Name, stateName(s))
 		}
 	}
@@ -1262,11 +1276,14 @@ func (lb *LoadBalancer) failsafe(now time.Time) {
 		target = total
 	}
 
-	// Gather candidates from non-routable states.
+	// Gather candidates from non-routable states, plus routable nodes a quota
+	// hard-gate has pinned to weight 0. Otherwise a fleet that is all
+	// quota-gated stays dark with an empty candidate list until CST midnight.
 	var cands []failsafeCandidate
 	for _, b := range lb.backends {
 		s := b.state.Load()
-		if s != stateIsolated && s != stateQuarantine {
+		gated := isRoutable(s) && b.quotaExhausted.Load() && b.effectiveWeight() == 0
+		if s != stateIsolated && s != stateQuarantine && !gated {
 			continue
 		}
 		code := int(b.lastHTTPCode.Load())
@@ -1325,6 +1342,7 @@ func (lb *LoadBalancer) failsafe(now time.Time) {
 		c.b.accrueDwell(c.b.state.Load(), now)
 		c.b.setState(stateProbing, now)
 		c.b.ttlUntil.Store(0)
+		c.b.quotaExhausted.Store(false)
 		c.b.probeShieldUntil.Store(nowUnix + failsafeShieldSecs)
 		c.b.failsafePromotions.Add(1)
 		promoted++
@@ -1412,14 +1430,16 @@ func (lb *LoadBalancer) SetHealthStatusDetailed(name string, healthy bool, laten
 	return false
 }
 
-// MarkQuotaExhausted circuit-breaks a backend that reported an upstream
-// "insufficient balance"/account-suspended error at request time. Kept for the
-// request-path failover; it isolates the backend until the daily reset.
+// MarkQuotaExhausted circuit-breaks a backend that reported a confirmed
+// upstream balance failure. The hard gate lasts for the quota-isolation TTL
+// (default jittered 6h, or until the backend's configured reset). It is cleared
+// when that TTL expires, when the node later succeeds, and when the failsafe
+// promotes it — not held until CST midnight regardless of TTL.
 func (lb *LoadBalancer) MarkQuotaExhausted(name string) bool {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 	now := lb.nowFn()
-	lb.noteQuotaReport(now) // feed the cascade fast-fail detector (FR-023)
+	lb.noteQuotaReport(name, now) // distinct-backend cascade detector (FR-023)
 	for _, b := range lb.backends {
 		if b.Name == name {
 			if !b.quotaExhausted.Swap(true) {

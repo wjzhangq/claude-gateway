@@ -121,11 +121,6 @@ func TestRewriteClaudeLoginQuotaBody(t *testing.T) {
 	if ok || status != http.StatusForbidden || !bytes.Equal(body, other) {
 		t.Fatalf("unrelated rewrite = (%d, %s, %v)", status, body, ok)
 	}
-
-	status, body, ok = rewriteClaudeLoginQuotaBody(claudeUA, http.StatusUnauthorized, []byte(`{"error":{"message":"请登录"}}`))
-	if !ok || status != statusOverloaded || !bytes.Equal(body, overloadedErrorBody) {
-		t.Fatalf("401 login rewrite = (%d, %s, %v)", status, body, ok)
-	}
 }
 
 func loginQuotaResponse(body []byte) *http.Response {
