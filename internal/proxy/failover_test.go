@@ -355,6 +355,35 @@ func TestForward_FailsOverTransportError(t *testing.T) {
 	}
 }
 
+// /v1/responses never went through forward(), so it had no failover at all.
+func TestHandleResponses_FailsOverUpstream401(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var badCalls, goodCalls int
+	bad := errorUpstream(http.StatusUnauthorized, `{"error":{"message":"invalid api key"}}`, &badCalls)
+	defer bad.Close()
+	good := errorUpstream(http.StatusOK,
+		`{"id":"msg_1","model":"claude-opus-4-8","stop_reason":"end_turn",
+		  "content":[{"type":"text","text":"hi"}],
+		  "usage":{"input_tokens":10,"output_tokens":5}}`, &goodCalls)
+	defer good.Close()
+
+	h := failoverHandler(
+		config.BackendAPI{Name: "bad", URL: bad.URL, APIKey: "k", Weight: 100, Enabled: true},
+		config.BackendAPI{Name: "good", URL: good.URL, APIKey: "k", Weight: 1, Enabled: true},
+	)
+
+	body := responsesReq(false, "")
+	w, c := newResponsesCtx(body)
+	h.HandleResponses(c, []byte(body))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("client status = %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	if badCalls != 1 || goodCalls != 1 {
+		t.Fatalf("calls: bad=%d good=%d, want 1 and 1", badCalls, goodCalls)
+	}
+}
+
 // The failover chain is bounded so a wholly broken pool cannot stack latency.
 func TestForward_StopsAtFailoverCap(t *testing.T) {
 	var total int
