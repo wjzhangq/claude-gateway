@@ -113,7 +113,7 @@ func (h *Handler) HandleResponses(c *gin.Context, body []byte) {
 		return
 	}
 
-	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
+	h.emitUsage(keyInfo, keyStr, res.Backend, reqModel, http.StatusOK,
 		res.Usage.InputTokens, res.Usage.OutputTokens,
 		res.Usage.CacheReadInputTokens, res.Usage.CacheCreationInputTokens, time.Since(start),
 		false, false, false, c.Request.Header.Get("User-Agent"), c.ClientIP(), body)

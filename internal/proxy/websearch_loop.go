@@ -31,6 +31,9 @@ type loopResult struct {
 	Usage      websearch.Usage
 	StopReason string
 	Model      string
+	// Backend is the node that actually served the final round, which is not
+	// necessarily the one the loop started on once failover has run.
+	Backend string
 }
 
 // loopError carries a loop failure in a protocol-neutral way so each caller can
@@ -100,7 +103,7 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 		return
 	}
 
-	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
+	h.emitUsage(keyInfo, keyStr, res.Backend, reqModel, http.StatusOK,
 		res.Usage.InputTokens, res.Usage.OutputTokens,
 		res.Usage.CacheReadInputTokens, res.Usage.CacheCreationInputTokens, time.Since(start),
 		isOpenClaw, isHermes, false, c.Request.Header.Get("User-Agent"), c.ClientIP(), body)
@@ -141,7 +144,7 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 	logger.Infof("websearch: start model=%s backend=%s max_uses=%d allowed_domains=%d blocked_domains=%d",
 		reqModel, backend.Name, maxUses, len(allowed), len(blocked))
 
-	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
+	fo := newFailoverState(backend, upstreamPath, start)
 	var merged []websearch.ContentBlock
 	var total websearch.Usage
 	stopReason := "end_turn"
@@ -154,30 +157,20 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 			return loopResult{}, &loopError{Message: "encode request failed"}
 		}
 
-		resp, err := h.doRequest(c, backend, upstreamPath, targetURL, roundBody)
-		if err != nil {
-			if IsClientCanceled(err) {
-				backend.RecordResult(ErrCanceled)
-				return loopResult{}, &loopError{Canceled: true}
-			}
-			backend.RecordResult(ClassifyError(0, err))
-			return loopResult{}, &loopError{Message: "upstream request failed"}
+		parsed, raw, rawStatus, contentType, lerr := h.roundWithFailover(c, fo, upstreamPath, reqModel, roundBody)
+		if lerr != nil {
+			return loopResult{}, lerr
 		}
-
-		parsed, raw, rawStatus, ok := readMessagesResponse(resp)
-		backend.RecordRequest(rawStatus, time.Since(start).Milliseconds())
-		if isValidHealthModel(reqModel) {
-			backend.RecordResultDetailed(ClassifyError(rawStatus, nil), 0, false)
-		}
-		if !ok || rawStatus >= 400 {
-			// Upstream error: surface it verbatim on the first round, else stop
-			// the loop with what we have.
+		backend = fo.backend
+		if parsed == nil {
+			// Every node rejected the round. Surface the last upstream error
+			// verbatim on the first round, else stop the loop with what we have.
 			if round == 0 {
 				return loopResult{}, &loopError{
 					Passthrough: true,
 					RawBody:     raw,
 					Status:      rawStatus,
-					ContentType: resp.Header.Get("Content-Type"),
+					ContentType: contentType,
 				}
 			}
 			logger.Warnf("websearch: upstream error status=%d mid-loop, stopping", rawStatus)
@@ -264,7 +257,75 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 		reqModel, backend.Name, webSearchRequests, stopReason,
 		time.Since(start).Milliseconds(), total.InputTokens, total.OutputTokens)
 
-	return loopResult{Merged: merged, Usage: total, StopReason: stopReason, Model: respModel}, nil
+	return loopResult{Merged: merged, Usage: total, StopReason: stopReason, Model: respModel, Backend: backend.Name}, nil
+}
+
+// roundWithFailover performs one upstream round for the loop, retrying on the
+// next backend when a node rejects the request with a retryable error. Rounds
+// are buffered end to end, so a failed round can be replayed elsewhere without
+// the client ever seeing it — this is the only failover the /v1/responses and
+// web-search paths get, since neither goes through forward().
+//
+// It returns a decoded response, or (nil, raw, status, contentType, nil) when
+// every candidate node returned an error the caller must surface, or a loopError
+// for a client cancellation or a transport failure with nowhere left to go.
+func (h *Handler) roundWithFailover(c *gin.Context, fo *failoverState, upstreamPath, reqModel string, roundBody []byte) (*websearch.MessagesResponse, []byte, int, string, *loopError) {
+	for {
+		attemptStart := time.Now()
+		resp, err := h.doRequest(c, fo.backend, upstreamPath, fo.targetURL, roundBody)
+		if err != nil && IsClientCanceled(err) {
+			fo.backend.RecordResult(ErrCanceled)
+			return nil, nil, 0, "", &loopError{Canceled: true}
+		}
+
+		var (
+			parsed      *websearch.MessagesResponse
+			raw         []byte
+			status      int
+			contentType string
+			decoded     bool
+		)
+		verdict := transportVerdict
+		if err == nil {
+			contentType = resp.Header.Get("Content-Type")
+			peek, v := classifyUpstreamResponse(resp)
+			restoreBody(resp, peek)
+			verdict = v
+			parsed, raw, status, decoded = readMessagesResponse(resp)
+			if status >= 400 {
+				parsed = nil // an error body is not a message, however well-formed
+			} else if !decoded {
+				// A 2xx the gateway cannot decode is as unusable as a 5xx.
+				verdict = upstreamVerdict{Retry: true, Reason: "undecodable_body", Class: ErrServer}
+			}
+		}
+		latencyMs := time.Since(attemptStart).Milliseconds()
+
+		if !verdict.Retry {
+			fo.backend.RecordRequest(status, latencyMs)
+			if isValidHealthModel(reqModel) {
+				fo.backend.RecordResultDetailed(ClassifyError(status, nil), 0, false)
+			} else {
+				fo.backend.RecordResultDetailed(ErrClient, 0, false)
+			}
+			return parsed, raw, status, contentType, nil
+		}
+
+		next := fo.next(h.lb, verdict, time.Now())
+		h.recordFailedAttempt(fo.backend, verdict, status, latencyMs, reqModel)
+		if next == nil {
+			if err != nil {
+				logger.Errorf("websearch: transport failure on %s with no backend left: %v", fo.backend.Name, err)
+				return nil, nil, 0, "", &loopError{Message: "upstream request failed"}
+			}
+			logger.Warnf("websearch: failover exhausted (backend=%s reason=%s attempts=%d): returning status=%d",
+				fo.backend.Name, verdict.Reason, fo.failovers+1, status)
+			return nil, raw, status, contentType, nil
+		}
+		logger.Warnf("websearch: backend %s failed (reason=%s status=%d): failing over to %s",
+			fo.backend.Name, verdict.Reason, status, next.Name)
+		fo.advance(next, upstreamPath)
+	}
 }
 
 // appendToolRound appends the assistant tool_use turn and the user tool_result
