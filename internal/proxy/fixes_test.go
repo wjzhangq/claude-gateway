@@ -129,7 +129,7 @@ func TestPickExcluding_SkipsExcludedBackend(t *testing.T) {
 	}
 }
 
-func TestPeekQuotaExhausted(t *testing.T) {
+func TestPeekBlockBody(t *testing.T) {
 	quota := `{"error":{"message":"Your account org-x is suspended due to insufficient balance","type":"exceeded_current_quota_error"}}`
 	other := `{"error":{"message":"model not found","type":"invalid_request_error"}}`
 
@@ -137,15 +137,15 @@ func TestPeekQuotaExhausted(t *testing.T) {
 		return &http.Response{Body: io.NopCloser(strings.NewReader(s))}
 	}
 
-	body, isQuota := peekQuotaExhausted(mk(quota))
-	if !isQuota {
-		t.Fatal("expected quota-exhaustion detection")
+	body, block := peekBlockBody(mk(quota))
+	if block != blockQuotaExhausted {
+		t.Fatalf("block = %v, want blockQuotaExhausted", block)
 	}
 	if string(body) != quota {
 		t.Fatal("peek must return the consumed bytes so the body can be restored")
 	}
 
-	if _, isQuota := peekQuotaExhausted(mk(other)); isQuota {
-		t.Fatal("non-quota error must not be detected as quota exhaustion")
+	if _, block := peekBlockBody(mk(other)); block != blockNone {
+		t.Fatalf("non-quota error classified as %v, want blockNone", block)
 	}
 }
