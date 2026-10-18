@@ -167,6 +167,44 @@ func TestRestoreBody_KeepsFullBody(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Attempt accounting
+// ---------------------------------------------------------------------------
+
+// Health accounting runs before MarkQuotaExhausted, so the long quota cooldown
+// must be the one that survives rather than the class's short base TTL.
+func TestRecordFailedAttempt_QuotaKeepsLongCooldown(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(2, 10))
+	h := NewHandler(lb, nil, nil, &config.Config{}, nil)
+	b := lb.backends[0]
+	now := lb.nowFn()
+
+	h.recordFailedAttempt(b, upstreamVerdict{
+		Retry: true, Reason: "quota_429", Class: ErrRateLimit, Quota: true,
+	}, http.StatusTooManyRequests, 5, "claude-sonnet-4-5-20250929")
+
+	got := b.ttlUntil.Load() - now.Unix()
+	if min := int64(float64(quotaIsolationTTL) * 0.8); got < min {
+		t.Fatalf("cooldown = %ds, want at least %ds (long quota isolation)", got, min)
+	}
+}
+
+// A node that asks for a long back-off should get it, not a 30s re-probe.
+func TestRecordFailedAttempt_HonorsRetryAfter(t *testing.T) {
+	lb, _ := newTestLB(multiCfg(2, 10))
+	h := NewHandler(lb, nil, nil, &config.Config{}, nil)
+	b := lb.backends[0]
+	want := lb.nowFn().Unix() + 600
+
+	h.recordFailedAttempt(b, upstreamVerdict{
+		Retry: true, Reason: "rate_limit_429", Class: ErrRateLimit, RetryAfter: want,
+	}, http.StatusTooManyRequests, 5, "claude-sonnet-4-5-20250929")
+
+	if got := b.ttlUntil.Load(); got != want {
+		t.Fatalf("ttlUntil = %d, want %d (Retry-After honored)", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Request-path failover
 // ---------------------------------------------------------------------------
 

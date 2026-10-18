@@ -903,10 +903,11 @@ func (b *rewoundBody) Close() error               { return b.c.Close() }
 
 // upstreamVerdict is the gateway's decision about one upstream attempt.
 type upstreamVerdict struct {
-	Retry  bool       // try the next backend instead of returning this to the client
-	Reason string     // compact label for logs
-	Class  ErrorClass // how the attempt counts against the node's health
-	Quota  bool       // the node reported an exhausted upstream account
+	Retry      bool       // try the next backend instead of returning this to the client
+	Reason     string     // compact label for logs
+	Class      ErrorClass // how the attempt counts against the node's health
+	Quota      bool       // the node reported an exhausted upstream account
+	RetryAfter int64      // absolute unix-second expiry parsed from Retry-After; 0 = none
 }
 
 // classifyUpstreamResponse decides whether an upstream response should be failed
@@ -949,10 +950,11 @@ func classifyUpstreamResponse(resp *http.Response) ([]byte, upstreamVerdict) {
 
 	case code == http.StatusTooManyRequests:
 		peek, block := peekBlockBody(resp)
+		retryAfter := ParseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 		if block == blockQuotaExhausted {
-			return peek, upstreamVerdict{Retry: true, Reason: "quota_429", Class: ErrRateLimit, Quota: true}
+			return peek, upstreamVerdict{Retry: true, Reason: "quota_429", Class: ErrRateLimit, Quota: true, RetryAfter: retryAfter}
 		}
-		return peek, upstreamVerdict{Retry: true, Reason: "rate_limit_429", Class: ErrRateLimit}
+		return peek, upstreamVerdict{Retry: true, Reason: "rate_limit_429", Class: ErrRateLimit, RetryAfter: retryAfter}
 
 	case code >= 500:
 		return nil, upstreamVerdict{Retry: true, Reason: "server_5xx", Class: ErrServer}
@@ -969,14 +971,19 @@ func (h *Handler) recordFailedAttempt(backend *Backend, verdict upstreamVerdict,
 	if status > 0 {
 		backend.RecordRequest(status, latencyMs)
 	}
+	// Model-scoped health (US6): an error on a model this backend was never
+	// expected to serve says nothing about it, so record a no-op class.
+	if isValidHealthModel(reqModel) {
+		backend.RecordResultDetailed(verdict.Class, verdict.RetryAfter, verdict.Quota)
+	} else {
+		backend.RecordResultDetailed(ErrClient, 0, false)
+	}
+	// Last: MarkQuotaExhausted sets the long quota cooldown, and the health
+	// accounting above would otherwise overwrite ttlUntil with its class's much
+	// shorter base TTL.
 	if verdict.Quota {
 		h.lb.MarkQuotaExhausted(backend.Name)
 	}
-	if !isValidHealthModel(reqModel) {
-		backend.RecordResultDetailed(ErrClient, 0, false)
-		return
-	}
-	backend.RecordResultDetailed(verdict.Class, 0, false)
 }
 
 // isLoginQuotaBody reports whether an upstream 401/403 body is a pre-charge or
