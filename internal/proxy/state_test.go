@@ -1071,11 +1071,18 @@ func TestResetAuthQuarantine_KeyRotation(t *testing.T) {
 func TestQuotaCascade_ActiveAfterThreshold(t *testing.T) {
 	lb, _ := newTestLB(multiCfg(10, 10))
 	now := lb.nowFn()
+	// The same backend reporting quota repeatedly is one backend, not a cascade.
 	for i := 0; i < quotaCascadeThreshold; i++ {
-		lb.noteQuotaReport(now)
+		lb.noteQuotaReport("same", now)
+	}
+	if lb.quotaCascadeActive(now) {
+		t.Fatal("repeat reports from one backend must not start a cascade")
+	}
+	for i := 0; i < quotaCascadeThreshold; i++ {
+		lb.noteQuotaReport(string(rune('a'+i)), now)
 	}
 	if !lb.quotaCascadeActive(now) {
-		t.Fatalf("cascade must be active after %d reports", quotaCascadeThreshold)
+		t.Fatalf("cascade must be active after %d distinct backends", quotaCascadeThreshold)
 	}
 	// After the window elapses, it clears.
 	later := now.Add((cascadeWindowSecs + 1) * time.Second)
