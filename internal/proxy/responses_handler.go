@@ -112,6 +112,7 @@ func (h *Handler) HandleResponses(c *gin.Context, body []byte) {
 		h.responsesLoopError(c, sse, lerr)
 		return
 	}
+	backend = res.Backend
 
 	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
 		res.Usage.InputTokens, res.Usage.OutputTokens,

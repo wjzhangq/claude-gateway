@@ -393,8 +393,6 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		return
 	}
 
-	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
-
 	// Track if we attempted downgrade
 	isDowngraded := false
 
@@ -411,94 +409,16 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			reqModel = fbModel
 		}
 	} else {
-		// Normal path with quota failover. If a backend returns an upstream
-		// "insufficient balance" / account-suspended 429, circuit-break it and
-		// retry the same request on a different backend. This converts the single
-		// largest error class (exceeded_current_quota_error) into transparent
-		// failover instead of a user-facing 429.
-		tried := map[string]bool{backend.Name: true}
-		failovers := 0
-		// Bound the whole failover chain by a wall-clock budget (FR-022) so a
-		// cascade cannot stack per-attempt latency into a ~45s tail.
-		chainDeadline := start.Add(failoverBudgetSecs * time.Second)
-		for {
-			resp, err = h.doRequest(c, backend, upstreamPath, targetURL, body)
+		// Normal path with failover: a backend that fails with a transport error,
+		// 401/403 (including the "Please run /login" pre-charge 403), 429 or 5xx
+		// is circuit-broken and the same request is retried on another backend.
+		resp, backend, err = h.doRequestWithFailover(c, backend, upstreamPath, body, reqModel, start)
 
-			// Client aborted the request (context canceled/deadline): this is not
-			// a backend fault. Don't count it against backend health and don't log
-			// it as an error — there is no client left to serve.
-			if err != nil && IsClientCanceled(err) {
-				backend.RecordResult(ErrCanceled)
-				logger.Infof("client canceled request: backend=%s model=%s", backend.Name, reqModel)
-				return
-			}
-
-			if err != nil {
-				break // genuine transport error: handled by the block below
-			}
-
-			// Detect an upstream quota-exhaustion 429 and fail over to another
-			// backend. The error body is tiny, so reading it fully is cheap.
-			if resp.StatusCode == http.StatusTooManyRequests {
-				peek, isQuota := peekQuotaExhausted(resp)
-				if isQuota {
-					// Release the abandoned backend's connection back to the pool
-					// before we drop the response and retry elsewhere.
-					resp.Body.Close()
-					h.lb.MarkQuotaExhausted(backend.Name)
-					failovers++
-					next := h.lb.PickExcluding(tried)
-					// Stop failing over when: no alternate, the per-request cap is
-					// hit, the chain deadline elapsed (FR-022), or a quota cascade is
-					// active — in a cascade, retrying just adds upstream load at the
-					// worst moment, so fast-fail (FR-023).
-					if next == nil || failovers > maxQuotaFailovers || time.Now().After(chainDeadline) || h.lb.QuotaCascadeActive() {
-						resp.Body = io.NopCloser(bytes.NewReader(peek))
-						logger.Warnf("quota failover stopped (backend=%s failovers=%d cascade=%v): returning 429", backend.Name, failovers, h.lb.QuotaCascadeActive())
-						break // keep this response; recorded once below
-					}
-					// Abandon this backend: record its failure now, then retry.
-					backend.RecordResult(ClassifyError(resp.StatusCode, nil))
-					backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
-					logger.Warnf("backend %s quota exhausted (insufficient balance): failing over to %s", backend.Name, next.Name)
-					backend = next
-					tried[backend.Name] = true
-					targetURL = strings.TrimRight(backend.URL, "/") + upstreamPath
-					continue
-				}
-				// Non-quota 429 (e.g. genuine rate limit): rebuild the body we
-				// consumed so the downstream handler can forward it to the client.
-				resp.Body = io.NopCloser(bytes.NewReader(peek))
-			}
-
-			// Detect a 403 that is a pre-charge quota failure (e.g. new-api
-			// "预扣费额度失败 / Please run /login") rather than a bad API key.
-			// These must not trigger ErrAuth (permanent disable) — instead
-			// circuit-break via quotaExhausted and failover like a 429 quota error.
-			if resp.StatusCode == http.StatusForbidden {
-				peek, isLoginQuota := peekLoginQuotaError(resp)
-				if isLoginQuota {
-					resp.Body.Close()
-					h.lb.MarkQuotaExhausted(backend.Name)
-					failovers++
-					next := h.lb.PickExcluding(tried)
-					if next == nil || failovers > maxQuotaFailovers || time.Now().After(chainDeadline) || h.lb.QuotaCascadeActive() {
-						resp.Body = io.NopCloser(bytes.NewReader(peek))
-						logger.Warnf("login-quota failover stopped (backend=%s failovers=%d cascade=%v): returning 403", backend.Name, failovers, h.lb.QuotaCascadeActive())
-						break
-					}
-					backend.RecordResult(ErrRateLimit) // counts against health but not auth-disable
-					backend.RecordRequest(resp.StatusCode, time.Since(start).Milliseconds())
-					logger.Warnf("backend %s pre-charge quota failure (403): failing over to %s", backend.Name, next.Name)
-					backend = next
-					tried[backend.Name] = true
-					targetURL = strings.TrimRight(backend.URL, "/") + upstreamPath
-					continue
-				}
-				// Genuine 403 (bad key): restore body and let ErrAuth handle it.
-				resp.Body = io.NopCloser(bytes.NewReader(peek))
-			}
-			break
+		// Client aborted the request (context canceled/deadline): this is not
+		// a backend fault and there is no client left to serve.
+		if err != nil && IsClientCanceled(err) {
+			logger.Infof("client canceled request: backend=%s model=%s", backend.Name, reqModel)
+			return
 		}
 
 		if err != nil {
@@ -573,12 +493,12 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// Expose backend name for the request logger
 	c.Set("proxy_backend", backend.Name)
 
-	// Claude Code renders a pre-charge 403 as "Please run /login" and does not
+	// Claude Code renders an upstream 401/403 as "Please run /login" and does not
 	// retry it. Rewrite only the client-facing response after failover and
 	// downgrade. Health (recorded above) and usage stay on the original status.
 	loggedStatus := resp.StatusCode
 	if maybeRewriteClaudeLoginQuota(c.GetHeader("User-Agent"), resp) {
-		logger.Warnf("rewrote login-quota 403 as 529 for claude client: backend=%s model=%s", backend.Name, reqModel)
+		logger.Warnf("rewrote upstream %d as 529 for claude client: backend=%s model=%s", loggedStatus, backend.Name, reqModel)
 	}
 
 	// Copy response headers
@@ -758,16 +678,6 @@ func (h *Handler) replaceModelInBody(body []byte, oldModel, newModel string) []b
 	return newBody
 }
 
-// maxQuotaFailovers caps how many alternate backends a single request will try
-// after hitting an upstream quota-exhaustion 429, bounding worst-case latency.
-const maxQuotaFailovers = 2
-
-// peekQuotaExhausted reads the (small) error body of a 429 response and reports
-// whether it is an upstream account-suspended / insufficient-balance error
-// (Anthropic/new-api type "exceeded_current_quota_error"). It returns the bytes
-// it consumed so the caller can restore resp.Body. Detection is intentionally
-// broad: it matches either the structured error type or the balance phrasing,
-// so it survives minor upstream wording changes.
 // parseRetryAfter parses an HTTP Retry-After header into an absolute unix-second
 // expiry, supporting both the delta-seconds form ("Retry-After: 120") and the
 // HTTP-date form ("Retry-After: Fri, 31 Dec 2027 23:59:59 GMT"). Returns 0 when
@@ -793,37 +703,35 @@ func ParseRetryAfter(header string, now time.Time) int64 {
 	return 0
 }
 
+// peekQuotaExhausted reads the (small) error body of a 429 response and reports
+// whether it is an upstream account-suspended / insufficient-balance error. It
+// returns the bytes it consumed so the caller can restore resp.Body.
 func peekQuotaExhausted(resp *http.Response) ([]byte, bool) {
 	const maxPeek = 8192
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPeek))
 	if err != nil {
 		return body, false
 	}
-	s := strings.ToLower(string(body))
-	if strings.Contains(s, "exceeded_current_quota_error") ||
-		strings.Contains(s, "insufficient balance") ||
-		strings.Contains(s, "suspended due to") {
-		return body, true
-	}
-	return body, false
+	return body, isQuotaExhaustedBody(body)
 }
 
-// peekLoginQuotaError reads the (small) body of a 403 response and reports
-// whether it is a pre-charge quota failure from new-api style backends
-// (e.g. "预扣费额度失败" / "Please run /login"). These look like auth errors
-// by status code but are actually transient balance issues, so they must not
-// trigger the permanent ErrAuth disable path.
-func peekLoginQuotaError(resp *http.Response) ([]byte, bool) {
-	const maxPeek = 8192
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPeek))
-	if err != nil {
-		return body, false
-	}
-	return body, isLoginQuotaBody(body)
+// isQuotaExhaustedBody reports whether a 429 body is an upstream
+// account-suspended / insufficient-balance error (Anthropic/new-api type
+// "exceeded_current_quota_error"). Detection is intentionally broad: it matches
+// either the structured error type or the balance phrasing, so it survives
+// minor upstream wording changes.
+func isQuotaExhaustedBody(body []byte) bool {
+	s := strings.ToLower(string(body))
+	return strings.Contains(s, "exceeded_current_quota_error") ||
+		strings.Contains(s, "insufficient balance") ||
+		strings.Contains(s, "suspended due to")
 }
 
 // isLoginQuotaBody reports whether an upstream 403 body is a pre-charge quota
-// failure rather than a genuine auth rejection.
+// failure from new-api style backends (e.g. "预扣费额度失败" / "Please run
+// /login") rather than a genuine auth rejection. These look like auth errors by
+// status code but are transient balance issues, so they are isolated like a
+// quota failure instead of taking the ErrForbidden path.
 func isLoginQuotaBody(body []byte) bool {
 	s := string(body)
 	return strings.Contains(s, "预扣费") ||
@@ -845,27 +753,25 @@ func isClaudeCodeUA(userAgent string) bool {
 	return strings.Contains(strings.ToLower(userAgent), "claude")
 }
 
-// maybeRewriteClaudeLoginQuota replaces a pre-charge 403 with 529 overloaded
-// when the client is Claude Code. Health and usage must already have been
-// recorded from the original status. A non-matching response is left intact,
-// including its body. Returns true when the response was rewritten.
+// isUpstreamAuthStatus reports whether an upstream status is a 401/403. The
+// gateway authenticates the end user itself and replaces the credential before
+// forwarding, so an upstream 401/403 is always about the backend's own key or
+// account — never something the user can fix by logging in again.
+func isUpstreamAuthStatus(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+// maybeRewriteClaudeLoginQuota replaces an upstream 401/403 with 529 overloaded
+// when the client is Claude Code, which otherwise shows "Please run /login" and
+// stops instead of retrying (by then the failing backend is isolated, so the
+// retry lands on another one). Health and usage must already have been recorded
+// from the original status. A non-matching response is left intact, including
+// its body. Returns true when the response was rewritten.
 func maybeRewriteClaudeLoginQuota(ua string, resp *http.Response) bool {
-	if resp == nil || resp.StatusCode != http.StatusForbidden || !isClaudeCodeUA(ua) {
+	if resp == nil || resp.Body == nil || !isUpstreamAuthStatus(resp.StatusCode) || !isClaudeCodeUA(ua) {
 		return false
 	}
-	// Leave the original body for the caller to Close (both call sites defer it).
-	// The bytes are copied onto a new reader so the client write sees either the
-	// original payload or the overloaded replacement.
-	orig := resp.Body
-	if orig == nil {
-		return false
-	}
-	body, err := io.ReadAll(orig)
-	if err != nil || !isLoginQuotaBody(body) {
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-		resp.ContentLength = int64(len(body))
-		return false
-	}
+	// The original body is left for the caller to Close (all call sites defer it).
 	resp.StatusCode = statusOverloaded
 	resp.Status = fmt.Sprintf("%d Overloaded", statusOverloaded)
 	resp.Body = io.NopCloser(bytes.NewReader(overloadedErrorBody))
@@ -883,7 +789,7 @@ func maybeRewriteClaudeLoginQuota(ua string, resp *http.Response) bool {
 // maybeRewriteClaudeLoginQuota, used when the upstream error body was read
 // before the client response is written.
 func rewriteClaudeLoginQuotaBody(ua string, status int, body []byte) (int, []byte, bool) {
-	if status != http.StatusForbidden || !isClaudeCodeUA(ua) || !isLoginQuotaBody(body) {
+	if !isUpstreamAuthStatus(status) || !isClaudeCodeUA(ua) {
 		return status, body, false
 	}
 	return statusOverloaded, overloadedErrorBody, true

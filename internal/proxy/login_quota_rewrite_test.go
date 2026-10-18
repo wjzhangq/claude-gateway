@@ -66,20 +66,27 @@ func TestMaybeRewriteClaudeLoginQuota(t *testing.T) {
 		t.Fatalf("non-claude body changed: %s", got)
 	}
 
+	// Any upstream 401/403 is a backend credential problem, not the user's.
 	other := []byte(`{"type":"error","error":{"type":"permission_error","message":"forbidden"}}`)
-	genuine := loginQuotaResponse(other)
-	if maybeRewriteClaudeLoginQuota(claudeUA, genuine) {
-		t.Fatal("unrelated 403 should not be rewritten")
+	for _, code := range []int{http.StatusForbidden, http.StatusUnauthorized} {
+		r := loginQuotaResponse(other)
+		r.StatusCode = code
+		if !maybeRewriteClaudeLoginQuota(claudeUA, r) || r.StatusCode != statusOverloaded {
+			t.Fatalf("upstream %d should be rewritten to 529, got %d", code, r.StatusCode)
+		}
 	}
-	if genuine.StatusCode != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", genuine.StatusCode)
+
+	badReq := loginQuotaResponse(loginBody)
+	badReq.StatusCode = http.StatusBadRequest
+	if maybeRewriteClaudeLoginQuota(claudeUA, badReq) {
+		t.Fatal("400 should not be rewritten")
 	}
-	got, err = io.ReadAll(genuine.Body)
+	got, err = io.ReadAll(badReq.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(got, other) {
-		t.Fatalf("unrelated 403 body changed: %s", got)
+	if !bytes.Equal(got, loginBody) {
+		t.Fatalf("400 body changed: %s", got)
 	}
 }
 
@@ -117,9 +124,14 @@ func TestRewriteClaudeLoginQuotaBody(t *testing.T) {
 	}
 
 	other := []byte(`{"error":"invalid api key"}`)
-	status, body, ok = rewriteClaudeLoginQuotaBody(claudeUA, http.StatusForbidden, other)
-	if ok || status != http.StatusForbidden || !bytes.Equal(body, other) {
-		t.Fatalf("unrelated rewrite = (%d, %s, %v)", status, body, ok)
+	status, _, ok = rewriteClaudeLoginQuotaBody(claudeUA, http.StatusUnauthorized, other)
+	if !ok || status != statusOverloaded {
+		t.Fatalf("upstream 401 rewrite = (%d, %v), want 529", status, ok)
+	}
+
+	status, body, ok = rewriteClaudeLoginQuotaBody(claudeUA, http.StatusTooManyRequests, other)
+	if ok || status != http.StatusTooManyRequests || !bytes.Equal(body, other) {
+		t.Fatalf("429 rewrite = (%d, %s, %v)", status, body, ok)
 	}
 }
 

@@ -31,6 +31,7 @@ type loopResult struct {
 	Usage      websearch.Usage
 	StopReason string
 	Model      string
+	Backend    *Backend // backend that served the loop (may differ from the one passed in after failover)
 }
 
 // loopError carries a loop failure in a protocol-neutral way so each caller can
@@ -99,6 +100,7 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 		h.webSearchError(c, sse, lerr.Message, nil)
 		return
 	}
+	backend = res.Backend
 
 	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
 		res.Usage.InputTokens, res.Usage.OutputTokens,
@@ -141,7 +143,6 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 	logger.Infof("websearch: start model=%s backend=%s max_uses=%d allowed_domains=%d blocked_domains=%d",
 		reqModel, backend.Name, maxUses, len(allowed), len(blocked))
 
-	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
 	var merged []websearch.ContentBlock
 	var total websearch.Usage
 	stopReason := "end_turn"
@@ -154,7 +155,14 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 			return loopResult{}, &loopError{Message: "encode request failed"}
 		}
 
-		resp, err := h.doRequest(c, backend, upstreamPath, targetURL, roundBody)
+		// Only the first round may switch backends: later rounds carry tool
+		// results already produced against the chosen backend's model output.
+		var resp *http.Response
+		if round == 0 {
+			resp, backend, err = h.doRequestWithFailover(c, backend, upstreamPath, roundBody, reqModel, start)
+		} else {
+			resp, err = h.doRequest(c, backend, upstreamPath, strings.TrimRight(backend.URL, "/")+upstreamPath, roundBody)
+		}
 		if err != nil {
 			if IsClientCanceled(err) {
 				backend.RecordResult(ErrCanceled)
@@ -264,7 +272,7 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 		reqModel, backend.Name, webSearchRequests, stopReason,
 		time.Since(start).Milliseconds(), total.InputTokens, total.OutputTokens)
 
-	return loopResult{Merged: merged, Usage: total, StopReason: stopReason, Model: respModel}, nil
+	return loopResult{Merged: merged, Usage: total, StopReason: stopReason, Model: respModel, Backend: backend}, nil
 }
 
 // appendToolRound appends the assistant tool_use turn and the user tool_result
@@ -321,11 +329,9 @@ func readMessagesResponse(resp *http.Response) (*websearch.MessagesResponse, []b
 // web-search loop can't run (e.g. body decode failure). It mirrors the tail of
 // forward(): single request, then stream or buffer.
 func (h *Handler) forwardPlain(c *gin.Context, backend *Backend, upstreamPath string, body []byte, reqModel string, keyInfo interface{}, keyStr string, start time.Time, isOpenClaw, isHermes bool) {
-	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
-	resp, err := h.doRequest(c, backend, upstreamPath, targetURL, body)
+	resp, backend, err := h.doRequestWithFailover(c, backend, upstreamPath, body, reqModel, start)
 	if err != nil {
 		if IsClientCanceled(err) {
-			backend.RecordResult(ErrCanceled)
 			return
 		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
@@ -337,7 +343,7 @@ func (h *Handler) forwardPlain(c *gin.Context, backend *Backend, upstreamPath st
 	// original status; usage below keeps that status.
 	loggedStatus := resp.StatusCode
 	if maybeRewriteClaudeLoginQuota(c.GetHeader("User-Agent"), resp) {
-		logger.Warnf("rewrote login-quota 403 as 529 for claude client: backend=%s model=%s", backend.Name, reqModel)
+		logger.Warnf("rewrote upstream %d as 529 for claude client: backend=%s model=%s", loggedStatus, backend.Name, reqModel)
 	}
 	for k, vv := range resp.Header {
 		for _, v := range vv {
@@ -378,7 +384,7 @@ func (h *Handler) webSearchPassRawError(c *gin.Context, sse *sseWriter, lerr *lo
 	}
 	status, body, contentType := lerr.Status, lerr.RawBody, lerr.ContentType
 	if newStatus, newBody, ok := rewriteClaudeLoginQuotaBody(c.GetHeader("User-Agent"), status, body); ok {
-		logger.Warnf("rewrote login-quota 403 as 529 for claude client: websearch passthrough")
+		logger.Warnf("rewrote upstream %d as 529 for claude client: websearch passthrough", lerr.Status)
 		status, body = newStatus, newBody
 		contentType = "application/json"
 		c.Header("Content-Length", strconv.Itoa(len(body)))
