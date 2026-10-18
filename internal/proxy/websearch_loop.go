@@ -27,10 +27,11 @@ const maxWebSearchRounds = 12
 // upstream model. Callers format this into their own wire protocol (Anthropic
 // Messages or OpenAI Responses).
 type loopResult struct {
-	Merged     []websearch.ContentBlock
-	Usage      websearch.Usage
-	StopReason string
-	Model      string
+	Merged      []websearch.ContentBlock
+	Usage       websearch.Usage
+	StopReason  string
+	Model       string
+	BackendName string // backend that actually served the final round; empty if unknown
 }
 
 // loopError carries a loop failure in a protocol-neutral way so each caller can
@@ -100,7 +101,11 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 		return
 	}
 
-	h.emitUsage(keyInfo, keyStr, backend.Name, reqModel, http.StatusOK,
+	servedBackend := backend.Name
+	if res.BackendName != "" {
+		servedBackend = res.BackendName
+	}
+	h.emitUsage(keyInfo, keyStr, servedBackend, reqModel, http.StatusOK,
 		res.Usage.InputTokens, res.Usage.OutputTokens,
 		res.Usage.CacheReadInputTokens, res.Usage.CacheCreationInputTokens, time.Since(start),
 		isOpenClaw, isHermes, false, c.Request.Header.Get("User-Agent"), c.ClientIP(), body)
@@ -154,10 +159,20 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 			return loopResult{}, &loopError{Message: "encode request failed"}
 		}
 
-		resp, err := h.doRequest(c, backend, upstreamPath, targetURL, roundBody)
+		var resp *http.Response
+		if round == 0 {
+			// First round has no tool side effects yet, so a login prompt or
+			// quota error can move to the next backend before the client sees it.
+			backend, resp, err = h.doRequestWithFailover(c, backend, upstreamPath, roundBody, start)
+			targetURL = strings.TrimRight(backend.URL, "/") + upstreamPath
+		} else {
+			resp, err = h.doRequest(c, backend, upstreamPath, targetURL, roundBody)
+		}
 		if err != nil {
 			if IsClientCanceled(err) {
-				backend.RecordResult(ErrCanceled)
+				if round != 0 {
+					backend.RecordResult(ErrCanceled)
+				}
 				return loopResult{}, &loopError{Canceled: true}
 			}
 			backend.RecordResult(ClassifyError(0, err))
@@ -264,7 +279,7 @@ func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPat
 		reqModel, backend.Name, webSearchRequests, stopReason,
 		time.Since(start).Milliseconds(), total.InputTokens, total.OutputTokens)
 
-	return loopResult{Merged: merged, Usage: total, StopReason: stopReason, Model: respModel}, nil
+	return loopResult{Merged: merged, Usage: total, StopReason: stopReason, Model: respModel, BackendName: backend.Name}, nil
 }
 
 // appendToolRound appends the assistant tool_use turn and the user tool_result
@@ -321,11 +336,10 @@ func readMessagesResponse(resp *http.Response) (*websearch.MessagesResponse, []b
 // web-search loop can't run (e.g. body decode failure). It mirrors the tail of
 // forward(): single request, then stream or buffer.
 func (h *Handler) forwardPlain(c *gin.Context, backend *Backend, upstreamPath string, body []byte, reqModel string, keyInfo interface{}, keyStr string, start time.Time, isOpenClaw, isHermes bool) {
-	targetURL := strings.TrimRight(backend.URL, "/") + upstreamPath
-	resp, err := h.doRequest(c, backend, upstreamPath, targetURL, body)
+	backend, resp, err := h.doRequestWithFailover(c, backend, upstreamPath, body, start)
 	if err != nil {
+		// Cancellation is already recorded inside doRequestWithFailover.
 		if IsClientCanceled(err) {
-			backend.RecordResult(ErrCanceled)
 			return
 		}
 		c.JSON(http.StatusBadGateway, gin.H{"error": "upstream request failed"})
