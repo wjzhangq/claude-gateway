@@ -185,7 +185,7 @@ func main() {
 		}
 	}()
 
-	lb := proxy.NewLoadBalancer(cfg.Backends)
+	lb := proxy.NewLoadBalancerWithConfig(cfg.Backends, cfg)
 	proxyH := proxy.NewHandler(lb, collector, keyStore, cfg, cfg.ModelReplacements)
 	if cfg.ValidateBackends {
 		lb.ValidateBackends()

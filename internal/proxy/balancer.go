@@ -676,6 +676,16 @@ func (lb *LoadBalancer) quotaCascadeActive(now time.Time) bool {
 
 // NewLoadBalancer builds backends from config and starts the reconcile + quota tickers.
 func NewLoadBalancer(cfgs []config.BackendAPI) *LoadBalancer {
+	return NewLoadBalancerWithConfig(cfgs, nil)
+}
+
+// NewLoadBalancerWithConfig builds backends from config with optional Config for
+// quota-proportional weight initialization. When cfg is non-nil, each backend's
+// initial weight is set to its daily_usd quota (via LookupBackendDailyLimit),
+// ensuring traffic is distributed proportionally to quota so all backends exhaust
+// at roughly the same rate. When cfg is nil, falls back to the weight from the
+// BackendAPI config.
+func NewLoadBalancerWithConfig(cfgs []config.BackendAPI, cfg *config.Config) *LoadBalancer {
 	lb := &LoadBalancer{
 		nowFn: time.Now,
 		rng:   rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -684,7 +694,7 @@ func NewLoadBalancer(cfgs []config.BackendAPI) *LoadBalancer {
 		if !c.Enabled {
 			continue
 		}
-		lb.backends = append(lb.backends, lb.newBackend(c))
+		lb.backends = append(lb.backends, lb.newBackendWithConfig(c, cfg))
 	}
 	lb.updateCapacities()
 	go lb.quotaResetLoop()
@@ -722,17 +732,42 @@ func (lb *LoadBalancer) revalidateLoop() {
 
 // newBackend constructs a Backend with its dedicated HTTP client and owner back-ref.
 func (lb *LoadBalancer) newBackend(c config.BackendAPI) *Backend {
+	return lb.newBackendWithConfig(c, nil)
+}
+
+// newBackendWithConfig constructs a Backend with optional Config-based quota-proportional
+// weight initialization. When cfg is non-nil and a daily_usd quota is configured for this
+// backend (via LookupBackendDailyLimit), the backend's weight is set to that quota value
+// (rounded to int), ensuring traffic distribution matches quota proportions. Falls back to
+// c.Weight when cfg is nil or no quota is configured (quota lookup returns 0 = unlimited).
+func (lb *LoadBalancer) newBackendWithConfig(c config.BackendAPI, cfg *config.Config) *Backend {
 	transport := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  true, // prevent gzip on SSE streams (e.g. MiniMax returns compressed binary)
 	}
+
+	// Determine initial weight: quota-proportional if available, else config weight
+	weight := c.Weight
+	if cfg != nil {
+		if dailyUSD := cfg.LookupBackendDailyLimit(c.Name); dailyUSD > 0 {
+			weight = int(dailyUSD)
+			log.Printf("[backend:%s] quota-proportional weight: %d (daily_usd=%.2f)", c.Name, weight, dailyUSD)
+		} else if c.Weight > 0 {
+			log.Printf("[backend:%s] using config weight: %d (no daily_usd quota)", c.Name, c.Weight)
+		} else {
+			// No quota and no config weight: default to 100
+			weight = 100
+			log.Printf("[backend:%s] using default weight: %d", c.Name, weight)
+		}
+	}
+
 	return &Backend{
 		Name:       c.Name,
 		URL:        c.URL,
 		APIKey:     c.APIKey,
-		Weight:     c.Weight,
+		Weight:     weight,
 		quotaReset: c.QuotaReset,
 		client: &http.Client{
 			Transport: transport,

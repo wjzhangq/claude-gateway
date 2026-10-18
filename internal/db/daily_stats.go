@@ -18,6 +18,9 @@ func (d *DB) AggregateDaily() error {
 }
 
 func (d *DB) aggregateForDate(date string) error {
+	// Use range query to leverage created_at index instead of SUBSTR which causes full table scan
+	startTime := date + " 00:00:00"
+	endTime := date + " 23:59:59.999"
 	_, err := d.Exec(`
 		INSERT INTO daily_stats (date, user_id, model, requests, input_tokens, output_tokens, total_tokens, cost_usd)
 		SELECT
@@ -30,7 +33,7 @@ func (d *DB) aggregateForDate(date string) error {
 			SUM(total_tokens) as total_tokens,
 			SUM(cost_usd) as cost_usd
 		FROM usage_logs
-		WHERE SUBSTR(created_at, 1, 10) = ?
+		WHERE created_at >= ? AND created_at <= ?
 		GROUP BY user_id, model
 		ON CONFLICT(date, user_id, model) DO UPDATE SET
 			requests      = excluded.requests,
@@ -38,7 +41,7 @@ func (d *DB) aggregateForDate(date string) error {
 			output_tokens = excluded.output_tokens,
 			total_tokens  = excluded.total_tokens,
 			cost_usd      = excluded.cost_usd
-	`, date, date)
+	`, date, startTime, endTime)
 	if err != nil {
 		return fmt.Errorf("aggregate daily stats for %s: %w", date, err)
 	}
@@ -92,9 +95,11 @@ func (d *DB) GetDailyStats(userID int64, startDate, endDate, modelFilter string)
 // Reads directly from usage_logs (not daily_stats) to avoid the aggregation lag
 // that would cause backend_daily_used to drift from the real-time today cost.
 func (d *DB) GetUserDailyCostByDate(date string) (map[int64]float64, error) {
+	startTime := date + " 00:00:00"
+	endTime := date + " 23:59:59.999"
 	rows, err := d.Query(
-		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM usage_logs WHERE SUBSTR(created_at, 1, 10) = ? GROUP BY user_id`,
-		date,
+		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM usage_logs WHERE created_at >= ? AND created_at <= ? GROUP BY user_id`,
+		startTime, endTime,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get user daily cost for %s: %w", date, err)
@@ -117,9 +122,14 @@ func (d *DB) GetUserDailyCostByDate(date string) (map[int64]float64, error) {
 // month must be in "YYYY-MM" format. Used at startup to seed the in-memory monthly cost tracking.
 // Reads directly from aws_usage_logs to capture costs not yet aggregated into aws_daily_stats.
 func (d *DB) GetUserAWSMonthlyCostByMonth(month string) (map[int64]float64, error) {
+	startTime := month + "-01 00:00:00"
+	// Parse month to calculate the first day of next month
+	t, _ := time.Parse("2006-01", month)
+	nextMonth := t.AddDate(0, 1, 0).Format("2006-01")
+	endTime := nextMonth + "-01 00:00:00"
 	rows, err := d.Query(
-		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM aws_usage_logs WHERE SUBSTR(created_at, 1, 7) = ? GROUP BY user_id`,
-		month,
+		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM aws_usage_logs WHERE created_at >= ? AND created_at < ? GROUP BY user_id`,
+		startTime, endTime,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get user aws monthly cost for %s: %w", month, err)
@@ -142,9 +152,11 @@ func (d *DB) GetUserAWSMonthlyCostByMonth(month string) (map[int64]float64, erro
 // Used at startup to seed the in-memory AWS daily cost tracking in KeyStore.
 // Reads directly from aws_usage_logs (not aws_daily_stats) to avoid the aggregation lag.
 func (d *DB) GetUserAWSDailyCostByDate(date string) (map[int64]float64, error) {
+	startTime := date + " 00:00:00"
+	endTime := date + " 23:59:59.999"
 	rows, err := d.Query(
-		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM aws_usage_logs WHERE SUBSTR(created_at, 1, 10) = ? GROUP BY user_id`,
-		date,
+		`SELECT user_id, COALESCE(SUM(cost_usd), 0) FROM aws_usage_logs WHERE created_at >= ? AND created_at <= ? GROUP BY user_id`,
+		startTime, endTime,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get user aws daily cost for %s: %w", date, err)

@@ -153,6 +153,9 @@ func (d *DB) AggregateAWSDaily() error {
 }
 
 func (d *DB) aggregateAWSForDate(date string) error {
+	// Use range query to leverage created_at index instead of SUBSTR which causes full table scan
+	startTime := date + " 00:00:00"
+	endTime := date + " 23:59:59.999"
 	_, err := d.Exec(`
 		INSERT INTO aws_daily_stats
 		    (date, user_id, model, requests, input_tokens, output_tokens, total_tokens,
@@ -168,7 +171,7 @@ func (d *DB) aggregateAWSForDate(date string) error {
 		    SUM(cache_write_tokens) as cache_write_tokens,
 		    SUM(cost_usd) as cost_usd
 		FROM aws_usage_logs
-		WHERE SUBSTR(created_at, 1, 10) = ?
+		WHERE created_at >= ? AND created_at <= ?
 		GROUP BY user_id, model
 		ON CONFLICT(date, user_id, model) DO UPDATE SET
 		    requests          = excluded.requests,
@@ -178,7 +181,7 @@ func (d *DB) aggregateAWSForDate(date string) error {
 		    cache_read_tokens = excluded.cache_read_tokens,
 		    cache_write_tokens= excluded.cache_write_tokens,
 		    cost_usd          = excluded.cost_usd
-	`, date, date)
+	`, date, startTime, endTime)
 	if err != nil {
 		return fmt.Errorf("aggregate aws daily stats for %s: %w", date, err)
 	}
