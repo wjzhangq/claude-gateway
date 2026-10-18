@@ -440,6 +440,10 @@ func (lb *LoadBalancer) recordResult(b *Backend, class ErrorClass, retryAfterUni
 	case ErrNone:
 		b.consecErr.Store(0)
 		b.authQuarantineCount.Store(0) // a success clears auth-backoff escalation (FR-020)
+		// The node just served a request, so whatever balance/pre-charge problem
+		// set the quota gate is over. Leaving it set would keep effectiveWeight at
+		// 0 until the next CST midnight despite the proof it works.
+		b.quotaExhausted.Store(false)
 		b.lastSuccessAt.Store(now.Unix())
 		// Promote degraded -> healthy after enough consecutive successes.
 		if b.state.Load() == stateDegraded {
@@ -1065,6 +1069,12 @@ func (lb *LoadBalancer) Reconcile(now time.Time) {
 
 // releaseExpired moves Isolated/Quarantine backends whose TTL has elapsed into
 // half-open Probing (weight 1). Jitter was already applied when the TTL was set.
+//
+// Promotion also clears quotaExhausted. That flag is a hard gate in
+// effectiveWeight, and the cooldown it is paired with is exactly this TTL
+// (MarkQuotaExhausted sets ttlUntil = now + quotaIsolationSecs). Leaving it set
+// would make the Probing promotion a no-op — the node would stay at weight 0,
+// never receive the trial request, and only return at the next CST midnight.
 func (lb *LoadBalancer) releaseExpired(now time.Time) {
 	nowUnix := now.Unix()
 	for _, b := range lb.backends {
@@ -1076,6 +1086,7 @@ func (lb *LoadBalancer) releaseExpired(now time.Time) {
 		if until > 0 && nowUnix > until {
 			b.setState(stateProbing, now)
 			b.ttlUntil.Store(0)
+			b.quotaExhausted.Store(false)
 			log.Printf("[backend:%s] TTL expired: %s -> probing", b.Name, stateName(s))
 		}
 	}
@@ -1262,11 +1273,15 @@ func (lb *LoadBalancer) failsafe(now time.Time) {
 		target = total
 	}
 
-	// Gather candidates from non-routable states.
+	// Gather candidates from non-routable states, plus nominally routable nodes
+	// that a hard gate has pinned to weight 0 (quotaExhausted). Without the
+	// latter, a fleet whose nodes all report quota goes completely dark with an
+	// empty candidate list and no way back before the next CST midnight.
 	var cands []failsafeCandidate
 	for _, b := range lb.backends {
 		s := b.state.Load()
-		if s != stateIsolated && s != stateQuarantine {
+		gated := isRoutable(s) && b.effectiveWeight() == 0 && b.quotaExhausted.Load()
+		if s != stateIsolated && s != stateQuarantine && !gated {
 			continue
 		}
 		code := int(b.lastHTTPCode.Load())
@@ -1325,6 +1340,10 @@ func (lb *LoadBalancer) failsafe(now time.Time) {
 		c.b.accrueDwell(c.b.state.Load(), now)
 		c.b.setState(stateProbing, now)
 		c.b.ttlUntil.Store(0)
+		// Drop the quota hard gate as well: a promotion that leaves
+		// effectiveWeight at 0 does not raise routableCount, so the pass would
+		// re-run every cycle while the fleet stays dark.
+		c.b.quotaExhausted.Store(false)
 		c.b.probeShieldUntil.Store(nowUnix + failsafeShieldSecs)
 		c.b.failsafePromotions.Add(1)
 		promoted++
