@@ -35,6 +35,7 @@ type Config struct {
 	Server                  ServerConfig                 `yaml:"server"`
 	Database                DatabaseConfig               `yaml:"database"`
 	Log                     LogConfig                    `yaml:"log"`
+	OpenRouterKey           string                       `yaml:"openrouter_key"` // modelprobe control channel; unused by the gateway server
 	Auth                    AuthConfig                   `yaml:"auth"`
 	Groups                  []Group                      `yaml:"groups"`
 	Backends                []BackendAPI                 `yaml:"backends"`

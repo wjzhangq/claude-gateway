@@ -8,7 +8,7 @@
 //
 // Sends the 30 Go bug-finding questions from modelprobe-question-bank.md
 // directly to each specified backend (bypassing the gateway load balancer)
-// and to AWS Bedrock as a control channel. Scores responses per the bank's
+// and to OpenRouter as a control channel. Scores responses per the bank's
 // rubric (§ 3.1–3.7) and prints a structured comparison table.
 package main
 
@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/wjzhangq/claude-gateway/config"
-	"github.com/wjzhangq/claude-gateway/internal/awsproxy"
 )
 
 // ──────────────────────────────────────────────────────────────────
@@ -2002,16 +2001,6 @@ type msgRequest struct {
 	Temperature *float64     `json:"temperature,omitempty"`
 }
 
-// bedrockRequest adds anthropic_version required by Bedrock.
-type bedrockRequest struct {
-	AnthropicVersion string       `json:"anthropic_version"`
-	Model            string       `json:"model,omitempty"`
-	MaxTokens        int          `json:"max_tokens"`
-	System           string       `json:"system,omitempty"`
-	Messages         []msgMessage `json:"messages"`
-	Temperature      *float64     `json:"temperature,omitempty"`
-}
-
 type contentBlock struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
@@ -2079,7 +2068,7 @@ func (r *questionResult) compute(q QuestionMeta, ans modelAnswer) {
 // ──────────────────────────────────────────────────────────────────
 
 type runResult struct {
-	Channel string // "lianxiang-01", "aws", etc.
+	Channel string // "lianxiang-01", "openrouter", etc.
 	Model   string
 	Results []questionResult
 
@@ -2375,62 +2364,73 @@ func (b *backendCaller) doRequest(ctx context.Context, req msgRequest) (string, 
 }
 
 // ──────────────────────────────────────────────────────────────────
-// Caller: AWS Bedrock
+// Caller: OpenRouter (Anthropic Messages API)
 // ──────────────────────────────────────────────────────────────────
 
-type awsCaller struct {
-	client *awsproxy.BedrockClient
-	cfg    *config.AWSConfig
-	noTemp bool
-	mu     sync.Mutex
+const openRouterMessagesURL = "https://openrouter.ai/api/v1/messages"
+
+// openRouterModelID maps a gateway model name to an OpenRouter model id.
+// An id that already contains "/" is used as-is.
+func openRouterModelID(name string) (string, error) {
+	if strings.Contains(name, "/") {
+		return name, nil
+	}
+	switch name {
+	case "claude-sonnet-5", "claude-opus-5":
+		return "anthropic/" + name, nil
+	default:
+		return "", fmt.Errorf("no OpenRouter model for %q; pass an id like anthropic/claude-sonnet-5", name)
+	}
 }
 
-func (a *awsCaller) call(ctx context.Context, model, system, userMsg string) (string, error) {
-	arn, err := awsproxy.ResolveModel(model, a.cfg.ModelReplace, a.cfg.ModelDefault)
-	if err != nil {
-		return "", fmt.Errorf("resolve model %q for aws: %w", model, err)
-	}
+type openRouterCaller struct {
+	apiKey string
+	client *http.Client
+}
 
-	zero := 0.0
-	var temp *float64
-	a.mu.Lock()
-	omitTemp := a.noTemp
-	a.mu.Unlock()
-	if !omitTemp {
-		temp = &zero
-	}
-
-	body, err := buildBedrockBody(system, userMsg, temp)
+func (o *openRouterCaller) call(ctx context.Context, model, system, userMsg string) (string, error) {
+	orModel, err := openRouterModelID(model)
 	if err != nil {
 		return "", err
 	}
-
-	respBytes, err := a.client.InvokeModel(ctx, arn, body)
+	// Claude 5 on OpenRouter does not accept temperature, and reasoning tokens
+	// count against max_tokens. Leave room for the JSON answer.
+	req := msgRequest{
+		Model:     orModel,
+		MaxTokens: 2000,
+		System:    system,
+		Messages:  []msgMessage{{Role: "user", Content: userMsg}},
+	}
+	body, err := json.Marshal(req)
 	if err != nil {
-		// Check if error is temperature-related
-		if temp != nil && strings.Contains(strings.ToLower(err.Error()), "temperature") {
-			a.mu.Lock()
-			a.noTemp = true
-			a.mu.Unlock()
-			body, _ = buildBedrockBody(system, userMsg, nil)
-			respBytes, err = a.client.InvokeModel(ctx, arn, body)
-			if err != nil {
-				return "", err
-			}
-		} else {
-			return "", err
-		}
+		return "", err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, openRouterMessagesURL, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+o.apiKey)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	// Bedrock returns Anthropic Messages format
 	var msgResp msgResponse
-	if err := json.Unmarshal(respBytes, &msgResp); err != nil {
-		return "", fmt.Errorf("parse bedrock response: %w", err)
+	if err := json.Unmarshal(respBody, &msgResp); err != nil {
+		return "", fmt.Errorf("parse openrouter response: %w", err)
 	}
-	if len(msgResp.Content) == 0 {
-		return "", fmt.Errorf("empty content in bedrock response: %s", string(respBytes))
-	}
-	// Concatenate all text blocks (skip non-text blocks like thinking/redacted_thinking).
+	// Concatenate text blocks. Skip thinking / reasoning blocks.
 	var sb strings.Builder
 	for _, blk := range msgResp.Content {
 		if blk.Type == "" || blk.Type == "text" {
@@ -2439,20 +2439,9 @@ func (a *awsCaller) call(ctx context.Context, model, system, userMsg string) (st
 	}
 	text := sb.String()
 	if text == "" {
-		return "", fmt.Errorf("no text content in bedrock response (stop_reason=%s): %s", msgResp.StopReason, string(respBytes))
+		return "", fmt.Errorf("no text content in openrouter response (stop_reason=%s): %s", msgResp.StopReason, string(respBody))
 	}
 	return text, nil
-}
-
-func buildBedrockBody(system, userMsg string, temp *float64) ([]byte, error) {
-	req := bedrockRequest{
-		AnthropicVersion: "bedrock-2023-05-31",
-		MaxTokens:        2000, // thinking models (sonnet-5/opus-5) consume thinking tokens; leave room for text
-		System:           system,
-		Messages:         []msgMessage{{Role: "user", Content: userMsg}},
-		Temperature:      temp,
-	}
-	return json.Marshal(req)
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -2568,7 +2557,7 @@ func judgment(r float64) string {
 
 func printResults(models []string, backendNames []string, controlRuns map[string]*runResult, backendRuns map[string]map[string]*runResult) {
 	// Column width: wide enough for the longest name + 2 padding
-	w := len("aws (control)") + 2
+	w := len("openrouter (control)") + 2
 	for _, bn := range backendNames {
 		if len(bn)+2 > w {
 			w = len(bn) + 2
@@ -2593,7 +2582,7 @@ func printResults(models []string, backendNames []string, controlRuns map[string
 		for _, bn := range backendNames {
 			headers = append(headers, bn)
 		}
-		headers = append(headers, "aws (control)")
+		headers = append(headers, "openrouter (control)")
 		printRow(headers, w)
 		fmt.Printf("%s\n", thin)
 
@@ -2637,7 +2626,7 @@ func printResults(models []string, backendNames []string, controlRuns map[string
 		printRow(pVals, w)
 
 		// R row
-		rVals := []string{"R vs aws"}
+		rVals := []string{"R vs openrouter"}
 		for _, bn := range backendNames {
 			r := backendRuns[bn][model]
 			if r != nil && ctrl.S > 0 {
@@ -2817,32 +2806,32 @@ func main() {
 		}
 	}
 
-	// Build AWS caller
-	var awsC *awsCaller
-	if cfg.AWS.Region != "" && cfg.AWS.AccessKeyID != "" {
-		bc, err := awsproxy.NewBedrockClient(cfg.AWS.Region, cfg.AWS.AccessKeyID, cfg.AWS.SecretAccessKey, cfg.AWS.Socks5Proxy)
-		if err != nil {
-			fmt.Printf("ERROR: init AWS Bedrock client: %v\n", err)
-			return
-		}
-		awsC = &awsCaller{client: bc, cfg: &cfg.AWS}
-	} else {
-		fmt.Println("ERROR: AWS config is missing (region/access_key_id). Cannot use aws control channel.")
+	// Build OpenRouter control caller. Backends keep the -models names;
+	// only this channel rewrites them to OpenRouter ids.
+	if strings.TrimSpace(cfg.OpenRouterKey) == "" {
+		fmt.Println("ERROR: openrouter_key is missing. Cannot use OpenRouter control channel.")
 		return
 	}
+	for _, model := range models {
+		if _, err := openRouterModelID(model); err != nil {
+			fmt.Printf("ERROR: %v\n", err)
+			return
+		}
+	}
+	orC := &openRouterCaller{apiKey: cfg.OpenRouterKey, client: httpClient}
 
 	fmt.Printf("ModelProbe Run — %s\n", time.Now().Format("2006-01-02 15:04:05"))
 	fmt.Printf("Config:   %s\n", *cfgPath)
 	fmt.Printf("Models:   %s\n", strings.Join(models, ", "))
 	fmt.Printf("Backends: %s\n", strings.Join(backends, ", "))
-	fmt.Printf("Control:  aws\n")
+	fmt.Printf("Control:  openrouter\n")
 	fmt.Printf("Timeout:  %ds/request  Concurrency: %d\n\n", *timeoutSec, *concurrency)
 
 	ctx := context.Background()
 	requestCtx, cancel := context.WithTimeout(ctx, time.Duration(len(questionBank)*(*timeoutSec)*3)*time.Second)
 	defer cancel()
 
-	// controlRuns[model] = runResult for aws
+	// controlRuns[model] = runResult for openrouter
 	controlRuns := map[string]*runResult{}
 	// backendRuns[backendName][model] = runResult
 	backendRuns := map[string]map[string]*runResult{}
@@ -2850,14 +2839,15 @@ func main() {
 		backendRuns[bn] = map[string]*runResult{}
 	}
 
-	// Run aws control for each model
+	// Run OpenRouter control for each model
 	for _, model := range models {
-		fmt.Printf("→ Running aws control for %s …\n", model)
-		results := runQuestions(requestCtx, awsC, model, *concurrency, *verbose, "aws")
-		rr := &runResult{Channel: "aws", Model: model, Results: results, TempOmitted: awsC.noTemp}
+		orModel, _ := openRouterModelID(model)
+		fmt.Printf("→ Running openrouter control for %s (%s) …\n", model, orModel)
+		results := runQuestions(requestCtx, orC, model, *concurrency, *verbose, "openrouter")
+		rr := &runResult{Channel: "openrouter", Model: model, Results: results}
 		rr.compute()
 		controlRuns[model] = rr
-		fmt.Printf("  aws/%s: S=%d/%d P=%.1f%%\n", model, rr.S, rr.SMax, rr.P)
+		fmt.Printf("  openrouter/%s: S=%d/%d P=%.1f%%\n", model, rr.S, rr.SMax, rr.P)
 	}
 
 	// Run each backend for each model
@@ -2945,7 +2935,7 @@ func main() {
 		}
 	}
 
-	// Check if AWS also had drops (sync with backend drops for fair S_max)
+	// Check if the OpenRouter control also had drops.
 	for _, model := range models {
 		ctrl := controlRuns[model]
 		if ctrl == nil {
@@ -2953,7 +2943,7 @@ func main() {
 		}
 		for _, qr := range ctrl.Results {
 			if qr.Dropped {
-				fmt.Printf("  aws/%s/%s: dropped after 3 retries\n", model, qr.QID)
+				fmt.Printf("  openrouter/%s/%s: dropped after 3 retries\n", model, qr.QID)
 			}
 		}
 	}
