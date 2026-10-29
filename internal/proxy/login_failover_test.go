@@ -128,6 +128,95 @@ func TestDoRequestWithFailover_AuthSwitchesWithoutQuotaGate(t *testing.T) {
 	}
 }
 
+func TestIsBalanceBody(t *testing.T) {
+	for _, body := range []string{
+		`{"error":{"message":"用户额度不足"}}`,
+		`额度不足`,
+		`余额不足`,
+		`余额为负`,
+		`预扣费额度失败, 用户剩余额度: 0`,
+		`{"error":{"message":"insufficient balance"}}`,
+	} {
+		if !isBalanceBody([]byte(body)) {
+			t.Fatalf("balance body must match: %s", body)
+		}
+	}
+	if isBalanceBody([]byte(`{"type":"error","error":{"type":"permission_error","message":"API Error: 403"}}`)) {
+		t.Fatal("a permission 403 must not count as a balance failure")
+	}
+}
+
+func TestDoRequestWithFailover_BalanceRetriesOnce(t *testing.T) {
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"message":"用户额度不足"}}`)
+	}))
+	defer bad.Close()
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_ok","type":"message"}`)
+	}))
+	defer good.Close()
+
+	h, badBE := failoverHandler(t, bad.URL, good.URL)
+	gotBE, resp, err, quotaFinal := h.doRequestWithFailover(failoverGinContext(), badBE, "/v1/messages", []byte(`{}`), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if quotaFinal || resp.StatusCode != http.StatusOK || gotBE.Name != "good" {
+		t.Fatalf("balance 403 did not fail over once: status=%d backend=%s quotaFinal=%v", resp.StatusCode, gotBE.Name, quotaFinal)
+	}
+	if badBE.quotaExhausted.Load() {
+		t.Fatal("a balance 403 must not take the 6h quota gate")
+	}
+	if !badBE.balanceHold.Load() || badBE.State() != stateIsolated || badBE.effectiveWeight() != 0 {
+		t.Fatalf("bad backend must rest unselectable: hold=%v state=%d weight=%d", badBE.balanceHold.Load(), badBE.State(), badBE.effectiveWeight())
+	}
+}
+
+func TestDoRequestWithFailover_BalanceStopsAfterOneRetry(t *testing.T) {
+	var secondHits, thirdHits int
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"message":"用户额度不足"}}`)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondHits++
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"message":"余额为负"}}`)
+	}))
+	defer second.Close()
+	third := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		thirdHits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer third.Close()
+
+	lb := &LoadBalancer{nowFn: time.Now, rng: rand.New(rand.NewSource(1))}
+	a := lb.newBackend(config.BackendAPI{Name: "a", URL: first.URL, APIKey: "k", Weight: 1, Enabled: true})
+	b := lb.newBackend(config.BackendAPI{Name: "b", URL: second.URL, APIKey: "k", Weight: 100, Enabled: true})
+	c := lb.newBackend(config.BackendAPI{Name: "c", URL: third.URL, APIKey: "k", Weight: 1, Enabled: true})
+	lb.backends = []*Backend{a, b, c}
+	lb.updateCapacities()
+	h := NewHandler(lb, nil, nil, &config.Config{}, nil)
+
+	gotBE, resp, err, _ := h.doRequestWithFailover(failoverGinContext(), a, "/v1/messages", []byte(`{}`), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusForbidden || gotBE.Name != "b" || secondHits != 1 || thirdHits != 0 {
+		t.Fatalf("must stop after one retry: status=%d backend=%s second=%d third=%d body=%s", resp.StatusCode, gotBE.Name, secondHits, thirdHits, body)
+	}
+	if !a.balanceHold.Load() || !b.balanceHold.Load() || c.balanceHold.Load() {
+		t.Fatalf("only the two tried accounts rest: a=%v b=%v c=%v", a.balanceHold.Load(), b.balanceHold.Load(), c.balanceHold.Load())
+	}
+}
+
 func TestDoRequestWithFailover_Plain403Stays(t *testing.T) {
 	var goodHits int
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

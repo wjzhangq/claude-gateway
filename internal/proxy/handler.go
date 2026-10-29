@@ -410,9 +410,10 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 			reqModel = fbModel
 		}
 	} else {
-		// 401, a login-shaped 403, and 429 are node-level: retry this request on
-		// the next backend. Confirmed balance failures are marked after health
-		// accounting so the long quota TTL is not overwritten by the 429 base.
+		// 401, a balance/pre-charge 403, and 429 are node-level: retry this request
+		// on the next backend. A balance 403 rests for 60s inside the failover.
+		// Confirmed 429 balance failures are marked after health accounting so
+		// the long quota TTL is not overwritten by the 429 base.
 		backend, resp, err, quotaFinal = h.doRequestWithFailover(c, backend, upstreamPath, body, start)
 		if err != nil && IsClientCanceled(err) {
 			logger.Infof("client canceled request: backend=%s model=%s", backend.Name, reqModel)
@@ -594,16 +595,21 @@ type switchKind int
 const (
 	switchNone      switchKind = iota
 	switchAuth                 // 401: quarantine this node, still try the next one
-	switchLogin                // login-shaped 403: short isolation, not the quota hard-gate
-	switchQuota                // confirmed balance failure: long quota gate
+	switchBalance              // balance/pre-charge 403: one retry, then a 60s self-probe rest
+	switchQuota                // confirmed 429 balance failure: long quota gate
 	switchRateLimit            // other 429: short isolation
 )
 
-// doRequestWithFailover sends the request and, on 401, a login-shaped 403, or
-// 429, retries the same body on the next backend. quotaFinal is true when the
-// returned response is a confirmed balance failure; the caller must record
-// health first and then MarkQuotaExhausted, so the long quota TTL wins over
-// the 429 base. Abandoned attempts are recorded here.
+// maxBalanceFailovers is the single extra backend a balance/pre-charge 403 may try.
+const maxBalanceFailovers = 1
+
+// doRequestWithFailover sends the request and, on 401, a balance/pre-charge
+// 403, or 429, retries the same body on the next backend. A balance 403 is
+// tried on one other backend only. quotaFinal is true when the returned
+// response is a confirmed 429 balance failure; the caller must record health
+// first and then MarkQuotaExhausted, so the long quota TTL wins over the 429
+// base. Abandoned attempts are recorded here. A balance 403 also puts that
+// backend into the 60s self-probe rest before the function returns.
 func (h *Handler) doRequestWithFailover(c *gin.Context, backend *Backend, upstreamPath string, body []byte, start time.Time) (*Backend, *http.Response, error, bool) {
 	tried := map[string]bool{backend.Name: true}
 	failovers := 0
@@ -625,8 +631,11 @@ func (h *Handler) doRequestWithFailover(c *gin.Context, backend *Backend, upstre
 			return backend, resp, nil, false
 		}
 		resp.Body.Close()
-		next, stop := h.nextSwitchBackend(tried, &failovers, chainDeadline, kind == switchQuota)
+		next, stop := h.nextSwitchBackend(tried, &failovers, chainDeadline, kind)
 		if stop {
+			if kind == switchBalance {
+				h.lb.enterBalanceRest(backend)
+			}
 			resp.Body = io.NopCloser(bytes.NewReader(peek))
 			logger.Warnf("node failover stopped (backend=%s kind=%d failovers=%d cascade=%v)", backend.Name, kind, failovers, h.lb.QuotaCascadeActive())
 			return backend, resp, nil, kind == switchQuota
@@ -640,11 +649,16 @@ func (h *Handler) doRequestWithFailover(c *gin.Context, backend *Backend, upstre
 
 // nextSwitchBackend picks a backend not yet tried. stop is true when the chain
 // must return the current response. A quota cascade fast-fails only a confirmed
-// balance failure; login and 401 still move to the next node.
-func (h *Handler) nextSwitchBackend(tried map[string]bool, failovers *int, deadline time.Time, quota bool) (next *Backend, stop bool) {
+// 429 balance failure. A balance 403 gets one retry and is not cascade-blocked,
+// so the caller still leaves the dead account.
+func (h *Handler) nextSwitchBackend(tried map[string]bool, failovers *int, deadline time.Time, kind switchKind) (next *Backend, stop bool) {
 	*failovers++
 	next = h.lb.PickExcluding(tried)
-	if next == nil || *failovers > maxQuotaFailovers || time.Now().After(deadline) || (quota && h.lb.QuotaCascadeActive()) {
+	limit := maxQuotaFailovers
+	if kind == switchBalance {
+		limit = maxBalanceFailovers
+	}
+	if next == nil || *failovers > limit || time.Now().After(deadline) || (kind == switchQuota && h.lb.QuotaCascadeActive()) {
 		return nil, true
 	}
 	return next, false
@@ -658,10 +672,10 @@ func (h *Handler) recordAbandoned(backend *Backend, kind switchKind, status int,
 	switch kind {
 	case switchAuth:
 		backend.RecordResult(ErrAuth)
-	case switchLogin:
-		// Login/pre-charge is not a bad gateway key and not confirmed balance
-		// exhaustion, so it takes the short 403 cooldown instead of the quota gate.
-		backend.RecordResult(ErrForbidden)
+	case switchBalance:
+		// Not a bad gateway key and not the 6h quota gate. The account rests
+		// for 60s and the process probes it itself.
+		h.lb.enterBalanceRest(backend)
 	case switchQuota:
 		backend.RecordResultDetailed(ErrRateLimit, ParseRetryAfter(retryAfter, time.Now()), false)
 		h.lb.MarkQuotaExhausted(backend.Name)
@@ -816,11 +830,25 @@ func isQuotaBody(body []byte) bool {
 		strings.Contains(s, "suspended due to")
 }
 
+// isBalanceBody reports an upstream account that cannot pay for the request:
+// a negative balance, a pre-charge failure, or the English quota phrases.
+// A permission error does not match.
+func isBalanceBody(body []byte) bool {
+	if isQuotaBody(body) || isLoginQuotaBody(body) {
+		return true
+	}
+	s := string(body)
+	return strings.Contains(s, "额度不足") ||
+		strings.Contains(s, "余额不足") ||
+		strings.Contains(s, "余额为负")
+}
+
 // classifySwitch decides whether this response is a node failure the request
-// should leave. 401 and 429 always switch. A 403 switches only when the body
-// is a login/pre-charge prompt. Other statuses, including a normal 200, are
-// left untouched so a model reply that mentions login is not a failover.
-// On a non-match the body stays readable. On a match the caller closes it.
+// should leave. 401 and 429 always switch. A 403 switches when the body is an
+// account balance or pre-charge failure. A permission 403 stays on this backend
+// so a real access denial is not hidden by another account. Other statuses,
+// including a normal 200, are left untouched. On a non-match the body stays
+// readable. On a match the caller closes it.
 func classifySwitch(resp *http.Response) (switchKind, []byte) {
 	if resp == nil || resp.Body == nil {
 		return switchNone, nil
@@ -852,8 +880,8 @@ func classifySwitch(resp *http.Response) (switchKind, []byte) {
 			kind = switchRateLimit
 		}
 	case http.StatusForbidden:
-		if isLoginQuotaBody(decoded) {
-			kind = switchLogin
+		if isBalanceBody(decoded) {
+			kind = switchBalance
 		}
 	}
 	if kind == switchNone {

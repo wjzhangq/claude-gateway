@@ -45,6 +45,7 @@ interface BackendStatus {
   recent_latency_ms: number
   error_rate: number
   quota_exhausted: boolean
+  balance_rest: boolean
   quota_limit: number
   quota_usage: number
   quota_checked_at: number
@@ -317,7 +318,7 @@ export default function AdminBackendsPage() {
                     return (
                       <div
                         key={i}
-                        className="w-5 h-5 rounded-sm bg-gray-100"
+                        className="w-5 h-1 rounded-sm bg-gray-100"
                         title="—"
                       />
                     )
@@ -325,7 +326,7 @@ export default function AdminBackendsPage() {
                   return (
                     <div
                       key={i}
-                      className={`w-5 h-5 rounded-sm ${getStatusColor(entry.code)} opacity-90 hover:opacity-100 cursor-default transition-opacity`}
+                      className={`w-5 h-1 rounded-sm ${getStatusColor(entry.code)} opacity-90 hover:opacity-100 cursor-default transition-opacity`}
                       title={`${getStatusLabel(entry.code)} | ${entry.latency_ms > 0 ? `${entry.latency_ms}ms` : '—'}`}
                     />
                   )
@@ -372,7 +373,7 @@ export default function AdminBackendsPage() {
                     <td colSpan={10} className="px-3 py-2">
                       <div className="flex justify-end gap-0.5">
                         {Array.from({ length: 20 }).map((_, k) => (
-                          <div key={k} className="w-5 h-5 rounded-sm skeleton" />
+                          <div key={k} className="w-5 h-1 rounded-sm skeleton" />
                         ))}
                       </div>
                     </td>
@@ -388,6 +389,8 @@ export default function AdminBackendsPage() {
                 // State badge — 5-state machine
                 type BadgeCfg = { label: string; color: string; dot: string; pulse?: boolean }
                 const badge: BadgeCfg = (() => {
+                  if (b.balance_rest)
+                    return { label: '403 休息', color: 'bg-violet-50 text-violet-700 ring-violet-100', dot: 'bg-violet-500', pulse: true }
                   if (b.quota_exhausted)
                     return { label: '额度耗尽', color: 'bg-orange-50 text-orange-700 ring-orange-100', dot: 'bg-orange-500' }
                   switch (b.state) {
@@ -489,7 +492,7 @@ export default function AdminBackendsPage() {
                           {/* TTL countdown */}
                           {showTTL && (
                             <span className="text-xs text-gray-400 tabular-nums pl-0.5">
-                              冷却 {formatDuration(ttlRemaining)}
+                              {b.balance_rest ? '休息' : '冷却'} {formatDuration(ttlRemaining)}
                             </span>
                           )}
                           {/* consec failures */}
@@ -520,7 +523,7 @@ export default function AdminBackendsPage() {
                             {entries.map((entry, i) => (
                               <div
                                 key={i}
-                                className={`w-5 h-5 rounded-sm cursor-default opacity-90 hover:opacity-100 transition-opacity ${getStatusColor(entry.code)}`}
+                                className={`w-5 h-1 rounded-sm cursor-default opacity-90 hover:opacity-100 transition-opacity ${getStatusColor(entry.code)}`}
                                 title={`${b.name} | ${entry.code} | ${entry.latency_ms > 0 ? `${entry.latency_ms}ms` : '—'}`}
                               />
                             ))}

@@ -154,10 +154,7 @@ func main() {
 	log.Println("quota sync complete")
 }
 
-// probeMessageCostUSD is a conservative flat estimate of a single max_tokens=1
-// health probe's cost, attributed to the probed backend (FR-010). The probe is
-// intentionally tiny; this is an upper-bound placeholder pending per-backend rates.
-const probeMessageCostUSD = 0.0002
+// probe cost is the shared max_tokens=1 estimate (FR-010).
 
 // runHealthProbe actively probes each enabled backend via the shared reachability
 // routine (GET /v1/models, falling back to a minimal /v1/messages inference call),
@@ -187,7 +184,7 @@ func runHealthProbe(client *http.Client, cfg *config.Config, gatewayURL string) 
 		// /v1/models 200 is free (FR-010).
 		var probeCost float64
 		if usedInference {
-			probeCost = probeMessageCostUSD
+			probeCost = proxy.ProbeMessageCostUSD
 		}
 		if err != nil {
 			log.Printf("[%s] health FAIL (%dms) code=%d: %v", b.Name, latency, code, err)

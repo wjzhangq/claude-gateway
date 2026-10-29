@@ -98,6 +98,9 @@ const (
 	retryAfterMinSecs = 5
 	retryAfterMaxSecs = 30 * 60 // 30min
 
+	// Balance-403 rest before the process sends its own max_tokens=1 probe.
+	balanceRestSecs = 60
+
 	// Startup validationFailed re-check cadence (FR-011 secondary safety net).
 	revalidatePeriodSecs = 60 * 60 // hourly
 )
@@ -226,6 +229,7 @@ type Backend struct {
 	currentWeight    int           // SWRR running cursor (guarded by LoadBalancer.selMu)
 	validationFailed atomic.Bool   // set on startup validation failure; never auto-recovered
 	quotaExhausted   atomic.Bool   // external hard quota flag (kept; no longer the primary gate)
+	balanceHold      atomic.Bool   // upstream balance 403: unselectable until our own probe succeeds
 	quotaLimit       atomic.Int64  // hard_limit_usd * 100 (cents precision)
 	quotaUsage       atomic.Int64  // total_usage * 100 (cents precision)
 	quotaCheckedAt   atomic.Int64  // unix timestamp of last quota check
@@ -467,6 +471,11 @@ func (lb *LoadBalancer) recordResult(b *Backend, class ErrorClass, retryAfterUni
 		return
 
 	default: // ErrRateLimit, ErrServer, ErrTransport, ErrForbidden
+		// A balance 403 already scheduled the 60s self-probe rest. Do not replace
+		// that timer with the 2min 403 TTL, and do not quarantine the account.
+		if class == ErrForbidden && b.balanceHold.Load() {
+			return
+		}
 		b.lastErr.Store(now.Unix())
 		b.totalErr.Add(1)
 		b.consecOK.Store(0)
@@ -700,6 +709,7 @@ func NewLoadBalancerWithConfig(cfgs []config.BackendAPI, cfg *config.Config) *Lo
 	go lb.quotaResetLoop()
 	go lb.reconcileLoop()
 	go lb.revalidateLoop()
+	go lb.activeProbeLoop()
 	return lb
 }
 
@@ -728,6 +738,146 @@ func (lb *LoadBalancer) revalidateLoop() {
 			}
 		}
 	}
+}
+
+// activeProbeTick is how often the process looks for backends whose balance
+// rest has elapsed. The general reachability probe still runs once a minute.
+const activeProbeTick = 15 * time.Second
+
+// activeProbeLoop replaces the external per-minute health cron. Balance-rest
+// accounts get a max_tokens=1 messages probe once their minute is up. Every
+// other account gets the same reachability probe the cron used to run.
+func (lb *LoadBalancer) activeProbeLoop() {
+	ticker := time.NewTicker(activeProbeTick)
+	defer ticker.Stop()
+	client := &http.Client{Timeout: 15 * time.Second}
+	var lastGeneral int64
+	for range ticker.C {
+		now := lb.nowFn()
+		general := now.Unix()-lastGeneral >= int64(reconcilePeriod/time.Second)
+		if general {
+			lastGeneral = now.Unix()
+		}
+		lb.runActiveProbes(client, now, general)
+	}
+}
+
+// runActiveProbes probes due balance-rest backends, then (when general is set)
+// the rest of the fleet. Probes run one backend at a time.
+func (lb *LoadBalancer) runActiveProbes(client *http.Client, now time.Time, general bool) {
+	lb.mu.RLock()
+	backends := append([]*Backend(nil), lb.backends...)
+	lb.mu.RUnlock()
+
+	for _, b := range backends {
+		if !b.balanceHold.Load() {
+			continue
+		}
+		if now.Unix() < b.ttlUntil.Load() {
+			continue
+		}
+		lb.probeBalance(client, b, now)
+	}
+	if !general {
+		return
+	}
+	for _, b := range backends {
+		if b.balanceHold.Load() || b.quotaExhausted.Load() {
+			continue
+		}
+		// Same skip the external health check used: an isolated 403 is not a
+		// billable /v1/models probe. Balance rests are handled above.
+		if b.state.Load() == stateIsolated && b.lastHTTPCode.Load() == 403 {
+			continue
+		}
+		lb.probeReachable(client, b, now)
+	}
+}
+
+// probeBalance sends one tiny inference request. Success puts the account back
+// in normal rotation. Any failure keeps it out for another minute.
+func (lb *LoadBalancer) probeBalance(client *http.Client, b *Backend, now time.Time) {
+	code, err := ProbeBalance(client, b.URL, b.APIKey)
+	if code != 0 {
+		lb.AddProbeCost(b.Name, ProbeMessageCostUSD)
+	}
+	if err == nil {
+		lb.finishBalanceRest(b, now, code)
+		log.Printf("[backend:%s] balance probe ok: -> healthy", b.Name)
+		return
+	}
+	lb.extendBalanceRest(b, now, code)
+	log.Printf("[backend:%s] balance probe fail code=%d: rest %ds", b.Name, code, balanceRestSecs)
+}
+
+// probeReachable is the in-process form of check --health for one backend.
+func (lb *LoadBalancer) probeReachable(client *http.Client, b *Backend, now time.Time) {
+	start := time.Now()
+	code, ra, usedInference, err := ProbeReachableDetailed(client, b.URL, b.APIKey)
+	latency := time.Since(start).Milliseconds()
+	if usedInference {
+		lb.AddProbeCost(b.Name, ProbeMessageCostUSD)
+	}
+	lb.SetHealthStatusDetailed(b.Name, err == nil, latency, code, ParseRetryAfter(ra, now))
+}
+
+// enterBalanceRest takes an account out of rotation for balanceRestSecs. The
+// process probes it after that; user traffic does not.
+func (lb *LoadBalancer) enterBalanceRest(b *Backend) {
+	now := lb.nowFn()
+	b.balanceHold.Store(true)
+	b.ttlUntil.Store(now.Unix() + balanceRestSecs)
+	b.consecOK.Store(0)
+	b.lastHTTPCode.Store(403)
+	b.lastCodeAt.Store(now.Unix())
+	b.lastErr.Store(now.Unix())
+	b.totalErr.Add(1)
+	prev := b.state.Swap(stateIsolated)
+	if prev != stateIsolated {
+		b.accrueDwell(prev, now)
+		b.noteIsolation(403)
+		b.enteredAt.Store(now.Unix())
+		log.Printf("[backend:%s] balance rest: isolated for %ds", b.Name, balanceRestSecs)
+		return
+	}
+	log.Printf("[backend:%s] balance rest: timer reset to %ds", b.Name, balanceRestSecs)
+}
+
+// extendBalanceRest keeps the account out after a failed self-probe.
+func (lb *LoadBalancer) extendBalanceRest(b *Backend, now time.Time, code int) {
+	b.balanceHold.Store(true)
+	b.ttlUntil.Store(now.Unix() + balanceRestSecs)
+	if code != 0 {
+		b.lastHTTPCode.Store(int64(code))
+		b.lastCodeAt.Store(now.Unix())
+	}
+	if b.state.Load() == stateIsolated {
+		return
+	}
+	prev := b.state.Load()
+	b.accrueDwell(prev, now)
+	b.setState(stateIsolated, now)
+}
+
+// finishBalanceRest clears the hold only after the account is Healthy, so a
+// concurrent pick cannot take it while it is still isolated.
+func (lb *LoadBalancer) finishBalanceRest(b *Backend, now time.Time, code int) {
+	prev := b.state.Load()
+	b.ttlUntil.Store(0)
+	b.consecErr.Store(0)
+	b.consecOK.Store(0)
+	b.quotaExhausted.Store(false)
+	b.lastSuccessAt.Store(now.Unix())
+	if code == 0 {
+		code = http.StatusOK
+	}
+	b.lastHTTPCode.Store(int64(code))
+	b.lastCodeAt.Store(now.Unix())
+	if prev != stateHealthy {
+		b.accrueDwell(prev, now)
+		b.setState(stateHealthy, now)
+	}
+	b.balanceHold.Store(false)
 }
 
 // newBackend constructs a Backend with its dedicated HTTP client and owner back-ref.
@@ -852,7 +1002,7 @@ func healthFactor(state int32) float64 {
 
 // effectiveWeight returns the selection weight after applying health, budget,
 // and latency factors. Returns 0 when the backend must not be selected.
-//   - validationFailed / Isolated / Quarantine / Disabled -> 0
+//   - validationFailed / balanceHold / quotaExhausted / Isolated / Quarantine / Disabled -> 0
 //   - Probing -> fixed probingWeight (bypasses soft factors)
 //   - Healthy/Degraded -> base × healthFactor × budgetFactor × latencyFactor (min 1 if routable)
 func (b *Backend) effectiveWeight() int {
@@ -862,7 +1012,7 @@ func (b *Backend) effectiveWeight() int {
 	//     signal (MarkQuotaExhausted) or an external hard-quota probe. This is a
 	//     real account-level block, distinct from the SOFT budgetFactor that only
 	//     biases weight as estimated spend approaches the configured daily limit.
-	if b.validationFailed.Load() || b.quotaExhausted.Load() {
+	if b.validationFailed.Load() || b.quotaExhausted.Load() || b.balanceHold.Load() {
 		return 0
 	}
 	state := b.state.Load()
@@ -1113,6 +1263,10 @@ func (lb *LoadBalancer) Reconcile(now time.Time) {
 func (lb *LoadBalancer) releaseExpired(now time.Time) {
 	nowUnix := now.Unix()
 	for _, b := range lb.backends {
+		// Balance rest ends only when the process's own probe succeeds.
+		if b.balanceHold.Load() {
+			continue
+		}
 		s := b.state.Load()
 		if s != stateIsolated && s != stateQuarantine {
 			continue
@@ -1136,7 +1290,7 @@ func (lb *LoadBalancer) releaseExpired(now time.Time) {
 func (lb *LoadBalancer) judgeProbing(now time.Time) {
 	nowUnix := now.Unix()
 	for _, b := range lb.backends {
-		if b.state.Load() != stateProbing {
+		if b.balanceHold.Load() || b.state.Load() != stateProbing {
 			continue
 		}
 		// Respect the failsafe shield: don't judge until the shield expires.
@@ -1316,6 +1470,11 @@ func (lb *LoadBalancer) failsafe(now time.Time) {
 	// quota-gated stays dark with an empty candidate list until CST midnight.
 	var cands []failsafeCandidate
 	for _, b := range lb.backends {
+		// A negative-balance account stays out until its own probe succeeds,
+		// even when the fleet is short of routable nodes.
+		if b.balanceHold.Load() {
+			continue
+		}
 		s := b.state.Load()
 		gated := isRoutable(s) && b.quotaExhausted.Load() && b.effectiveWeight() == 0
 		if s != stateIsolated && s != stateQuarantine && !gated {
@@ -1418,6 +1577,10 @@ func (lb *LoadBalancer) SetHealthStatusDetailed(name string, healthy bool, laten
 	for _, b := range lb.backends {
 		if b.Name != name {
 			continue
+		}
+		if b.balanceHold.Load() {
+			// Manual health sync must not pull a resting account back into traffic.
+			return true
 		}
 		cur := b.state.Load()
 		if healthy {
@@ -1595,6 +1758,7 @@ type BackendInfo struct {
 	RecentLatencyMs int64         `json:"recent_latency_ms"`
 	ErrorRate       float64       `json:"error_rate"`
 	QuotaExhausted  bool          `json:"quota_exhausted"`
+	BalanceRest     bool          `json:"balance_rest"` // 403 balance rest: waiting for the process probe
 	QuotaLimit      float64       `json:"quota_limit"`
 	QuotaUsage      float64       `json:"quota_usage"`
 	QuotaCheckedAt  int64         `json:"quota_checked_at"`
@@ -1627,6 +1791,7 @@ func (lb *LoadBalancer) GetBackends() []BackendInfo {
 			RecentLatencyMs: b.GetRecentLatencyMs(),
 			ErrorRate:       b.GetErrorRate(),
 			QuotaExhausted:  b.quotaExhausted.Load(),
+			BalanceRest:     b.balanceHold.Load(),
 			QuotaLimit:      float64(b.quotaLimit.Load()) / 100,
 			QuotaUsage:      float64(b.quotaUsage.Load()) / 100,
 			QuotaCheckedAt:  b.quotaCheckedAt.Load(),

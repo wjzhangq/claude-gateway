@@ -13,6 +13,10 @@ import (
 // cmd/check, which calls ProbeReachable via this shared routine.
 const healthCheckModel = "claude-sonnet-4-6"
 
+// ProbeMessageCostUSD is a flat estimate of one max_tokens=1 probe. Callers
+// attribute it only when that messages request was actually sent.
+const ProbeMessageCostUSD = 0.0002
+
 // ProbeReachable determines whether a backend is usable, matching the runtime
 // active-probe logic so startup validation and cmd/check agree (FR-011). It
 // first tries GET /v1/models; if that fails it falls back to a minimal
@@ -51,6 +55,14 @@ func ProbeReachableDetailed(client *http.Client, baseURL, apiKey string) (observ
 		return code, ra, true, msgErr
 	}
 	return msgCode, msgRA, true, nil
+}
+
+// ProbeBalance sends one max_tokens=1 /v1/messages request. It does not call
+// GET /v1/models: that endpoint often returns 200 while the account balance is
+// still negative, which would look like a recovery.
+func ProbeBalance(client *http.Client, baseURL, apiKey string) (int, error) {
+	code, _, err := probeMessages(client, strings.TrimRight(baseURL, "/"), apiKey)
+	return code, err
 }
 
 // probeModels performs GET /v1/models. Returns the status code (0 on transport
