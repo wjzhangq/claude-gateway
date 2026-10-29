@@ -525,6 +525,7 @@ func main() {
 				Exhausted bool    `json:"exhausted"`
 				Limit     float64 `json:"limit"`
 				Usage     float64 `json:"usage"`
+				Operator  bool    `json:"operator"`
 			} `json:"backends"`
 		}
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -534,7 +535,12 @@ func main() {
 
 		results := make([]gin.H, 0, len(req.Backends))
 		for _, b := range req.Backends {
-			found := lb.SetQuotaStatus(b.Name, b.Exhausted, b.Limit, b.Usage)
+			var found bool
+			if b.Operator {
+				found = lb.SetOperatorExhausted(b.Name, b.Exhausted)
+			} else {
+				found = lb.SetQuotaStatus(b.Name, b.Exhausted, b.Limit, b.Usage)
+			}
 			results = append(results, gin.H{"name": b.Name, "found": found, "exhausted": b.Exhausted})
 		}
 		c.JSON(200, gin.H{"updated": results})
@@ -567,21 +573,14 @@ func main() {
 			return
 		}
 
+		// Record only. Reachability is applied by the in-process probe, which
+		// calls SetHealthStatusDetailed directly. Applying this payload would
+		// let a leftover check --health crontab overwrite isolation and 403 rest.
 		results := make([]gin.H, 0, len(req.Backends))
 		for _, b := range req.Backends {
-			if b.KeyRotated {
-				lb.ResetAuthQuarantine(b.Name)
-			}
-			retryAfterUnix := proxy.ParseRetryAfter(b.RetryAfter, time.Now())
-			found := lb.SetHealthStatusDetailed(b.Name, b.Healthy, b.LatencyMs, b.ObservedCode, retryAfterUnix)
-			// Attribute any inference-probe cost to the backend's spend so budget
-			// accounting stays closed (FR-010). Probe records are NOT written to
-			// usage_logs: they have no user/key, and pollute request counts, error
-			// rates and per-user joins (user_id=0 breaks itcode LEFT JOINs).
-			if b.ProbeCostUSD > 0 {
-				lb.AddProbeCost(b.Name, b.ProbeCostUSD)
-			}
-			results = append(results, gin.H{"name": b.Name, "found": found, "healthy": b.Healthy})
+			log.Printf("[health] record only name=%s healthy=%v code=%d latency_ms=%d retry_after=%q probe_cost=%.4f key_rotated=%v err=%s",
+				b.Name, b.Healthy, b.ObservedCode, b.LatencyMs, b.RetryAfter, b.ProbeCostUSD, b.KeyRotated, b.Error)
+			results = append(results, gin.H{"name": b.Name, "recorded": true, "healthy": b.Healthy})
 		}
 		c.JSON(200, gin.H{"updated": results})
 	})

@@ -388,11 +388,10 @@ export default function AdminBackendsPage() {
               backendList.map(({ status: b, stat, borderColor, dotColor }) => {
                 // State badge — 5-state machine
                 type BadgeCfg = { label: string; color: string; dot: string; pulse?: boolean }
+                const billingExhausted = b.quota_limit > 0 && b.quota_usage >= b.quota_limit
                 const badge: BadgeCfg = (() => {
                   if (b.balance_rest)
                     return { label: '403 休息', color: 'bg-violet-50 text-violet-700 ring-violet-100', dot: 'bg-violet-500', pulse: true }
-                  if (b.quota_exhausted)
-                    return { label: '额度耗尽', color: 'bg-orange-50 text-orange-700 ring-orange-100', dot: 'bg-orange-500' }
                   switch (b.state) {
                     case 'isolated':
                       return { label: '隔离中', color: 'bg-red-50 text-red-700 ring-red-100', dot: 'bg-red-500', pulse: true }
@@ -489,6 +488,11 @@ export default function AdminBackendsPage() {
                             <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${badge.dot}${badge.pulse ? ' animate-pulse' : ''}`} />
                             {badge.label}
                           </span>
+                          {billingExhausted && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium ring-1 bg-orange-50 text-orange-700 ring-orange-100">
+                              额度耗尽
+                            </span>
+                          )}
                           {/* TTL countdown */}
                           {showTTL && (
                             <span className="text-xs text-gray-400 tabular-nums pl-0.5">

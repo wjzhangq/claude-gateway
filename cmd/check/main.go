@@ -35,6 +35,7 @@ type quotaBackend struct {
 	Exhausted bool    `json:"exhausted"`
 	Limit     float64 `json:"limit"`
 	Usage     float64 `json:"usage"`
+	Operator  bool    `json:"operator,omitempty"`
 }
 
 type healthBackend struct {
@@ -93,13 +94,13 @@ func main() {
 			if *enableGlob != "" {
 				if matched, _ := filepath.Match(*enableGlob, b.Name); matched {
 					log.Printf("[%s] marking as available (--enable %s)", b.Name, *enableGlob)
-					results = append(results, quotaBackend{Name: b.Name, Exhausted: false})
+					results = append(results, quotaBackend{Name: b.Name, Exhausted: false, Operator: true})
 				}
 			}
 			if *disableGlob != "" {
 				if matched, _ := filepath.Match(*disableGlob, b.Name); matched {
 					log.Printf("[%s] marking as exhausted (--disable %s)", b.Name, *disableGlob)
-					results = append(results, quotaBackend{Name: b.Name, Exhausted: true})
+					results = append(results, quotaBackend{Name: b.Name, Exhausted: true, Operator: true})
 				}
 			}
 		}
@@ -123,14 +124,7 @@ func main() {
 		baseURL := strings.TrimRight(b.URL, "/")
 		usage, limit, err := fetchBilling(client, baseURL, b.APIKey)
 		if err != nil {
-			log.Printf("[%s] billing query failed: %v, falling back to /v1/models", b.Name, err)
-			if checkModels(client, baseURL, b.APIKey) {
-				log.Printf("[%s] /v1/models OK, marking as available", b.Name)
-				results = append(results, quotaBackend{Name: b.Name, Exhausted: false})
-			} else {
-				log.Printf("[%s] /v1/models also failed, marking as exhausted", b.Name)
-				results = append(results, quotaBackend{Name: b.Name, Exhausted: true})
-			}
+			log.Printf("[%s] billing query failed: %v (skipped, no /v1/models fallback)", b.Name, err)
 			continue
 		}
 
@@ -304,11 +298,6 @@ func fetchBilling(client *http.Client, baseURL, apiKey string) (usage, limit flo
 	}
 
 	return u.TotalUsage, s.HardLimitUSD, nil
-}
-
-func checkModels(client *http.Client, baseURL, apiKey string) bool {
-	_, err := doGet(client, baseURL+"/v1/models", apiKey)
-	return err == nil
 }
 
 func doGet(client *http.Client, url, apiKey string) ([]byte, error) {

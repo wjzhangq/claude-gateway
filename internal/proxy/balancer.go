@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"sort"
@@ -710,6 +711,7 @@ func NewLoadBalancerWithConfig(cfgs []config.BackendAPI, cfg *config.Config) *Lo
 	go lb.reconcileLoop()
 	go lb.revalidateLoop()
 	go lb.activeProbeLoop()
+	go lb.billingSyncLoop()
 	return lb
 }
 
@@ -1697,21 +1699,52 @@ func (lb *LoadBalancer) ResetAuthQuarantine(name string) bool {
 	return false
 }
 
-// SetQuotaStatus updates the budget inputs for a named backend. Per FR-009 the
-// budget only feeds the soft budgetFactor: exhausted=true no longer forces
-// weight 0 or a state change.
+// SetQuotaStatus stores a billing reading (usage and limit only). It does not
+// set quotaExhausted and does not change routing state. An empty report
+// (limit and usage both 0) is ignored so a models-probe fallback cannot wipe
+// a previous reading or raise the hard gate. Operator enable/disable uses
+// SetOperatorExhausted.
 func (lb *LoadBalancer) SetQuotaStatus(name string, exhausted bool, limit, usage float64) bool {
+	if limit == 0 && usage == 0 {
+		lb.mu.RLock()
+		defer lb.mu.RUnlock()
+		for _, b := range lb.backends {
+			if b.Name == name {
+				log.Printf("[backend:%s] ignore empty quota report exhausted=%v", b.Name, exhausted)
+				return true
+			}
+		}
+		return false
+	}
+	return lb.RecordBilling(name, limit, usage)
+}
+
+// SetOperatorExhausted is the manual --enable / --disable switch. It toggles
+// the hard quota gate and leaves the last billing numbers in place.
+func (lb *LoadBalancer) SetOperatorExhausted(name string, exhausted bool) bool {
 	lb.mu.RLock()
 	defer lb.mu.RUnlock()
 	for _, b := range lb.backends {
 		if b.Name == name {
 			b.quotaExhausted.Store(exhausted)
-			b.quotaLimit.Store(int64(limit * 100))
-			b.quotaUsage.Store(int64(usage * 100))
+			log.Printf("[backend:%s] operator quota exhausted=%v", b.Name, exhausted)
+			return true
+		}
+	}
+	return false
+}
+
+// RecordBilling writes quota_limit, quota_usage and quota_checked_at from a
+// dashboard billing read. Routing state and quotaExhausted stay as they are.
+func (lb *LoadBalancer) RecordBilling(name string, limit, usage float64) bool {
+	lb.mu.RLock()
+	defer lb.mu.RUnlock()
+	for _, b := range lb.backends {
+		if b.Name == name {
+			b.quotaLimit.Store(int64(math.Round(limit * 100)))
+			b.quotaUsage.Store(int64(math.Round(usage * 100)))
 			b.quotaCheckedAt.Store(lb.nowFn().Unix())
-			if exhausted {
-				log.Printf("[backend:%s] quota near/at limit: usage=%.2f limit=%.2f (soft weight only)", b.Name, usage, limit)
-			}
+			log.Printf("[backend:%s] billing usage=%.2f limit=%.2f", b.Name, usage, limit)
 			return true
 		}
 	}
