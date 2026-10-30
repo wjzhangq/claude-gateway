@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -164,5 +165,102 @@ func TestSetOperatorExhausted(t *testing.T) {
 	}
 	if b.quotaExhausted.Load() {
 		t.Fatal("operator enable must clear the hard gate")
+	}
+}
+
+// billingServer answers the two dashboard endpoints with fixed figures.
+func billingServer(t *testing.T, usage, limit float64) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/dashboard/billing/usage":
+			_, _ = fmt.Fprintf(w, `{"total_usage":%g}`, usage)
+		case "/v1/dashboard/billing/subscription":
+			_, _ = fmt.Fprintf(w, `{"hard_limit_usd":%g}`, limit)
+		default:
+			http.Error(w, "unexpected", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// The billing read already knows the account is spent. Acting on it here takes
+// the account out before a user request has to discover the same thing as a 403.
+func TestSyncBilling_SpentAccountEntersBalanceRest(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		usage, limit float64
+	}{
+		{"limit reached", 20, 20},
+		{"negative balance", 23.4, 20},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := billingServer(t, tc.usage, tc.limit)
+			lb, _ := newTestLB([]config.BackendAPI{{
+				Name: "acct", URL: srv.URL, APIKey: "k", Weight: 1, Enabled: true,
+			}})
+			b := lb.backends[0]
+
+			lb.syncBilling(srv.Client())
+
+			if !b.balanceHold.Load() {
+				t.Fatal("a spent account was left in rotation until a user hit a 403")
+			}
+			if b.State() != stateIsolated || b.effectiveWeight() != 0 {
+				t.Fatalf("state = %d weight = %d, want isolated and unselectable", b.State(), b.effectiveWeight())
+			}
+		})
+	}
+}
+
+// Headroom, or no configured limit at all, must not take an account out.
+func TestSyncBilling_HealthyAccountKeepsServing(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		usage, limit float64
+	}{
+		{"has headroom", 12.5, 20},
+		{"unlimited", 999, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := billingServer(t, tc.usage, tc.limit)
+			lb, _ := newTestLB([]config.BackendAPI{{
+				Name: "acct", URL: srv.URL, APIKey: "k", Weight: 1, Enabled: true,
+			}})
+			b := lb.backends[0]
+
+			lb.syncBilling(srv.Client())
+
+			if b.balanceHold.Load() || b.State() != stateHealthy {
+				t.Fatalf("billing took a serving account out: hold=%v state=%d",
+					b.balanceHold.Load(), b.State())
+			}
+		})
+	}
+}
+
+// Billing runs every 15 minutes. If each pass re-entered the rest it would
+// reset the backoff timer and the account would be probed far more often than
+// its backoff says.
+func TestSyncBilling_DoesNotResetExistingRest(t *testing.T) {
+	srv := billingServer(t, 25, 20)
+	lb, frozen := newTestLB([]config.BackendAPI{{
+		Name: "acct", URL: srv.URL, APIKey: "k", Weight: 1, Enabled: true,
+	}})
+	b := lb.backends[0]
+
+	lb.syncBilling(srv.Client())
+	b.balanceRestCount.Store(4)
+	b.ttlUntil.Store(*frozen + balanceRestMaxSecs)
+
+	lb.syncBilling(srv.Client())
+
+	if got := b.balanceRestCount.Load(); got != 4 {
+		t.Fatalf("backoff counter = %d, want it left at 4", got)
+	}
+	if got, want := b.ttlUntil.Load(), *frozen+balanceRestMaxSecs; got != want {
+		t.Fatalf("rest timer = %d, want %d (unchanged)", got, want)
 	}
 }

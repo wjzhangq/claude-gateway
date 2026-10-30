@@ -40,7 +40,24 @@ func (lb *LoadBalancer) syncBilling(client *http.Client) {
 			continue
 		}
 		lb.RecordBilling(b.Name, limit, usage)
+
+		// The reading already says the account cannot pay for the next request.
+		// Take it out here rather than leaving a user to discover the same thing
+		// as a 403. An account already resting is left alone: this loop runs
+		// every 15 minutes, and re-entering would reset a longer backoff.
+		if b.balanceHold.Load() || !billingSpent(usage, limit) {
+			continue
+		}
+		log.Printf("[backend:%s] billing says spent (usage=%.2f limit=%.2f): entering balance rest", b.Name, usage, limit)
+		lb.enterBalanceRest(b)
 	}
+}
+
+// billingSpent reports an account with no headroom left for another request.
+// limit <= 0 means no hard limit is configured, which is not an exhausted
+// account — the dashboard reports 0 for unmetered keys.
+func billingSpent(usage, limit float64) bool {
+	return limit > 0 && usage >= limit
 }
 
 type billingUsage struct {

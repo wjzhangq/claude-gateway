@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"math/rand"
@@ -100,7 +101,15 @@ const (
 	retryAfterMaxSecs = 30 * 60 // 30min
 
 	// Balance-403 rest before the process sends its own max_tokens=1 probe.
-	balanceRestSecs = 60
+	// Each failed self-probe doubles the window up to balanceRestMaxSecs: a
+	// negative balance needs a human to top the account up, and probing it
+	// every minute until then spends one billable inference call per minute.
+	balanceRestSecs    = 60
+	balanceRestMaxSecs = 30 * 60
+
+	// Failed self-probes between balance alerts. With the doubling window the
+	// first alert lands ~15min into a rest that is not recovering.
+	balanceAlertRounds = 5
 
 	// Startup validationFailed re-check cadence (FR-011 secondary safety net).
 	revalidatePeriodSecs = 60 * 60 // hourly
@@ -231,6 +240,8 @@ type Backend struct {
 	validationFailed atomic.Bool   // set on startup validation failure; never auto-recovered
 	quotaExhausted   atomic.Bool   // external hard quota flag (kept; no longer the primary gate)
 	balanceHold      atomic.Bool   // upstream balance 403: unselectable until our own probe succeeds
+	balanceRestCount atomic.Int64  // consecutive failed balance self-probes; drives the rest backoff
+	balanceRestSince atomic.Int64  // unix s: when the current balance rest started (0 = not resting)
 	quotaLimit       atomic.Int64  // hard_limit_usd * 100 (cents precision)
 	quotaUsage       atomic.Int64  // total_usage * 100 (cents precision)
 	quotaCheckedAt   atomic.Int64  // unix timestamp of last quota check
@@ -302,10 +313,11 @@ func isRoutable(s int32) bool {
 	}
 }
 
-// alert raises a Quarantine alert. v1 delivery is a structured warning log
-// (FR-038); the channel can be upgraded later without changing call sites.
-func alert(name, reason string) {
-	log.Printf("[backend:%s] ALERT quarantine: %s", name, reason)
+// alert raises an operator alert of the given kind ("quarantine", "balance").
+// v1 delivery is a structured warning log (FR-038); the channel can be upgraded
+// later without changing call sites.
+func alert(name, kind, reason string) {
+	log.Printf("[backend:%s] ALERT %s: %s", name, kind, reason)
 }
 
 // ---------------------------------------------------------------------------
@@ -598,7 +610,7 @@ func (lb *LoadBalancer) setQuarantine(b *Backend, code int, now time.Time, reaso
 	if prev != stateQuarantine {
 		b.accrueDwell(prev, now)
 		b.noteIsolation(code)
-		alert(b.Name, reason)
+		alert(b.Name, "quarantine", reason)
 	}
 	b.enteredAt.Store(now.Unix())
 }
@@ -792,6 +804,15 @@ func (lb *LoadBalancer) runActiveProbes(client *http.Client, now time.Time, gene
 		if b.state.Load() == stateIsolated && b.lastHTTPCode.Load() == 403 {
 			continue
 		}
+		// Honor the cooldown a non-routable backend is serving. setQuarantine
+		// backs a 401 off exponentially (15m -> 30m -> ... -> 24h) precisely
+		// because a revoked key does not self-heal; probing it once a minute
+		// anyway would make that backoff decorative and spend a probe per
+		// minute. releaseExpired promotes the backend to Probing and clears the
+		// timer once it elapses, which is when this pass picks it up again.
+		if s := b.state.Load(); !isRoutable(s) && now.Unix() < b.ttlUntil.Load() {
+			continue
+		}
 		lb.probeReachable(client, b, now)
 	}
 }
@@ -809,7 +830,8 @@ func (lb *LoadBalancer) probeBalance(client *http.Client, b *Backend, now time.T
 		return
 	}
 	lb.extendBalanceRest(b, now, code)
-	log.Printf("[backend:%s] balance probe fail code=%d: rest %ds", b.Name, code, balanceRestSecs)
+	log.Printf("[backend:%s] balance probe fail code=%d: rest %ds (attempt %d)",
+		b.Name, code, b.ttlUntil.Load()-now.Unix(), b.balanceRestCount.Load())
 }
 
 // probeReachable is the in-process form of check --health for one backend.
@@ -827,7 +849,13 @@ func (lb *LoadBalancer) probeReachable(client *http.Client, b *Backend, now time
 // process probes it after that; user traffic does not.
 func (lb *LoadBalancer) enterBalanceRest(b *Backend) {
 	now := lb.nowFn()
-	b.balanceHold.Store(true)
+	// A fresh incident starts the backoff over. Swap reports whether this call
+	// is the one that took the account out, so a concurrent request-path and
+	// billing-sync entry cannot reset a backoff that is already running.
+	if !b.balanceHold.Swap(true) {
+		b.balanceRestCount.Store(0)
+		b.balanceRestSince.Store(now.Unix())
+	}
 	b.ttlUntil.Store(now.Unix() + balanceRestSecs)
 	b.consecOK.Store(0)
 	b.lastHTTPCode.Store(403)
@@ -845,10 +873,38 @@ func (lb *LoadBalancer) enterBalanceRest(b *Backend) {
 	log.Printf("[backend:%s] balance rest: timer reset to %ds", b.Name, balanceRestSecs)
 }
 
-// extendBalanceRest keeps the account out after a failed self-probe.
+// balanceRestBackoff returns the rest window after n consecutive failed
+// self-probes: the base window doubled n times, capped. n is the count after
+// the failure, so n=1 (the first failed probe) already doubles the 60s entry.
+func balanceRestBackoff(n int64) int64 {
+	if n < 1 {
+		return balanceRestSecs
+	}
+	if n > 20 { // guard the left shift; the cap has long since applied
+		return balanceRestMaxSecs
+	}
+	secs := int64(balanceRestSecs) << uint(n)
+	if secs > balanceRestMaxSecs {
+		return balanceRestMaxSecs
+	}
+	return secs
+}
+
+// extendBalanceRest keeps the account out after a failed self-probe, doubling
+// the window each time (60s, 2m, 4m ... capped at balanceRestMaxSecs). Every
+// balanceAlertRounds failures it raises an alert: a balance that has not come
+// back by then is waiting on a top-up, not on us.
 func (lb *LoadBalancer) extendBalanceRest(b *Backend, now time.Time, code int) {
 	b.balanceHold.Store(true)
-	b.ttlUntil.Store(now.Unix() + balanceRestSecs)
+	n := b.balanceRestCount.Add(1)
+	b.ttlUntil.Store(now.Unix() + balanceRestBackoff(n))
+	if n%balanceAlertRounds == 0 {
+		resting := int64(0)
+		if since := b.balanceRestSince.Load(); since > 0 {
+			resting = now.Unix() - since
+		}
+		alert(b.Name, "balance", fmt.Sprintf("%d failed balance probes over %ds (code=%d): account needs a top-up", n, resting, code))
+	}
 	if code != 0 {
 		b.lastHTTPCode.Store(int64(code))
 		b.lastCodeAt.Store(now.Unix())
@@ -869,6 +925,8 @@ func (lb *LoadBalancer) finishBalanceRest(b *Backend, now time.Time, code int) {
 	b.consecErr.Store(0)
 	b.consecOK.Store(0)
 	b.quotaExhausted.Store(false)
+	b.balanceRestCount.Store(0)
+	b.balanceRestSince.Store(0)
 	b.lastSuccessAt.Store(now.Unix())
 	if code == 0 {
 		code = http.StatusOK

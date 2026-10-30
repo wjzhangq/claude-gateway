@@ -45,6 +45,17 @@ func ProbeReachableDetailed(client *http.Client, baseURL, apiKey string) (observ
 		return code, ra, false, nil
 	}
 
+	// 401/403 is an account-level verdict, not a missing endpoint: the key is
+	// revoked, suspended, or out of balance, so the inference fallback would
+	// fail on the same key and cost a billable request to learn nothing. Judge
+	// it unreachable on the cheap probe alone. The verdict is not permanent —
+	// the isolation TTL expires, releaseExpired promotes the backend to Probing
+	// and real traffic re-decides. ProbeBalance is a separate path and is
+	// unaffected, so a negative balance still gets its own self-probe.
+	if code == http.StatusUnauthorized || code == http.StatusForbidden {
+		return code, ra, false, mErr
+	}
+
 	// Models listing failed or is unsupported — confirm with a real message.
 	msgCode, msgRA, msgErr := probeMessages(client, baseURL, apiKey)
 	if msgErr != nil {
