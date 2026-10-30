@@ -27,7 +27,7 @@ func (d *DB) CreateApplication(a *model.Application) error {
 
 func (d *DB) GetApplicationByID(id int64) (*model.Application, error) {
 	a := &model.Application{}
-	err := d.QueryRow(
+	err := d.QueryRowRead(
 		`SELECT id, user_id, reason, status, reviewer_id, review_note, created_at, updated_at
 		 FROM applications WHERE id = ?`, id,
 	).Scan(&a.ID, &a.UserID, &a.Reason, &a.Status,
@@ -49,7 +49,7 @@ func (d *DB) ListApplications(userID int64, status string) ([]*model.Application
 		where += " AND a.status = ?"
 		args = append(args, status)
 	}
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT a.id, a.user_id, u.itcode, u.name, u.status, u.group_id, a.reason, a.status, a.reviewer_id, a.review_note, a.created_at, a.updated_at
 		 FROM applications a JOIN users u ON a.user_id = u.id `+where+` ORDER BY a.created_at DESC`, args...)
 	if err != nil {

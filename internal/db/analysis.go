@@ -38,7 +38,7 @@ func (d *DB) ListPending(limit, maxRetry int, newestFirst bool) ([]*PendingRecor
 	if newestFirst {
 		order = "ORDER BY id DESC"
 	}
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT id, usage_log_id, user_id, signal, retry_count, created_at
 		 FROM pending_analysis
 		 WHERE retry_count < ?
@@ -198,7 +198,7 @@ func (d *DB) ListTaggedRecords(userID int64, windowStart time.Time) ([]classify.
 		where += " AND user_id = ?"
 		args = append(args, userID)
 	}
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT user_id, created_at, task_type, work_related, code_direction, error_reason
 		 FROM usage_logs `+where+` ORDER BY created_at ASC`, args...)
 	if err != nil {

@@ -163,6 +163,14 @@ func main() {
 		}
 	}()
 
+	// Close any daily_stats gap left by downtime before the periodic aggregator
+	// takes over — it only ever covers today and yesterday, so a restart that
+	// skips a day would leave that date un-aggregated for good. Non-fatal: the
+	// gateway still serves traffic with a stale rollup.
+	if err := database.AggregateSinceLastRollup(); err != nil {
+		logger.Errorf("daily stats catch-up: %v", err)
+	}
+
 	aggregator := stats.NewAggregator(database, cfg.UsageSync)
 	aggregator.Start()
 

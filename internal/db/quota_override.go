@@ -35,7 +35,7 @@ JOIN users u ON u.id = q.user_id`
 
 func (d *DB) GetUserQuotaOverride(userID int64) (*model.UserQuotaOverride, error) {
 	o := &model.UserQuotaOverride{}
-	err := scanOverride(d.QueryRow(overrideSelectSQL+` WHERE q.user_id = ?`, userID), o)
+	err := scanOverride(d.QueryRowRead(overrideSelectSQL+` WHERE q.user_id = ?`, userID), o)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -48,7 +48,7 @@ func (d *DB) GetUserQuotaOverride(userID int64) (*model.UserQuotaOverride, error
 
 func (d *DB) GetUserQuotaOverrideByItcode(itcode string) (*model.UserQuotaOverride, error) {
 	o := &model.UserQuotaOverride{}
-	err := scanOverride(d.QueryRow(overrideSelectSQL+` WHERE u.itcode = ?`, itcode), o)
+	err := scanOverride(d.QueryRowRead(overrideSelectSQL+` WHERE u.itcode = ?`, itcode), o)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -91,7 +91,7 @@ func (d *DB) DeleteUserQuotaOverride(userID int64) error {
 }
 
 func (d *DB) ListUserQuotaOverrides() ([]*model.UserQuotaOverride, error) {
-	rows, err := d.Query(overrideSelectSQL + ` ORDER BY u.itcode ASC`)
+	rows, err := d.QueryRead(overrideSelectSQL + ` ORDER BY u.itcode ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("list quota overrides: %w", err)
 	}
@@ -110,7 +110,7 @@ func (d *DB) ListUserQuotaOverrides() ([]*model.UserQuotaOverride, error) {
 
 func (d *DB) IsQuotaMigrationDone() (bool, error) {
 	var count int
-	err := d.QueryRow(`SELECT COUNT(*) FROM quota_migration_flags WHERE key='config_yaml_user_daily_limits'`).Scan(&count)
+	err := d.QueryRowRead(`SELECT COUNT(*) FROM quota_migration_flags WHERE key='config_yaml_user_daily_limits'`).Scan(&count)
 	return count > 0, err
 }
 

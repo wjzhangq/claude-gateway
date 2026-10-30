@@ -118,7 +118,7 @@ func (d *DB) GetAttribution(days int, hidden []string, shenLabel, nonLabel strin
 	) a ON u.id = a.user_id
 	WHERE u.itcode IS NOT NULL AND u.itcode != ''%s`, reqExpr, dateFilter, dateFilter, hiddenClause)
 
-	rows, err := d.Query(sql, hiddenArgs...)
+	rows, err := d.QueryRead(sql, hiddenArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func (d *DB) GetAttribution(days int, hidden []string, shenLabel, nonLabel strin
 // (0, 0) when there is no real data to derive a ratio from.
 func (d *DB) backendRequestRatio() (int64, int64, error) {
 	var reqs, tokens *int64
-	err := d.QueryRow(
+	err := d.QueryRowRead(
 		`SELECT SUM(requests), SUM(total_tokens) FROM daily_stats WHERE requests > 0`,
 	).Scan(&reqs, &tokens)
 	if err != nil {

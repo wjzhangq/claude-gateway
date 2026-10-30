@@ -111,7 +111,7 @@ type OrgUser struct {
 
 // ListOrgUsers returns all users with their org tags, ordered by itcode.
 func (d *DB) ListOrgUsers() ([]*OrgUser, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT id, itcode, COALESCE(name, ''), status,
 		        COALESCE(department, ''), COALESCE(role_tag, '未分类'), COALESCE(org_note, ''),
 		        COALESCE(attr_group, ''), COALESCE(attr_side, '')
@@ -201,7 +201,7 @@ func (d *DB) GetUsageRanking(days, limit int, hidden []string) ([]*RankingUser, 
 	ORDER BY all_tokens DESC
 	LIMIT %d`, dateFilter, dateFilter, hiddenClause, limit)
 
-	rows, err := d.Query(sql, hiddenArgs...)
+	rows, err := d.QueryRead(sql, hiddenArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +241,7 @@ type RankingMeta struct {
 func (d *DB) GetRankingMeta() (*RankingMeta, error) {
 	m := &RankingMeta{}
 	var updatedAt *string
-	err := d.QueryRow(
+	err := d.QueryRowRead(
 		`SELECT MAX(d) FROM (
 		   SELECT MAX(date) as d FROM daily_stats
 		   UNION ALL SELECT MAX(date) as d FROM aws_daily_stats
@@ -252,7 +252,7 @@ func (d *DB) GetRankingMeta() (*RankingMeta, error) {
 	if updatedAt != nil {
 		m.DataUpdatedAt = *updatedAt
 	}
-	if err := d.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&m.RegisteredTotal); err != nil {
+	if err := d.QueryRowRead(`SELECT COUNT(*) FROM users`).Scan(&m.RegisteredTotal); err != nil {
 		return nil, err
 	}
 	return m, nil
@@ -305,7 +305,7 @@ type InsightSummary struct {
 
 // GetModelDistribution returns per-model stats for a user on the given stats table.
 func (d *DB) GetModelDistribution(table string, userID int64) ([]*ModelStat, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT model, SUM(requests) as reqs, SUM(total_tokens) as tokens, ROUND(SUM(cost_usd), 4) as cost
 		 FROM `+table+` WHERE user_id = ?
 		 GROUP BY model ORDER BY cost DESC LIMIT 20`, userID)
@@ -326,7 +326,7 @@ func (d *DB) GetModelDistribution(table string, userID int64) ([]*ModelStat, err
 
 // GetDailyTrend returns the last 30 days of per-date stats for a user.
 func (d *DB) GetDailyTrend(table string, userID int64) ([]*TrendPoint, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT date, SUM(requests) as reqs, SUM(total_tokens) as tokens, ROUND(SUM(cost_usd), 4) as cost
 		 FROM `+table+` WHERE user_id = ? AND date >= date('now', '+8 hours', '-30 days')
 		 GROUP BY date ORDER BY date`, userID)
@@ -347,7 +347,7 @@ func (d *DB) GetDailyTrend(table string, userID int64) ([]*TrendPoint, error) {
 
 // GetWeeklyTrend returns up to 12 weeks of backend stats for a user.
 func (d *DB) GetWeeklyTrend(userID int64) ([]*WeekPoint, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT strftime('%Y-W%W', date) as week, SUM(requests) as reqs,
 		        SUM(total_tokens) as tokens, ROUND(SUM(cost_usd), 4) as cost
 		 FROM daily_stats WHERE user_id = ?
@@ -369,7 +369,7 @@ func (d *DB) GetWeeklyTrend(userID int64) ([]*WeekPoint, error) {
 
 // GetPeakDays returns the top 5 highest-token days of backend usage for a user.
 func (d *DB) GetPeakDays(userID int64) ([]*PeakDay, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT date, SUM(total_tokens) as tokens, ROUND(SUM(cost_usd), 4) as cost
 		 FROM daily_stats WHERE user_id = ?
 		 GROUP BY date ORDER BY tokens DESC LIMIT 5`, userID)
@@ -394,7 +394,7 @@ func (d *DB) GetInsightSummary(table string, userID int64) (*InsightSummary, err
 	var reqs, tokens, inputT, outputT, activeDays *int64
 	var cost *float64
 	var firstDate, lastDate *string
-	err := d.QueryRow(
+	err := d.QueryRowRead(
 		`SELECT SUM(requests), SUM(total_tokens), SUM(input_tokens), SUM(output_tokens),
 		        ROUND(SUM(cost_usd), 4), MIN(date), MAX(date), COUNT(DISTINCT date)
 		 FROM `+table+` WHERE user_id = ?`, userID,

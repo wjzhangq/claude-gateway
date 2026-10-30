@@ -37,8 +37,31 @@ func Init(path string, slowQueryThresholdMs int) (*DB, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
-	// Separate read-only connection for DB Explorer queries — enforced at driver level.
-	roDB, err := sql.Open("sqlite", path+"?mode=ro&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)")
+	// Separate read-only pool, enforced at driver level. Reads go here so they do
+	// not queue behind writes on the single write connection above: with
+	// MaxOpenConns(1) a read waits for the writer to release the connection, and
+	// that wait lands inside the measured query duration, which is what made
+	// unrelated statements surface in the slow-query log with identical timings.
+	// WAL readers see the last committed transaction, so a read issued after a
+	// handler's write has committed observes it.
+	//
+	// Opened after sqlDB.Ping() on purpose: a read-only connection cannot create
+	// the -wal / -shm sidecar files, so the write handle has to establish them
+	// first. Do not reorder.
+	// Pool size stays at 4 — the host has 2 cores, and more concurrent scans just
+	// contend for CPU.
+	//
+	// Read-only is enforced two ways, because mode=ro alone is NOT enough:
+	// modernc.org/sqlite only honours mode=ro when the DSN carries the "file:"
+	// URI prefix — without it the parameter is silently ignored and writes go
+	// through. query_only(true) is belt-and-braces in case the path ever loses
+	// the prefix. Verified against modernc.org/sqlite v1.29.9 (see pool_test.go).
+	roDB, err := sql.Open("sqlite", "file:"+path+"?mode=ro"+
+		"&_pragma=query_only(true)"+
+		"&_pragma=journal_mode(WAL)"+
+		"&_pragma=busy_timeout(5000)"+
+		"&_pragma=cache_size(-65536)"+ // 64MB cache, matching the write handle
+		"&_pragma=mmap_size(268435456)") // 256MB mmap for read performance
 	if err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("open sqlite (readonly): %w", err)
@@ -105,6 +128,57 @@ func (d *DB) QueryContext(ctx context.Context, query string, args ...interface{}
 		logger.LogSlowQuery(elapsed, query, caller)
 	}
 	return rows, err
+}
+
+// QueryRead executes a read-only query on the read-only pool, with slow query
+// logging. Use this for any statement that only reads: it keeps the single write
+// connection free and is not blocked by an in-flight write. Writes routed here
+// are rejected by the driver.
+func (d *DB) QueryRead(query string, args ...interface{}) (*sql.Rows, error) {
+	start := time.Now()
+	caller := getCaller(2)
+	rows, err := d.readonlyDB.Query(query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return rows, err
+}
+
+// QueryReadContext is QueryRead with a context.
+func (d *DB) QueryReadContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+	start := time.Now()
+	caller := getCaller(2)
+	rows, err := d.readonlyDB.QueryContext(ctx, query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return rows, err
+}
+
+// QueryRowRead executes a single-row read-only query on the read-only pool.
+func (d *DB) QueryRowRead(query string, args ...interface{}) *sql.Row {
+	start := time.Now()
+	caller := getCaller(2)
+	row := d.readonlyDB.QueryRow(query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return row
+}
+
+// QueryRowReadContext is QueryRowRead with a context.
+func (d *DB) QueryRowReadContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+	start := time.Now()
+	caller := getCaller(2)
+	row := d.readonlyDB.QueryRowContext(ctx, query, args...)
+	elapsed := time.Since(start).Milliseconds()
+	if elapsed >= d.slowThreshold {
+		logger.LogSlowQuery(elapsed, query, caller)
+	}
+	return row
 }
 
 // QueryRow executes a query that returns at most one row, with slow query logging.
@@ -249,7 +323,47 @@ FROM users WHERE daily_quota_usd > 0`},
 	// existing rows; cache-aware cost billing starts with these columns.
 	{52, `ALTER TABLE usage_logs ADD COLUMN cache_read_tokens  INTEGER NOT NULL DEFAULT 0`},
 	{53, `ALTER TABLE usage_logs ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`},
+	// Columns the user list needs so it can read daily_stats instead of
+	// aggregating 7M+ usage_logs rows per page. NOT NULL DEFAULT → zero risk to
+	// existing rows; migration 56 backfills them.
+	{54, `ALTER TABLE daily_stats ADD COLUMN oc_cost_usd  REAL NOT NULL DEFAULT 0`},  // OpenClaw share of cost_usd
+	{55, `ALTER TABLE daily_stats ADD COLUMN last_used_at TEXT NOT NULL DEFAULT ''`}, // MAX(usage_logs.created_at) that day
+	// One full rebuild of every historical rollup. Also closes the gap left by
+	// AggregateDaily only ever covering today and yesterday: any date the server
+	// was down for never got aggregated, and never would have been.
+	// substr() rather than a range query is deliberate — this scans the whole
+	// table once by design, so there is no index to exploit.
+	// The upsert only touches (date, user_id, model) groups that usage_logs
+	// actually produces, so rows for already-pruned dates and the imported
+	// model='synced' rows are left as they are.
+	{56, backfillDailyStats},
 }
+
+// backfillDailyStats rebuilds daily_stats from the full usage_logs history,
+// including the oc_cost_usd / last_used_at columns added in 54 and 55.
+const backfillDailyStats = `
+INSERT INTO daily_stats (date, user_id, model, requests, input_tokens, output_tokens,
+                         total_tokens, cost_usd, oc_cost_usd, last_used_at)
+SELECT substr(created_at, 1, 10),
+       user_id,
+       model,
+       COUNT(*),
+       SUM(input_tokens),
+       SUM(output_tokens),
+       SUM(total_tokens),
+       SUM(cost_usd),
+       SUM(CASE WHEN is_openclaw = 1 THEN cost_usd ELSE 0 END),
+       MAX(created_at)
+FROM usage_logs
+GROUP BY 1, 2, 3
+ON CONFLICT(date, user_id, model) DO UPDATE SET
+    requests      = excluded.requests,
+    input_tokens  = excluded.input_tokens,
+    output_tokens = excluded.output_tokens,
+    total_tokens  = excluded.total_tokens,
+    cost_usd      = excluded.cost_usd,
+    oc_cost_usd   = excluded.oc_cost_usd,
+    last_used_at  = excluded.last_used_at`
 
 // pendingAnalysisSchema is the to-analyze queue (= the incremental watermark; it
 // only ever holds records not yet analyzed successfully). Original messages are

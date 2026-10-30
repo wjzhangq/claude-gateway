@@ -35,7 +35,7 @@ type QueryResult struct {
 
 // GetSchema returns the schema of all tables in the database.
 func (d *DB) GetSchema() ([]TableSchema, error) {
-	rows, err := d.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	rows, err := d.QueryRead(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list tables: %w", err)
 	}
@@ -63,7 +63,7 @@ func (d *DB) GetSchema() ([]TableSchema, error) {
 
 func (d *DB) getTableColumns(table string) ([]ColumnInfo, error) {
 	// table name is from sqlite_master, safe to interpolate
-	rows, err := d.Query(fmt.Sprintf("PRAGMA table_info('%s')", table))
+	rows, err := d.QueryRead(fmt.Sprintf("PRAGMA table_info('%s')", table))
 	if err != nil {
 		return nil, err
 	}

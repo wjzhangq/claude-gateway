@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { adminListUsers, adminUpdateUser, adminCreateUser, adminGetUsage, adminGetDailyStats, adminGetGroups, adminUpdateItcode, adminTransferKey, adminListKeys } from '../api'
 import { formatTime, formatDate, toDateStr } from '../utils/time'
 import {
@@ -155,6 +155,7 @@ export default function AdminUsersPage() {
   const [sortKey, setSortKey] = useState<string>('id')
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc')
   const [searchQuery, setSearchQuery] = useState('')
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   // itcode rename
   const [renamingItcodeId, setRenamingItcodeId] = useState<number | null>(null)
   const [itcodeValue, setItcodeValue] = useState('')
@@ -194,10 +195,13 @@ export default function AdminUsersPage() {
 
   const sortedUsers = users
 
+  // Debounced like the other admin lists: each keystroke used to fire a COUNT
+  // plus a list query, so typing an itcode queued several heavy requests at once.
   const handleSearch = (q: string) => {
     setSearchQuery(q)
     setPage(1)
-    load(1, q, sortKey, sortOrder)
+    if (searchTimer.current) clearTimeout(searchTimer.current)
+    searchTimer.current = setTimeout(() => load(1, q, sortKey, sortOrder), 250)
   }
 
   const sortIcon = (key: string) => {

@@ -57,7 +57,7 @@ func (d *DB) IncrementPerfTestRunCompleted(id int64) error {
 }
 
 func (d *DB) GetPerfTestRun(id int64) (*PerfTestRun, error) {
-	row := d.QueryRow(`SELECT id, created_at, initiated_by, status, channels, input_sizes, output_sizes, total_cells, completed_cells, COALESCE(error_msg,'') FROM perf_test_runs WHERE id = ?`, id)
+	row := d.QueryRowRead(`SELECT id, created_at, initiated_by, status, channels, input_sizes, output_sizes, total_cells, completed_cells, COALESCE(error_msg,'') FROM perf_test_runs WHERE id = ?`, id)
 	var r PerfTestRun
 	if err := row.Scan(&r.ID, &r.CreatedAt, &r.InitiatedBy, &r.Status, &r.Channels, &r.InputSizes, &r.OutputSizes, &r.TotalCells, &r.CompletedCells, &r.ErrorMsg); err != nil {
 		return nil, err
@@ -69,7 +69,7 @@ func (d *DB) ListPerfTestRuns(limit int) ([]PerfTestRun, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := d.Query(`SELECT id, created_at, initiated_by, status, channels, input_sizes, output_sizes, total_cells, completed_cells, COALESCE(error_msg,'') FROM perf_test_runs ORDER BY id DESC LIMIT ?`, limit)
+	rows, err := d.QueryRead(`SELECT id, created_at, initiated_by, status, channels, input_sizes, output_sizes, total_cells, completed_cells, COALESCE(error_msg,'') FROM perf_test_runs ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func (d *DB) InsertPerfTestResult(r *PerfTestResult) (int64, error) {
 }
 
 func (d *DB) GetPerfTestResults(runID int64) ([]PerfTestResult, error) {
-	rows, err := d.Query(`SELECT id, run_id, channel, model, input_tokens, max_tokens, ttft_ms, tpot_ms, tokens_per_second, actual_output_tokens, total_duration_ms, status, COALESCE(error_msg,''), created_at FROM perf_test_results WHERE run_id = ? ORDER BY id`, runID)
+	rows, err := d.QueryRead(`SELECT id, run_id, channel, model, input_tokens, max_tokens, ttft_ms, tpot_ms, tokens_per_second, actual_output_tokens, total_duration_ms, status, COALESCE(error_msg,''), created_at FROM perf_test_results WHERE run_id = ? ORDER BY id`, runID)
 	if err != nil {
 		return nil, err
 	}

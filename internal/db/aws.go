@@ -100,7 +100,7 @@ func (d *DB) ListAWSUsageLogs(userID int64, startDate, endDate, modelFilter stri
 	}
 
 	var total int
-	if err := d.QueryRow("SELECT COUNT(*) FROM aws_usage_logs "+countWhere, args...).Scan(&total); err != nil {
+	if err := d.QueryRowRead("SELECT COUNT(*) FROM aws_usage_logs "+countWhere, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -113,7 +113,7 @@ func (d *DB) ListAWSUsageLogs(userID int64, startDate, endDate, modelFilter stri
 	offset := (page - 1) * pageSize
 	joinArgs := append(args, pageSize, offset)
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT l.id, l.user_id, COALESCE(u.itcode,''), l.api_key_id, l.model, l.bedrock_model,
 		        l.input_tokens, l.output_tokens, l.total_tokens,
 		        l.cache_read_tokens, l.cache_write_tokens,
@@ -210,7 +210,7 @@ func (d *DB) GetAWSDailyStats(userID int64, startDate, endDate, modelFilter stri
 		args = append(args, modelFilter)
 	}
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT id, date, user_id, model, requests, input_tokens, output_tokens, total_tokens,
 		        cache_read_tokens, cache_write_tokens, cost_usd
 		 FROM aws_daily_stats `+where+` ORDER BY date DESC, user_id`, args...)
@@ -254,7 +254,7 @@ func (d *DB) GetAWSUserMonthlyCostRanking(month string, limit int) (*AWSUserDail
 		limit = 20
 	}
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT l.user_id, COALESCE(u.itcode,''), COUNT(*) as requests,
 		        SUM(l.total_tokens) as total_tokens,
 		        SUM(l.cost_usd) as cost_usd
@@ -283,7 +283,7 @@ func (d *DB) GetAWSUserMonthlyCostRanking(month string, limit int) (*AWSUserDail
 
 	var totalCost float64
 	var totalReqs int
-	err = d.QueryRow(
+	err = d.QueryRowRead(
 		`SELECT COALESCE(SUM(cost_usd),0), COUNT(*)
 		 FROM aws_usage_logs WHERE SUBSTR(created_at, 1, 7) = ?`, month).Scan(&totalCost, &totalReqs)
 	if err != nil {
@@ -303,7 +303,7 @@ func (d *DB) GetAWSUserDailyCostRanking(date string, limit int) (*AWSUserDailyCo
 		limit = 20
 	}
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT l.user_id, COALESCE(u.itcode,''), COUNT(*) as requests,
 		        SUM(l.total_tokens) as total_tokens,
 		        SUM(l.cost_usd) as cost_usd
@@ -332,7 +332,7 @@ func (d *DB) GetAWSUserDailyCostRanking(date string, limit int) (*AWSUserDailyCo
 
 	var totalCost float64
 	var totalReqs int
-	err = d.QueryRow(
+	err = d.QueryRowRead(
 		`SELECT COALESCE(SUM(cost_usd),0), COUNT(*)
 		 FROM aws_usage_logs WHERE SUBSTR(created_at, 1, 10) = ?`, date).Scan(&totalCost, &totalReqs)
 	if err != nil {
@@ -374,7 +374,7 @@ func (d *DB) GetAWSBedrockStats(startDate, endDate string) ([]*BedrockStat, erro
 		args = append(args, endDate+" 23:59:59")
 	}
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT bedrock_model,
 		        COUNT(*) as requests,
 		        SUM(input_tokens) as input_tokens,
@@ -425,11 +425,11 @@ func (d *DB) ListAWSUsersWithStats(page, pageSize int) ([]*AWSUserWithStats, int
 	offset := (page - 1) * pageSize
 
 	var total int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM users WHERE aws_enabled = 1`).Scan(&total); err != nil {
+	if err := d.QueryRowRead(`SELECT COUNT(*) FROM users WHERE aws_enabled = 1`).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_usd, u.aws_daily_quota_usd, u.aws_enabled, u.created_at, u.updated_at,
 		        COALESCE(s.requests,0), COALESCE(s.cost_usd,0)
 		 FROM users u

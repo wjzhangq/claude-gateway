@@ -198,7 +198,7 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backen
 	}
 
 	var total int
-	if err := d.QueryRow("SELECT COUNT(*) FROM usage_logs "+countWhere, args...).Scan(&total); err != nil {
+	if err := d.QueryRowRead("SELECT COUNT(*) FROM usage_logs "+countWhere, args...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -208,7 +208,7 @@ func (d *DB) ListUsageLogs(userID int64, startDate, endDate, modelFilter, backen
 	offset := (page - 1) * pageSize
 	joinArgs := append(args, pageSize, offset)
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT l.id, l.user_id, COALESCE(u.itcode, '') AS itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.task_type, l.work_related, l.code_direction, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+joinWhere+` ORDER BY l.created_at DESC LIMIT ? OFFSET ?`, joinArgs...)
 	if err != nil {
@@ -256,7 +256,7 @@ func (d *DB) ListUsageLogsAll(userID int64, startDate, endDate, modelFilter, bac
 		args = append(args, backendFilter+"%")
 	}
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT l.id, l.user_id, COALESCE(u.itcode, '') AS itcode, l.api_key_id, l.model, l.backend, l.input_tokens, l.output_tokens, l.total_tokens, l.cost_usd, l.status_code, l.latency_ms, l.is_openclaw, l.is_downgraded, l.ua, l.error_reason, l.ip, l.city, l.is_hq, l.task_type, l.work_related, l.code_direction, l.created_at
 		 FROM usage_logs l LEFT JOIN users u ON u.id = l.user_id `+where+` ORDER BY l.created_at ASC`, args...)
 	if err != nil {
@@ -311,7 +311,7 @@ func (d *DB) GetUserDailyCostRanking(date string, limit int, hidden []string) (*
 	listArgs := []interface{}{date, date}
 	listArgs = append(listArgs, hiddenArgs...)
 	listArgs = append(listArgs, limit)
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT l.user_id, COALESCE(u.itcode, ''), COUNT(*) as requests,
 		        SUM(l.total_tokens) as total_tokens,
 		        SUM(l.cost_usd) as cost_usd,
@@ -343,7 +343,7 @@ func (d *DB) GetUserDailyCostRanking(date string, limit int, hidden []string) (*
 	// Totals include hidden itcodes — they are only excluded from the ranked list.
 	var totalCost, ocCost float64
 	var totalReqs int
-	err = d.QueryRow(
+	err = d.QueryRowRead(
 		`SELECT COALESCE(SUM(cost_usd),0), COALESCE(SUM(CASE WHEN is_openclaw THEN cost_usd ELSE 0 END),0), COUNT(*)
 		 FROM usage_logs WHERE created_at >= ? AND created_at < date(?, '+1 day')`, date, date).Scan(&totalCost, &ocCost, &totalReqs)
 	if err != nil {
@@ -382,7 +382,7 @@ func (d *DB) GetBackendStats(startDate, endDate string) ([]*BackendStat, error) 
 		args = append(args, endDate+" 23:59:59")
 	}
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT backend,
 		        COUNT(*) as requests,
 		        SUM(total_tokens) as total_tokens,
@@ -418,7 +418,7 @@ type UserBackendDailyStat struct {
 
 // GetUserTodayBackendBreakdown returns today's usage grouped by backend for the given user.
 func (d *DB) GetUserTodayBackendBreakdown(userID int64, date string) ([]*UserBackendDailyStat, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT backend, COUNT(*) as requests, SUM(total_tokens) as total_tokens, SUM(cost_usd) as cost_usd
 		 FROM usage_logs
 		 WHERE user_id = ? AND SUBSTR(created_at, 1, 10) = ? AND backend != ''
@@ -454,7 +454,7 @@ func (d *DB) GetGroupStats(startDate, endDate string) ([]*model.GroupStats, erro
 		args = append(args, endDate+" 23:59:59")
 	}
 
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT l.group_id,
 		        COUNT(*) as requests,
 		        SUM(l.input_tokens) as input_tokens,

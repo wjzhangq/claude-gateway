@@ -83,7 +83,7 @@ func (d *DB) CreateUser(u *model.User) error {
 
 func (d *DB) GetUserByItcode(itcode string) (*model.User, error) {
 	u := &model.User{}
-	err := d.QueryRow(
+	err := d.QueryRowRead(
 		`SELECT id, itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, aws_enabled, created_at, updated_at
 		 FROM users WHERE itcode = ?`, itcode,
 	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaUSD, &u.AWSDailyQuotaUSD, &u.AWSEnabled, &u.CreatedAt, &u.UpdatedAt)
@@ -95,7 +95,7 @@ func (d *DB) GetUserByItcode(itcode string) (*model.User, error) {
 
 func (d *DB) GetUserByID(id int64) (*model.User, error) {
 	u := &model.User{}
-	err := d.QueryRow(
+	err := d.QueryRowRead(
 		`SELECT id, itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, aws_enabled, created_at, updated_at
 		 FROM users WHERE id = ?`, id,
 	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaUSD, &u.AWSDailyQuotaUSD, &u.AWSEnabled, &u.CreatedAt, &u.UpdatedAt)
@@ -106,7 +106,7 @@ func (d *DB) GetUserByID(id int64) (*model.User, error) {
 }
 
 func (d *DB) ListUsers() ([]*model.User, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT id, itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, aws_enabled, created_at, updated_at FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -156,7 +156,7 @@ func (d *DB) ListUsersWithStats(page, pageSize int, search, sortBy, sortOrder st
 
 	var total int
 	countSQL := `SELECT COUNT(*) FROM users u` + whereClause
-	if err := d.QueryRow(countSQL, whereArgs...).Scan(&total); err != nil {
+	if err := d.QueryRowRead(countSQL, whereArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
@@ -181,22 +181,46 @@ func (d *DB) ListUsersWithStats(page, pageSize int, search, sortBy, sortOrder st
 	}
 	orderClause := fmt.Sprintf(" ORDER BY %s %s", orderCol, sortOrder)
 
+	// Stats come from the daily_stats / aws_daily_stats rollups, not from a JOIN
+	// against usage_logs. The old form joined every one of a user's usage_logs
+	// rows and only then paginated, so each page had to aggregate the whole table
+	// (~1s per page on a 600k-row copy, tens of seconds on production). Reading
+	// the rollups keeps the cost tied to the number of users, not the log volume,
+	// and makes the query independent of OFFSET.
+	//
+	// Freshness: the aggregator runs on cfg.UsageSync (5m default) over today and
+	// yesterday, so these figures trail live traffic by at most one interval.
+	//
+	// model <> 'synced' excludes the rows cmd/sync imported from the old system:
+	// they carry real cost but requests=0, and counting them would inflate the
+	// displayed cost relative to the usage_logs basis the UI has always shown.
 	queryArgs := append(whereArgs, pageSize, offset)
-	rows, err := d.Query(
-		`SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_usd, u.aws_daily_quota_usd, u.aws_enabled, u.created_at, u.updated_at,
-		        MAX(l.created_at) as last_used_at,
-		        COALESCE(COUNT(l.id), 0) as requests,
-		        COALESCE(SUM(l.cost_usd), 0) as cost_usd,
-		        COALESCE(SUM(CASE WHEN l.is_openclaw = 1 THEN l.cost_usd ELSE 0 END), 0) as oc_cost_usd,
-		        COALESCE(SUM(l.cost_usd), 0) as backend_cost_usd,
-		        COALESCE(aw.aws_cost_usd, 0) as aws_cost_usd
+	rows, err := d.QueryRead(
+		`WITH ds AS (
+		     SELECT user_id,
+		            SUM(requests)     as requests,
+		            SUM(cost_usd)     as cost_usd,
+		            SUM(oc_cost_usd)  as oc_cost_usd,
+		            MAX(last_used_at) as last_used_at
+		     FROM daily_stats
+		     WHERE model <> 'synced'
+		     GROUP BY user_id
+		 ), aws AS (
+		     SELECT user_id, SUM(cost_usd) as aws_cost_usd
+		     FROM aws_daily_stats
+		     GROUP BY user_id
+		 )
+		 SELECT u.id, u.itcode, u.name, u.role, u.status, u.group_id, u.daily_quota_usd, u.aws_daily_quota_usd, u.aws_enabled, u.created_at, u.updated_at,
+		        NULLIF(ds.last_used_at, '') as last_used_at,
+		        COALESCE(ds.requests, 0) as requests,
+		        COALESCE(ds.cost_usd, 0) as cost_usd,
+		        COALESCE(ds.oc_cost_usd, 0) as oc_cost_usd,
+		        COALESCE(ds.cost_usd, 0) as backend_cost_usd,
+		        COALESCE(aws.aws_cost_usd, 0) as aws_cost_usd
 		 FROM users u
-		 LEFT JOIN usage_logs l ON l.user_id = u.id
-		 LEFT JOIN (
-		     SELECT user_id, SUM(cost_usd) as aws_cost_usd FROM aws_usage_logs GROUP BY user_id
-		 ) aw ON aw.user_id = u.id`+
-		whereClause+`
-		 GROUP BY u.id`+
+		 LEFT JOIN ds  ON ds.user_id  = u.id
+		 LEFT JOIN aws ON aws.user_id = u.id`+
+		whereClause+
 		orderClause+`
 		 LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
@@ -230,7 +254,7 @@ func (d *DB) SearchUsersByItcode(prefix string, limit int) ([]*UserSearchResult,
 	if limit <= 0 || limit > 50 {
 		limit = 10
 	}
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT id, itcode, name, COALESCE(aws_enabled, 0) FROM users WHERE itcode LIKE ? ORDER BY itcode LIMIT ?`,
 		prefix+"%", limit,
 	)
@@ -292,12 +316,12 @@ func (d *DB) ListAllAPIKeys(userID int64, page, pageSize int) ([]*APIKeyWithUser
 
 	var total int
 	countArgs := append([]interface{}{}, args...)
-	if err := d.QueryRow(`SELECT COUNT(*) FROM api_keys k `+where, countArgs...).Scan(&total); err != nil {
+	if err := d.QueryRowRead(`SELECT COUNT(*) FROM api_keys k `+where, countArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	queryArgs := append(args, pageSize, offset)
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT k.id, k.user_id, COALESCE(u.itcode, ''), COALESCE(u.name, ''), COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
 		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
@@ -374,7 +398,7 @@ func (d *DB) UpdateUser(u *model.User) error {
 // EnsureAdmin creates the admin user if no admin exists yet.
 func (d *DB) EnsureAdmin(itcode string) error {
 	var count int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM users WHERE role='admin'`).Scan(&count); err != nil {
+	if err := d.QueryRowRead(`SELECT COUNT(*) FROM users WHERE role='admin'`).Scan(&count); err != nil {
 		return err
 	}
 	if count > 0 {
@@ -412,7 +436,7 @@ func (d *DB) CreateAPIKey(k *model.APIKey) error {
 
 func (d *DB) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 	k := &model.APIKey{}
-	err := d.QueryRow(
+	err := d.QueryRowRead(
 		`SELECT id, user_id, key, name, status, channel, auto_downgrade, created_at, updated_at, locked_model
 		 FROM api_keys WHERE key = ?`, key,
 	).Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &k.CreatedAt, &k.UpdatedAt, &k.LockedModel)
@@ -426,7 +450,7 @@ func (d *DB) GetAPIKeyByKey(key string) (*model.APIKey, error) {
 func (d *DB) GetAPIKeyByID(id int64) (*model.APIKey, error) {
 	k := &model.APIKey{}
 	var lastUsed *string
-	err := d.QueryRow(
+	err := d.QueryRowRead(
 		`SELECT id, user_id, key, name, status, channel, auto_downgrade, last_used_at, created_at, updated_at, locked_model
 		 FROM api_keys WHERE id = ?`, id,
 	).Scan(&k.ID, &k.UserID, &k.Key, &k.Name, &k.Status, &k.Channel, &k.AutoDowngrade, &lastUsed, &k.CreatedAt, &k.UpdatedAt, &k.LockedModel)
@@ -441,7 +465,7 @@ func (d *DB) GetAPIKeyByID(id int64) (*model.APIKey, error) {
 }
 
 func (d *DB) ListAPIKeysByUser(userID int64) ([]*model.APIKey, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
 		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
@@ -473,7 +497,7 @@ func (d *DB) ListAPIKeysByUserAndChannel(userID int64, channel string) ([]*model
 		where += " AND k.channel = ?"
 		args = append(args, channel)
 	}
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT k.id, k.user_id, k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
 		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
@@ -497,7 +521,7 @@ func (d *DB) ListAPIKeysByUserAndChannel(userID int64, channel string) ([]*model
 }
 
 func (d *DB) ListAllActiveAPIKeys() ([]*model.APIKey, error) {
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT id, user_id, key, name, status, channel, auto_downgrade, last_used_at, created_at, updated_at, locked_model
 		 FROM api_keys WHERE status = 'active'`)
 	if err != nil {
@@ -545,12 +569,12 @@ func (d *DB) ListAllAPIKeysByChannel(channel string, userID int64, page, pageSiz
 
 	var total int
 	countArgs := append([]interface{}{}, args...)
-	if err := d.QueryRow(`SELECT COUNT(*) FROM api_keys k `+where, countArgs...).Scan(&total); err != nil {
+	if err := d.QueryRowRead(`SELECT COUNT(*) FROM api_keys k `+where, countArgs...).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	queryArgs := append(args, pageSize, offset)
-	rows, err := d.Query(
+	rows, err := d.QueryRead(
 		`SELECT k.id, k.user_id, COALESCE(u.itcode, ''), COALESCE(u.name, ''), COALESCE(u.aws_enabled, 0), k.key, k.name, k.status, k.channel, k.auto_downgrade, k.last_used_at, k.created_at, k.updated_at,
 		        k.total_cost_usd, k.backend_cost_usd, k.aws_cost_usd, k.locked_model
 		 FROM api_keys k
