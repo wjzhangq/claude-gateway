@@ -433,6 +433,10 @@ func main() {
 		apiAWS.GET("/usage/daily", awsStatsH.GetMyDailyStats)
 	}
 
+	// Quota override handler is shared by the session-authenticated admin API
+	// (web console) and the API-key authenticated db group (scripts / skills).
+	quotaH := handler.NewQuotaOverrideHandler(database, cfg, keyStore)
+
 	adminAPI := r.Group("/admin/api")
 	adminAPI.Use(middleware.SessionAuthMiddleware())
 	adminAPI.Use(middleware.AdminRequired())
@@ -485,7 +489,6 @@ func main() {
 		adminAPI.GET("/insight/abuse", insightH.GetAbuseInsight)
 
 		// Quota overrides: per-user backend daily spend cap stored in DB
-		quotaH := handler.NewQuotaOverrideHandler(database, keyStore)
 		adminAPI.GET("/quota/overrides", quotaH.List)
 		adminAPI.PUT("/quota/overrides/:itcode", quotaH.Upsert)
 		adminAPI.DELETE("/quota/overrides/:itcode", quotaH.Delete)
@@ -515,6 +518,14 @@ func main() {
 		dbAPI.POST("/query", dbExplorerH.ExecuteQuery)
 		dbAPI.GET("/errors/recent", dbExplorerH.GetRecentErrors)
 		dbAPI.GET("/logs/recent", dbExplorerH.GetRecentLogs)
+
+		// Quota read + adjust. Writes go through the same handlers the web
+		// console uses, so the in-process override cache stays in sync — a
+		// direct SQL UPDATE would not take effect until midnight or restart.
+		dbAPI.GET("/quota/status", quotaH.Status)
+		dbAPI.GET("/quota/overrides", quotaH.List)
+		dbAPI.PUT("/quota/overrides/:itcode", quotaH.Upsert)
+		dbAPI.DELETE("/quota/overrides/:itcode", quotaH.Delete)
 	}
 
 	// Backend quota sync API (session_secret auth, called by cmd/check)

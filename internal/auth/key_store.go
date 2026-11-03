@@ -271,6 +271,22 @@ func (ks *KeyStore) GetDailyCost(userID int64) float64 {
 	return cost
 }
 
+// SnapshotDailyCosts returns the current daily cost window and a copy of
+// today's accumulated backend spend per user. The map is a copy, so callers
+// may filter or serialise it without touching the live counters that gate
+// enforcement. Thread-safe.
+func (ks *KeyStore) SnapshotDailyCosts() (string, map[int64]float64) {
+	ks.mu.Lock()
+	ks.checkAndResetDaily()
+	date := ks.dailyCostDate
+	costs := make(map[int64]float64, len(ks.dailyCosts))
+	for uid, c := range ks.dailyCosts {
+		costs[uid] = c
+	}
+	ks.mu.Unlock()
+	return date, costs
+}
+
 // InitDailyCosts seeds the in-memory daily cost map from a pre-fetched snapshot.
 // date must be "YYYY-MM-DD". Costs map is userID -> cost_usd for that date.
 // Call this once at startup (after loading daily_stats from DB).
