@@ -203,7 +203,7 @@ func TestHandleResponses_WebSearchDisabled_StripsServerTool(t *testing.T) {
 	h := wsTestHandler(t, up.URL, "http://127.0.0.1:0")
 	// Disable the web-search feature.
 	h.webSearchCfg.Enabled = false
-	h.searxng = nil
+	h.searchProvider = nil
 
 	body := responsesReq(false, `{"type":"web_search"}`)
 	w, c := newResponsesCtx(body)

@@ -42,10 +42,10 @@ type Handler struct {
 	ipGeo             *ipgeo.Store
 
 	// Web-search simulation (backend channel). webSearchCfg is the current
-	// config; searxng is a lazily-built client rebuilt when the config changes.
-	// Both are guarded by mu.
-	webSearchCfg config.WebSearchConfig
-	searxng      *websearch.Client
+	// config; searchProvider is a lazily-built client rebuilt when the config
+	// changes. Both are guarded by mu.
+	webSearchCfg   config.WebSearchConfig
+	searchProvider websearch.SearchProvider
 }
 
 func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.KeyStore, cfg *config.Config, modelReplacements map[string]string) *Handler {
@@ -60,7 +60,12 @@ func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.Key
 	if cfg != nil {
 		h.webSearchCfg = cfg.WebSearch
 		if cfg.WebSearch.Enabled && cfg.WebSearch.SearchURL != "" {
-			h.searxng = websearch.NewClient(cfg.WebSearch)
+			provider, err := websearch.NewSearchProvider(cfg.WebSearch)
+			if err != nil {
+				logger.Warnf("websearch: failed to create provider %q: %v", cfg.WebSearch.Provider, err)
+			} else {
+				h.searchProvider = provider
+			}
 		}
 	}
 	return h
@@ -386,7 +391,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	// searches against SearXNG, and emits native server_tool_use +
 	// web_search_tool_result blocks. Any other request falls through untouched.
 	h.mu.RLock()
-	wsEnabled := h.webSearchCfg.Enabled && h.searxng != nil
+	wsEnabled := h.webSearchCfg.Enabled && h.searchProvider != nil
 	h.mu.RUnlock()
 	if wsEnabled && strings.HasSuffix(upstreamPath, "/messages") && websearch.DetectInBody(body) {
 		h.handleWithWebSearch(c, backend, upstreamPath, body, reqModel, keyInfo, keyStr, time.Now(), isOpenClaw, isHermes)
@@ -1403,9 +1408,15 @@ func (h *Handler) UpdateConfig(cfg *config.Config) {
 	if cfg != nil {
 		h.webSearchCfg = cfg.WebSearch
 		if cfg.WebSearch.Enabled && cfg.WebSearch.SearchURL != "" {
-			h.searxng = websearch.NewClient(cfg.WebSearch)
+			provider, err := websearch.NewSearchProvider(cfg.WebSearch)
+			if err != nil {
+				logger.Warnf("websearch: failed to create provider %q: %v", cfg.WebSearch.Provider, err)
+				h.searchProvider = nil
+			} else {
+				h.searchProvider = provider
+			}
 		} else {
-			h.searxng = nil
+			h.searchProvider = nil
 		}
 	}
 	h.mu.Unlock()

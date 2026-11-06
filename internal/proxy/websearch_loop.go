@@ -57,7 +57,7 @@ type loopError struct {
 // Usage is aggregated across rounds and billed once through emitUsage.
 func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstreamPath string, body []byte, reqModel string, keyInfo interface{}, keyStr string, start time.Time, isOpenClaw, isHermes bool) {
 	h.mu.RLock()
-	client := h.searxng
+	client := h.searchProvider
 	cfg := h.webSearchCfg
 	h.mu.RUnlock()
 
@@ -133,7 +133,7 @@ func (h *Handler) handleWithWebSearch(c *gin.Context, backend *Backend, upstream
 // request that only uses function tools), no search is ever triggered: the model
 // simply won't emit a web_search call, so the loop runs a single round and
 // returns the plain content.
-func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPath, reqModel string, req *websearch.MessagesRequest, client *websearch.Client, cfg config.WebSearchConfig, start time.Time, pinger func()) (loopResult, *loopError) {
+func (h *Handler) runWebSearchLoop(c *gin.Context, backend *Backend, upstreamPath, reqModel string, req *websearch.MessagesRequest, client websearch.SearchProvider, cfg config.WebSearchConfig, start time.Time, pinger func()) (loopResult, *loopError) {
 	_, detectedMaxUses, allowed, blocked := websearch.DetectWebSearchTool(req.Tools)
 	maxUses := detectedMaxUses
 	if maxUses < 0 {

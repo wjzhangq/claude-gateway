@@ -61,7 +61,7 @@ func (h *Handler) HandleResponses(c *gin.Context, body []byte) {
 	}
 
 	h.mu.RLock()
-	client := h.searxng
+	client := h.searchProvider
 	cfg := h.webSearchCfg
 	wsEnabled := cfg.Enabled && client != nil
 	h.mu.RUnlock()

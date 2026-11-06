@@ -11,7 +11,10 @@
 // tool_choice, metadata, ... must survive the round trip).
 package websearch
 
-import "encoding/json"
+import (
+	"context"
+	"encoding/json"
+)
 
 // ServerToolPrefix is the type prefix Anthropic uses for the web_search server
 // tool (e.g. "web_search_20250305"). Any tool whose type carries this prefix is
@@ -126,4 +129,10 @@ type Result struct {
 	URL         string `json:"url"`
 	Content     string `json:"content"`
 	PublishedAt string `json:"published_date,omitempty"`
+}
+
+// SearchProvider is the interface all search backends (SearXNG, WebIQ) implement.
+// The gateway calls Search for each web_search tool_use and feeds results back.
+type SearchProvider interface {
+	Search(ctx context.Context, query, lang string, allowed, blocked []string) ([]Result, error)
 }
