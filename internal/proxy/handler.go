@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
@@ -82,7 +83,10 @@ func NewHandler(lb *LoadBalancer, collector *stats.Collector, keyStore *auth.Key
 		keyStore:          keyStore,
 		config:            cfg,
 		modelReplacements: modelReplacements,
-		fallbackClient:    &http.Client{Timeout: 5 * time.Minute},
+		fallbackClient: &http.Client{
+			Transport: GetMultiHostTransport(),
+			Timeout:   5 * time.Minute,
+		},
 	}
 	if cfg != nil {
 		h.webSearchCfg = cfg.WebSearch
@@ -235,14 +239,9 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		return
 	}
 
-	// Extract model name from request body for usage tracking
-	var reqModel string
-	var reqJSON struct {
-		Model string `json:"model"`
-	}
-	if json.Unmarshal(body, &reqJSON) == nil {
-		reqModel = reqJSON.Model
-	}
+	// Extract model name from request body for usage tracking. gjson reads the
+	// one field without decoding the rest of the body.
+	reqModel := gjson.GetBytes(body, "model").String()
 
 	// Strip per-session steganographic date markers before forwarding.
 	// Only applied to Claude models; the sanitizer's fast path makes this a
@@ -1094,6 +1093,8 @@ func putPartialBuf(p *[]byte) {
 //
 //noalloc:root
 func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool, reqBody []byte) {
+	defer resp.Body.Close()
+
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
@@ -1242,6 +1243,8 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 }
 
 func (h *Handler) bufferResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool, reqBody []byte) {
+	defer resp.Body.Close()
+
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		logger.Errorf("read response body: %v", err)

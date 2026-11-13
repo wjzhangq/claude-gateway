@@ -3,7 +3,12 @@
 // (and money) the same way.
 package usage
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+)
 
 // ParseTokens extracts token counts from a response body or a single SSE
 // data payload. Handles:
@@ -89,24 +94,29 @@ func (a *Accumulator) Add(input, output, cacheRead, cacheWrite int) {
 // The body is returned unchanged when it is not valid JSON, when stream is not
 // true (non-streaming responses always carry usage), or when the client already
 // set stream_options — a client's own choice is never overwritten.
+// It reads and writes through gjson/sjson rather than unmarshalling the body
+// into a map: the two guard checks allocate nothing, the write touches only the
+// spliced region, and every other byte — key order, number formatting, large
+// integer IDs that a float64 round-trip would silently round — is preserved.
 func InjectStreamOptions(body []byte) []byte {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(body, &m); err != nil {
+	// gjson reads fields out of malformed input rather than failing: it will
+	// report stream=true for a truncated `{"stream":true`, and sjson would then
+	// splice into the broken body and emit garbage. Validate first so an
+	// invalid body is handed back untouched, as the previous
+	// json.Unmarshal-based implementation did.
+	if !gjson.ValidBytes(body) {
 		return body
 	}
 
-	var stream bool
-	if err := json.Unmarshal(m["stream"], &stream); err != nil || !stream {
+	if !gjson.GetBytes(body, "stream").Bool() {
 		return body
 	}
 
-	if _, exists := m["stream_options"]; exists {
+	if gjson.GetBytes(body, "stream_options").Exists() {
 		return body
 	}
 
-	m["stream_options"] = json.RawMessage(`{"include_usage":true}`)
-
-	newBody, err := json.Marshal(m)
+	newBody, err := sjson.SetBytes(body, "stream_options.include_usage", true)
 	if err != nil {
 		return body
 	}
