@@ -28,10 +28,9 @@ func TestBalanceProbe_SuccessReturnsHealthy(t *testing.T) {
 	b.URL = srv.URL
 	b.APIKey = "k"
 	lb.enterBalanceRest(b)
-	client := &http.Client{Timeout: 5 * time.Second}
 	now := time.Unix(*frozen, 0)
 
-	lb.runActiveProbes(client, now, true)
+	lb.runActiveProbes(now, true)
 	if hits != 0 {
 		t.Fatalf("probed during the rest window: hits=%d", hits)
 	}
@@ -40,7 +39,7 @@ func TestBalanceProbe_SuccessReturnsHealthy(t *testing.T) {
 	}
 
 	advance(frozen, balanceRestSecs)
-	lb.runActiveProbes(client, time.Unix(*frozen, 0), false)
+	lb.runActiveProbes(time.Unix(*frozen, 0), false)
 	if hits != 1 {
 		t.Fatalf("expected one messages probe, hits=%d", hits)
 	}
@@ -70,7 +69,7 @@ func TestBalanceProbe_FailureExtendsRest(t *testing.T) {
 	advance(frozen, balanceRestSecs)
 	now := time.Unix(*frozen, 0)
 
-	lb.runActiveProbes(&http.Client{Timeout: 5 * time.Second}, now, true)
+	lb.runActiveProbes(now, true)
 	if modelsHits != 0 {
 		t.Fatal("a balance probe must not use GET /v1/models")
 	}
@@ -110,7 +109,7 @@ func TestBalanceRest_ReleaseAndFailsafeSkip(t *testing.T) {
 
 // restFixture puts a backend into balance rest against an upstream that always
 // refuses for insufficient balance, which is what a negative account does.
-func restFixture(t *testing.T) (*LoadBalancer, *Backend, *int64, *http.Client) {
+func restFixture(t *testing.T) (*LoadBalancer, *Backend, *int64) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -122,13 +121,15 @@ func restFixture(t *testing.T) (*LoadBalancer, *Backend, *int64, *http.Client) {
 	b := lb.backends[0]
 	b.URL = srv.URL
 	b.APIKey = "k"
-	return lb, b, frozen, &http.Client{Timeout: 5 * time.Second}
+	// Probes run on b.Client() now. A transport routes per request URL, so the
+	// client built for the config URL still reaches the test server.
+	return lb, b, frozen
 }
 
 // A negative balance needs a human to fix it. Probing every minute forever
 // spends a billable inference call per minute, so the rest window doubles.
 func TestBalanceRest_BackoffGrowsAndCaps(t *testing.T) {
-	lb, b, frozen, client := restFixture(t)
+	lb, b, frozen := restFixture(t)
 
 	lb.enterBalanceRest(b)
 	if got, want := b.ttlUntil.Load()-*frozen, int64(balanceRestSecs); got != want {
@@ -137,7 +138,7 @@ func TestBalanceRest_BackoffGrowsAndCaps(t *testing.T) {
 
 	for _, want := range []int64{120, 240, 480, 960, balanceRestMaxSecs, balanceRestMaxSecs} {
 		advance(frozen, b.ttlUntil.Load()-*frozen)
-		lb.runActiveProbes(client, time.Unix(*frozen, 0), false)
+		lb.runActiveProbes(time.Unix(*frozen, 0), false)
 		if !b.balanceHold.Load() || b.effectiveWeight() != 0 {
 			t.Fatalf("a failed probe handed the account back: hold=%v weight=%d",
 				b.balanceHold.Load(), b.effectiveWeight())
@@ -150,7 +151,7 @@ func TestBalanceRest_BackoffGrowsAndCaps(t *testing.T) {
 
 // Sustained failure is an operational event: somebody has to top the account up.
 func TestBalanceRest_SustainedFailureAlerts(t *testing.T) {
-	lb, b, frozen, client := restFixture(t)
+	lb, b, frozen := restFixture(t)
 
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
@@ -159,14 +160,14 @@ func TestBalanceRest_SustainedFailureAlerts(t *testing.T) {
 	lb.enterBalanceRest(b)
 	for i := 0; i < balanceAlertRounds-1; i++ {
 		advance(frozen, b.ttlUntil.Load()-*frozen)
-		lb.runActiveProbes(client, time.Unix(*frozen, 0), false)
+		lb.runActiveProbes(time.Unix(*frozen, 0), false)
 	}
 	if strings.Contains(buf.String(), "ALERT") {
 		t.Fatalf("alerted before %d rounds:\n%s", balanceAlertRounds, buf.String())
 	}
 
 	advance(frozen, b.ttlUntil.Load()-*frozen)
-	lb.runActiveProbes(client, time.Unix(*frozen, 0), false)
+	lb.runActiveProbes(time.Unix(*frozen, 0), false)
 	if !strings.Contains(buf.String(), "ALERT balance") {
 		t.Fatalf("no balance alert after %d rounds:\n%s", balanceAlertRounds, buf.String())
 	}
@@ -190,12 +191,11 @@ func TestBalanceRest_SuccessResetsBackoff(t *testing.T) {
 	b := lb.backends[0]
 	b.URL = srv.URL
 	b.APIKey = "k"
-	client := &http.Client{Timeout: 5 * time.Second}
 
 	lb.enterBalanceRest(b)
 	for i := 0; i < 3; i++ {
 		advance(frozen, b.ttlUntil.Load()-*frozen)
-		lb.runActiveProbes(client, time.Unix(*frozen, 0), false)
+		lb.runActiveProbes(time.Unix(*frozen, 0), false)
 	}
 	if b.balanceRestCount.Load() == 0 {
 		t.Fatal("expected the backoff counter to have grown")
@@ -203,7 +203,7 @@ func TestBalanceRest_SuccessResetsBackoff(t *testing.T) {
 
 	paid = true
 	advance(frozen, b.ttlUntil.Load()-*frozen)
-	lb.runActiveProbes(client, time.Unix(*frozen, 0), false)
+	lb.runActiveProbes(time.Unix(*frozen, 0), false)
 	if b.balanceHold.Load() || b.State() != stateHealthy {
 		t.Fatalf("a successful probe must end the rest: hold=%v state=%d", b.balanceHold.Load(), b.State())
 	}
@@ -232,7 +232,6 @@ func TestActiveProbes_HonorQuarantineBackoff(t *testing.T) {
 	b := lb.backends[0]
 	b.URL = srv.URL
 	b.APIKey = "k"
-	client := &http.Client{Timeout: 5 * time.Second}
 
 	b.RecordRequest(http.StatusUnauthorized, 1)
 	b.RecordResult(ErrAuth)
@@ -242,13 +241,13 @@ func TestActiveProbes_HonorQuarantineBackoff(t *testing.T) {
 	ttl := b.ttlUntil.Load()
 
 	advance(frozen, 60)
-	lb.runActiveProbes(client, time.Unix(*frozen, 0), true)
+	lb.runActiveProbes(time.Unix(*frozen, 0), true)
 	if hits != 0 {
 		t.Fatalf("probed a quarantined account %d time(s) inside its backoff window", hits)
 	}
 
 	advance(frozen, ttl-*frozen)
-	lb.runActiveProbes(client, time.Unix(*frozen, 0), true)
+	lb.runActiveProbes(time.Unix(*frozen, 0), true)
 	if hits == 0 {
 		t.Fatal("the account was never retried after its backoff expired")
 	}

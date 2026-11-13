@@ -1,76 +1,16 @@
 package db
 
 import (
-	"context"
 	"fmt"
 	"time"
 
 	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
-// txTimeout bounds how long a batch transaction may hold the single write
-// connection, so a stuck Commit/Exec cannot stall all other writers.
-const txTimeout = 10 * time.Second
-
-// ===== AWS Usage Logs =====
-
-// InsertAWSUsageLog writes a single AWS usage record.
-func (d *DB) InsertAWSUsageLog(log *model.AWSUsageLog) error {
-	_, err := d.Exec(
-		`INSERT INTO aws_usage_logs
-		 (user_id, api_key_id, model, bedrock_model, input_tokens, output_tokens, total_tokens,
-		  cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, ua, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		log.UserID, log.APIKeyID, log.Model, log.BedrockModel,
-		log.InputTokens, log.OutputTokens, log.TotalTokens,
-		log.CacheReadTokens, log.CacheWriteTokens,
-		log.CostUSD, log.StatusCode, log.Latency, log.UA,
-		time.Now(),
-	)
-	if err != nil {
-		return fmt.Errorf("insert aws usage log: %w", err)
-	}
-	return nil
-}
-
-// BatchInsertAWSUsageLogs writes multiple AWS usage records in a single transaction.
-func (d *DB) BatchInsertAWSUsageLogs(logs []*model.AWSUsageLog) error {
-	if len(logs) == 0 {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), txTimeout)
-	defer cancel()
-	tx, err := d.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback() // 兜底：Commit 成功后为 no-op；任何错误路径都保证清理事务，避免连接残留事务
-	stmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO aws_usage_logs
-		 (user_id, group_id, api_key_id, model, bedrock_model, input_tokens, output_tokens, total_tokens,
-		  cache_read_tokens, cache_write_tokens, cost_usd, status_code, latency_ms, ua, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-	if err != nil {
-		return fmt.Errorf("prepare stmt: %w", err)
-	}
-	defer stmt.Close()
-	now := time.Now()
-	for _, log := range logs {
-		ts := now
-		if !log.CreatedAt.IsZero() {
-			ts = log.CreatedAt
-		}
-		if _, err := stmt.ExecContext(ctx,
-			log.UserID, log.GroupID, log.APIKeyID, log.Model, log.BedrockModel,
-			log.InputTokens, log.OutputTokens, log.TotalTokens,
-			log.CacheReadTokens, log.CacheWriteTokens,
-			log.CostUSD, log.StatusCode, log.Latency, log.UA, ts,
-		); err != nil {
-			return fmt.Errorf("exec insert: %w", err)
-		}
-	}
-	return tx.Commit()
-}
+// The AWS/Bedrock channel is retired: nothing writes aws_usage_logs or
+// aws_daily_stats any more. What remains here are the read paths that serve
+// historical reporting over the rows already in those tables, plus the
+// aggregation used to roll up historical logs.
 
 // ListAWSUsageLogs queries aws_usage_logs with optional filters.
 func (d *DB) ListAWSUsageLogs(userID int64, startDate, endDate, modelFilter string, page, pageSize int) ([]*model.AWSUsageLog, int, error) {

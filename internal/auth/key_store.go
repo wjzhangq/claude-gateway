@@ -27,7 +27,7 @@ type KeyInfo struct {
 	LockedModel      string    // "" = no lock; non-empty = force this model on every request
 	// Cost accumulators (write-back pattern, flushed to DB periodically)
 	backendCostDelta float64 // pending backend cost not yet written to DB
-	awsCostDelta     float64 // pending aws cost not yet written to DB
+	awsCostDelta     float64 // retired with the AWS channel; never accrued, kept for struct stability
 	costDirty        bool    // true if cost needs flush
 }
 
@@ -138,13 +138,15 @@ func (ks *KeyStore) AddCost(key string, channel string, costUSD float64) {
 	if costUSD <= 0 {
 		return
 	}
+	// The AWS channel is retired: nothing should still be reporting cost on it,
+	// and accruing it would write to a column no longer being read. Drop it
+	// rather than silently folding it into the backend total.
+	if channel == "aws" {
+		return
+	}
 	ks.mu.Lock()
 	if info, ok := ks.keys[key]; ok {
-		if channel == "aws" {
-			info.awsCostDelta += costUSD
-		} else {
-			info.backendCostDelta += costUSD
-		}
+		info.backendCostDelta += costUSD
 		info.costDirty = true
 	}
 	ks.mu.Unlock()
@@ -167,13 +169,14 @@ func (ks *KeyStore) FlushCosts() []KeyCostUpdate {
 		if !info.costDirty {
 			continue
 		}
+		// AWSCostAdd stays 0: AddCost no longer accrues AWS cost. The field is
+		// kept so the DB update shape and api_keys.aws_cost_usd column are
+		// untouched while historical values remain readable.
 		updates = append(updates, KeyCostUpdate{
 			KeyID:          info.KeyID,
 			BackendCostAdd: info.backendCostDelta,
-			AWSCostAdd:     info.awsCostDelta,
 		})
 		info.backendCostDelta = 0
-		info.awsCostDelta = 0
 		info.costDirty = false
 	}
 	return updates

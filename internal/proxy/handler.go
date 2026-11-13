@@ -550,20 +550,16 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 	if info, ok := keyInfo.(*auth.KeyInfo); ok {
 		c.Header("X-Gateway-Model", reqModel)
 		c.Header("X-Gateway-Channel", info.Channel)
-		var quotaUSD float64
-		if info.Channel == "aws" {
-			quotaUSD = info.AWSDailyQuotaUSD
-		} else {
-			// Same resolution as enforcement and dashboard — DB override first,
-			// then global backend_daily_max (0 = unlimited).
-			h.mu.RLock()
-			globalMax := 0.0
-			if h.config != nil {
-				globalMax = h.config.BackendDailyMax
-			}
-			h.mu.RUnlock()
-			quotaUSD = quota.ResolveBackendDaily(h.keyStore, info.UserID, globalMax)
+		// Same resolution as enforcement and dashboard — DB override first,
+		// then global backend_daily_max (0 = unlimited). Only the backend
+		// channel reaches this handler; the AWS channel is retired.
+		h.mu.RLock()
+		globalMax := 0.0
+		if h.config != nil {
+			globalMax = h.config.BackendDailyMax
 		}
+		h.mu.RUnlock()
+		quotaUSD := quota.ResolveBackendDaily(h.keyStore, info.UserID, globalMax)
 		c.Header("X-Gateway-Daily-Quota", strconv.FormatFloat(quotaUSD, 'f', 4, 64))
 	}
 

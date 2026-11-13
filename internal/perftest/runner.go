@@ -11,9 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
-	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
-
 	"github.com/wjzhangq/claude-gateway/config"
 )
 
@@ -42,22 +39,20 @@ type BackendPicker interface {
 	PickByNameForPerfTest(name string) (url, apiKey string, client *http.Client, ok bool)
 }
 
-type BedrockInvoker interface {
-	InvokeModelStream(ctx context.Context, modelID string, body []byte) (*bedrockruntime.InvokeModelWithResponseStreamOutput, error)
-}
+// BedrockInvoker is retained as an empty placeholder so NewRunner keeps its
+// arity for existing callers. The AWS channel is retired and callers pass nil.
+type BedrockInvoker interface{}
 
 type Runner struct {
 	backendPicker BackendPicker
-	bedrock       BedrockInvoker
 	config        *config.Config
 	mu            sync.Mutex
 	running       bool
 }
 
-func NewRunner(bp BackendPicker, bedrock BedrockInvoker, cfg *config.Config) *Runner {
+func NewRunner(bp BackendPicker, _ BedrockInvoker, cfg *config.Config) *Runner {
 	return &Runner{
 		backendPicker: bp,
-		bedrock:       bedrock,
 		config:        cfg,
 	}
 }
@@ -89,7 +84,8 @@ func (r *Runner) RunCell(ctx context.Context, ch ChannelConfig, inputTokens, max
 	case "backend":
 		r.runBackendCell(cellCtx, ch, inputTokens, maxTokens, result)
 	case "aws":
-		r.runAWSCell(cellCtx, ch.Model, inputTokens, maxTokens, result)
+		result.Status = "error"
+		result.ErrorMsg = "the aws channel has been retired"
 	default:
 		r.runPublicCell(cellCtx, ch.Name, ch.Model, inputTokens, maxTokens, result)
 	}
@@ -156,56 +152,6 @@ func (r *Runner) runBackendCell(ctx context.Context, ch ChannelConfig, inputToke
 	result.Status = "success"
 }
 
-func (r *Runner) runAWSCell(ctx context.Context, model string, inputTokens, maxTokens int, result *CellResult) {
-	if r.bedrock == nil {
-		result.Status = "error"
-		result.ErrorMsg = "AWS Bedrock not configured"
-		return
-	}
-
-	bedrockModel, err := resolveAWSModel(model, r.config)
-	if err != nil {
-		result.Status = "error"
-		result.ErrorMsg = err.Error()
-		return
-	}
-
-	body := BuildAnthropicBody(inputTokens, maxTokens, model)
-	// Bedrock requires anthropic_version in body, and rejects model/stream fields
-	body["anthropic_version"] = "bedrock-2023-05-31"
-	delete(body, "model")
-	delete(body, "stream")
-	bodyBytes, _ := json.Marshal(body)
-
-	startTime := time.Now()
-	out, err := r.bedrock.InvokeModelStream(ctx, bedrockModel, bodyBytes)
-	if err != nil {
-		result.Status = "error"
-		result.ErrorMsg = fmt.Sprintf("bedrock stream: %v", err)
-		return
-	}
-	defer out.GetStream().Close()
-
-	events := make(chan []byte, 256)
-	go func() {
-		defer close(events)
-		for event := range out.GetStream().Events() {
-			switch v := event.(type) {
-			case *types.ResponseStreamMemberChunk:
-				events <- v.Value.Bytes
-			}
-		}
-	}()
-
-	m := MeasureBedrockStream(events, startTime)
-	result.TTFT_ms = m.TTFT_ms
-	result.TPOT_ms = m.TPOT_ms
-	result.TokensPerSecond = m.TokensPerSecond
-	result.ActualOutputTokens = m.ActualOutputTokens
-	result.TotalDuration_ms = m.TotalDuration_ms
-	result.Status = "success"
-}
-
 func (r *Runner) runPublicCell(ctx context.Context, _, model string, inputTokens, maxTokens int, result *CellResult) {
 	provider := r.config.LookupPublicProvider(model, "")
 	if provider == nil {
@@ -261,22 +207,6 @@ func (r *Runner) runPublicCell(ctx context.Context, _, model string, inputTokens
 	result.ActualOutputTokens = m.ActualOutputTokens
 	result.TotalDuration_ms = m.TotalDuration_ms
 	result.Status = "success"
-}
-
-func resolveAWSModel(model string, cfg *config.Config) (string, error) {
-	if arn, ok := cfg.AWS.ModelReplace[model]; ok {
-		return arn, nil
-	}
-	for pattern, upstream := range cfg.AWS.ModelDefault {
-		matched, _ := matchGlob(pattern, model)
-		if matched {
-			if arn, ok := cfg.AWS.ModelReplace[upstream]; ok {
-				return arn, nil
-			}
-			return upstream, nil
-		}
-	}
-	return "", fmt.Errorf("model %q not available on AWS", model)
 }
 
 func matchGlob(pattern, name string) (bool, error) {

@@ -282,19 +282,12 @@ func (h *APIKeyHandler) SwitchChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.Channel != "backend" && req.Channel != "aws" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "channel must be 'backend' or 'aws'"})
+	// The AWS channel is retired, so "backend" is the only channel a key can be
+	// switched to. Existing keys still recorded as channel=aws keep that value
+	// in the database; they simply have no upstream to reach.
+	if req.Channel != "backend" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "channel must be 'backend'"})
 		return
-	}
-
-	// Switching to aws requires user to have aws_enabled
-	if req.Channel == "aws" {
-		userID := c.GetInt64(middleware.CtxUserID)
-		user, err := h.db.GetUserByID(userID)
-		if err != nil || user == nil || !user.AWSEnabled {
-			c.JSON(http.StatusForbidden, gin.H{"error": "AWS channel not enabled for this user"})
-			return
-		}
 	}
 
 	if err := h.db.UpdateAPIKeyChannel(id, req.Channel); err != nil {
@@ -305,89 +298,9 @@ func (h *APIKeyHandler) SwitchChannel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"channel": req.Channel})
 }
 
-// ListAWSKeys godoc: GET /api/aws/keys
-func (h *APIKeyHandler) ListAWSKeys(c *gin.Context) {
-	userID := c.GetInt64(middleware.CtxUserID)
-	keys, err := h.db.ListAPIKeysByUserAndChannel(userID, "aws")
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"keys": keys})
-}
-
-// CreateAWSKey godoc: POST /api/aws/keys
-func (h *APIKeyHandler) CreateAWSKey(c *gin.Context) {
-	userID := c.GetInt64(middleware.CtxUserID)
-	var req struct {
-		Name string `json:"name"`
-	}
-	_ = c.ShouldBindJSON(&req)
-
-	user, err := h.db.GetUserByID(userID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get user info"})
-		return
-	}
-	if user == nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "user not found"})
-		return
-	}
-	if user.Status != "active" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "user is not approved"})
-		return
-	}
-	if !user.AWSEnabled {
-		c.JSON(http.StatusForbidden, gin.H{"error": "AWS channel not enabled for this user"})
-		return
-	}
-
-	keyStr, err := auth.GenerateKey()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "key generation failed"})
-		return
-	}
-
-	k := &model.APIKey{
-		UserID:  userID,
-		Key:     keyStr,
-		Name:    req.Name,
-		Status:  "active",
-		Channel: "aws",
-	}
-	if err := h.db.CreateAPIKey(k); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	h.keyStore.Add(keyStr, &auth.KeyInfo{
-		KeyID:            k.ID,
-		UserID:           userID,
-		GroupID:          user.GroupID,
-		Itcode:           user.Itcode,
-		DailyQuotaUSD:    user.DailyQuotaUSD,
-		AWSDailyQuotaUSD: user.AWSDailyQuotaUSD,
-		UserStatus:       user.Status,
-		Channel:          "aws",
-	})
-
-	c.JSON(http.StatusCreated, gin.H{"key": k})
-}
-
-// AdminListAWSKeys godoc: GET /admin/api/aws/keys
-func (h *APIKeyHandler) AdminListAWSKeys(c *gin.Context) {
-	userID, _ := strconv.ParseInt(c.Query("user_id"), 10, 64)
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
-
-	// Filter to channel='aws'
-	keys, total, err := h.db.ListAllAPIKeysByChannel("aws", userID, page, pageSize)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"keys": keys, "total": total, "page": page, "page_size": pageSize})
-}
+// The AWS key endpoints (GET/POST /api/aws/keys, GET /admin/api/aws/keys) are
+// gone with the channel. Keys already recorded as channel=aws remain in the
+// database and are listed by the ordinary key endpoints.
 
 // AdminSwitchChannel godoc: PUT /admin/api/keys/:id/channel
 // Admin can switch any key's channel without ownership checks.
@@ -404,8 +317,9 @@ func (h *APIKeyHandler) AdminSwitchChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if req.Channel != "backend" && req.Channel != "aws" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "channel must be 'backend' or 'aws'"})
+	// The AWS channel is retired; "backend" is the only assignable channel.
+	if req.Channel != "backend" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "channel must be 'backend'"})
 		return
 	}
 	if err := h.db.UpdateAPIKeyChannel(id, req.Channel); err != nil {
@@ -431,8 +345,9 @@ func (h *APIKeyHandler) AdminCreateKey(c *gin.Context) {
 	if req.Channel == "" {
 		req.Channel = "backend"
 	}
-	if req.Channel != "backend" && req.Channel != "aws" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "channel must be 'backend' or 'aws'"})
+	// The AWS channel is retired; no new key can be issued on it.
+	if req.Channel != "backend" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "channel must be 'backend'"})
 		return
 	}
 
@@ -443,10 +358,6 @@ func (h *APIKeyHandler) AdminCreateKey(c *gin.Context) {
 	}
 	if user == nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
-		return
-	}
-	if req.Channel == "aws" && !user.AWSEnabled {
-		c.JSON(http.StatusForbidden, gin.H{"error": "AWS channel not enabled for this user"})
 		return
 	}
 

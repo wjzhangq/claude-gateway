@@ -151,14 +151,21 @@ func TestParseStreamEquivalence(t *testing.T) {
 // pooled parse is zero once the pools are warm. This is the invariant the
 // //noalloc:root marker on streamResponse is meant to protect.
 func TestPooledParseReusesBuffers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping allocation test in short mode")
+	}
+
 	stream := buildSSEStream(200)
 	parseStreamPooled(stream, 200) // warm the pools
 
 	allocs := testing.AllocsPerRun(50, func() {
 		parseStreamPooled(stream, 200)
 	})
-	if allocs != 0 {
-		t.Errorf("pooled parse allocated %.1f times per run, want 0", allocs)
+	// The race detector adds instrumentation that registers as allocations, so
+	// under -race the check confirms "very few" rather than exactly zero.
+	// raceAllocSlack is 0 in normal builds and non-zero under -race.
+	if allocs > raceAllocSlack {
+		t.Errorf("pooled parse allocated %.1f times per run, want ≤%.1f", allocs, raceAllocSlack)
 	}
 }
 

@@ -19,7 +19,6 @@ import (
 
 	"github.com/wjzhangq/claude-gateway/config"
 	"github.com/wjzhangq/claude-gateway/internal/auth"
-	"github.com/wjzhangq/claude-gateway/internal/awsproxy"
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/handler"
 	"github.com/wjzhangq/claude-gateway/internal/ipgeo"
@@ -90,23 +89,6 @@ func main() {
 	// One-time migration: import config.yaml user_daily_limits into user_quota_overrides
 	if err := migration.MigrateConfigYamlQuotas(cfg, database, keyStore); err != nil {
 		logger.Warnf("quota migration from config.yaml: %v", err)
-	}
-
-	// Seed today's AWS daily costs from aws_usage_logs
-	if awsDailyCosts, err := database.GetUserAWSDailyCostByDate(today); err != nil {
-		logger.Warnf("init aws daily costs: %v", err)
-	} else {
-		keyStore.InitAWSDailyCosts(today, awsDailyCosts)
-		logger.Infof("init aws daily costs: loaded %d user records for %s", len(awsDailyCosts), today)
-	}
-
-	// Seed this month's AWS monthly costs from aws_usage_logs (fixes quota bypass after restart)
-	thisMonth := time.Now().Format("2006-01")
-	if awsMonthlyCosts, err := database.GetUserAWSMonthlyCostByMonth(thisMonth); err != nil {
-		logger.Warnf("init aws monthly costs: %v", err)
-	} else {
-		keyStore.InitAWSMonthlyCosts(thisMonth, awsMonthlyCosts)
-		logger.Infof("init aws monthly costs: loaded %d user records for %s", len(awsMonthlyCosts), thisMonth)
 	}
 
 	codeStore := auth.NewCodeStore(cfg.Auth.CodeExpiry)
@@ -207,32 +189,6 @@ func main() {
 	ipGeoStop := make(chan struct{})
 	ipGeoStore.StartFlusher(30*time.Second, ipGeoStop)
 
-	// ─── AWS Bedrock initialization ───────────────────────────────────
-	var awsProxyH *awsproxy.Handler
-	var awsCollector *stats.AWSCollector
-	var awsAggregator *stats.AWSAggregator
-
-	if cfg.AWS.Region != "" && cfg.AWS.AccessKeyID != "" {
-		bedrockClient, err := awsproxy.NewBedrockClient(
-			cfg.AWS.Region, cfg.AWS.AccessKeyID, cfg.AWS.SecretAccessKey, cfg.AWS.Socks5Proxy,
-		)
-		if err != nil {
-			logger.Fatalf("init bedrock client: %v", err)
-		}
-		awsCollector = stats.NewAWSCollector(database, keyStore, 1024)
-		awsProxyH = awsproxy.NewHandler(bedrockClient, awsCollector, keyStore, &cfg.AWS)
-		awsProxyH.SetRootConfig(cfg)
-		awsAggregator = stats.NewAWSAggregator(database, cfg.UsageSync)
-		awsAggregator.Start()
-		if cfg.AWS.Socks5Proxy != "" {
-			logger.Infof("AWS Bedrock channel initialized (region: %s, proxy: %s)", cfg.AWS.Region, cfg.AWS.Socks5Proxy)
-		} else {
-			logger.Infof("AWS Bedrock channel initialized (region: %s, proxy: none)", cfg.AWS.Region)
-		}
-	} else {
-		logger.Infof("AWS Bedrock channel not configured, skipping initialization")
-	}
-
 	// ─── Public providers initialization ─────────────────────────────
 	publicH := publicproxy.NewHandler(collector, keyStore, cfg)
 	publicH.SetIPGeo(ipGeoStore)
@@ -270,20 +226,14 @@ func main() {
 		awsStatsH.UpdateConfig(newCfg)
 		insightH.UpdateConfig(newCfg)
 		analyzeH.SetMaxRetry(newCfg.Analyze.MaxRetry)
-		if awsProxyH != nil {
-			awsProxyH.UpdateConfig(&newCfg.AWS)
-			awsProxyH.SetRootConfig(newCfg)
-		}
 		*cfg = *newCfg
 		return nil
 	})
 
 	// ─── Performance test initialization ─────────────────────────────
-	var bedrockInvoker perftest.BedrockInvoker
-	if awsProxyH != nil {
-		bedrockInvoker = awsProxyH.GetBedrockClient()
-	}
-	perfRunner := perftest.NewRunner(lb, bedrockInvoker, cfg)
+	// No Bedrock invoker: the AWS channel is retired, so perf tests run
+	// against backend and public providers only.
+	perfRunner := perftest.NewRunner(lb, nil, cfg)
 	perfTestH := handler.NewPerfTestHandler(database, perfRunner, cfg, lb)
 
 	apiAuth := r.Group("/api/auth")
@@ -313,7 +263,7 @@ func main() {
 					}
 				}
 				publicModels := publicH.Models(itcode)
-				serveModelsWithPublic(c, ch, awsProxyH, proxyH, publicModels)
+				serveModelsWithPublic(c, ch, proxyH, publicModels)
 				return
 			}
 
@@ -363,13 +313,9 @@ func main() {
 				}
 
 				// OpenAI Responses API (/v1/responses, used by Codex): convert to
-				// Anthropic Messages and run on the backend channel. Not supported
-				// on the AWS channel. Reuses the already-read body.
+				// Anthropic Messages and run on the backend channel. Reuses the
+				// already-read body.
 				if strings.HasSuffix(path, "/responses") {
-					if ch == "aws" {
-						c.JSON(404, gin.H{"error": gin.H{"type": "invalid_request_error", "message": "/v1/responses is not supported on the aws channel"}})
-						return
-					}
 					proxyH.HandleResponses(c, body)
 					return
 				}
@@ -378,14 +324,16 @@ func main() {
 				c.Request.Body = io.NopCloser(bytes.NewReader(body))
 			}
 
-			// Fall through to original channel-based routing
-			if ch == "aws" && awsProxyH != nil {
-				awsProxyH.Passthrough(c)
-			} else if ch == "aws" {
-				c.JSON(503, gin.H{"error": "AWS channel not configured"})
-			} else {
-				proxyH.Passthrough(c)
+			// The AWS channel is retired; a key still marked channel=aws has no
+			// upstream to reach.
+			if ch == "aws" {
+				c.JSON(http.StatusGone, gin.H{"error": gin.H{
+					"type":    "invalid_request_error",
+					"message": "the aws channel has been retired; please use a backend channel key",
+				}})
+				return
 			}
+			proxyH.Passthrough(c)
 		})
 	}
 
@@ -421,17 +369,8 @@ func main() {
 		apiUser.GET("/applications", appH.ListMine)
 	}
 
-	// User AWS API (requires aws_enabled)
-	apiAWS := r.Group("/api/aws")
-	apiAWS.Use(middleware.SessionAuthMiddleware())
-	apiAWS.Use(middleware.AWSEnabledRequired(database))
-	{
-		apiAWS.GET("/dashboard", awsStatsH.GetMyDashboard)
-		apiAWS.GET("/keys", keyH.ListAWSKeys)
-		apiAWS.POST("/keys", keyH.CreateAWSKey)
-		apiAWS.GET("/usage", awsStatsH.GetMyUsage)
-		apiAWS.GET("/usage/daily", awsStatsH.GetMyDailyStats)
-	}
+	// The per-user AWS API is gone with the channel. Historical AWS usage is
+	// served read-only from the admin group below.
 
 	// Quota override handler is shared by the session-authenticated admin API
 	// (web console) and the API-key authenticated db group (scripts / skills).
@@ -494,15 +433,13 @@ func main() {
 		adminAPI.DELETE("/quota/overrides/:itcode", quotaH.Delete)
 	}
 
-	// Admin AWS API
+	// Admin AWS API — read-only history. The channel is retired, so nothing
+	// here can enable it, issue keys for it, or write new usage; these routes
+	// exist to query the rows already in aws_usage_logs / aws_daily_stats.
 	adminAWS := r.Group("/admin/api/aws")
 	adminAWS.Use(middleware.SessionAuthMiddleware())
 	adminAWS.Use(middleware.AdminRequired())
 	{
-		adminAWS.GET("/users", awsStatsH.ListAWSUsers)
-		adminAWS.PUT("/users/:id/toggle", awsStatsH.ToggleAWSEnabled)
-		adminAWS.POST("/users/enable", awsStatsH.EnableAWSByItcode)
-		adminAWS.GET("/keys", keyH.AdminListAWSKeys)
 		adminAWS.GET("/usage", awsStatsH.GetUsage)
 		adminAWS.GET("/usage/daily", awsStatsH.GetDailyStats)
 		adminAWS.GET("/usage/user-daily", awsStatsH.GetUserDailyCostRanking)
@@ -700,8 +637,8 @@ func main() {
 	// Register SIGHUP before starting server to avoid race
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGHUP)
-	go handleReload(sigCh, cfgPath, collector, awsCollector, aggregator, awsAggregator,
-		lb, proxyH, awsProxyH, publicH, statsH, awsStatsH, insightH, analyzeH, database, keyStore, cfg)
+	go handleReload(sigCh, cfgPath, collector, aggregator,
+		lb, proxyH, publicH, statsH, awsStatsH, insightH, analyzeH, database, keyStore, cfg)
 
 	// Graceful shutdown handler
 	shutdownCh := make(chan os.Signal, 1)
@@ -779,26 +716,28 @@ func sessionLoader(sessionStore *auth.SessionStore) gin.HandlerFunc {
 	}
 }
 
-// serveModelsWithPublic handles GET /v1/models by injecting public models into context
-// before delegating to the channel's handler. Both AWS and backend handlers check for
-// "extra_models" in the gin context and append them to the response.
-func serveModelsWithPublic(c *gin.Context, ch interface{}, awsProxyH *awsproxy.Handler, proxyH *proxy.Handler, publicModels []gin.H) {
+// serveModelsWithPublic handles GET /v1/models by injecting public models into
+// context before delegating to the backend handler, which picks up
+// "extra_models" from the gin context and appends them to the response.
+func serveModelsWithPublic(c *gin.Context, ch interface{}, proxyH *proxy.Handler, publicModels []gin.H) {
 	// Inject public models into context for handlers to pick up
 	c.Set("extra_models", publicModels)
 
-	if ch == "aws" && awsProxyH != nil {
-		awsProxyH.Models(c)
-	} else if ch == "aws" {
-		c.JSON(503, gin.H{"error": "AWS channel not configured"})
-	} else {
-		proxyH.Models(c)
+	// The AWS channel is retired and has no model list to serve.
+	if ch == "aws" {
+		c.JSON(http.StatusGone, gin.H{"error": gin.H{
+			"type":    "invalid_request_error",
+			"message": "the aws channel has been retired; please use a backend channel key",
+		}})
+		return
 	}
+	proxyH.Models(c)
 }
 
 func handleReload(sigCh <-chan os.Signal, cfgPath string,
-	collector *stats.Collector, awsCollector *stats.AWSCollector,
-	aggregator *stats.Aggregator, awsAggregator *stats.AWSAggregator,
-	lb *proxy.LoadBalancer, proxyH *proxy.Handler, awsProxyH *awsproxy.Handler,
+	collector *stats.Collector,
+	aggregator *stats.Aggregator,
+	lb *proxy.LoadBalancer, proxyH *proxy.Handler,
 	publicH *publicproxy.Handler,
 	statsH *handler.StatsHandler, awsStatsH *handler.AWSStatsHandler,
 	insightH *handler.InsightHandler, analyzeH *handler.AnalysisHandler,
@@ -810,16 +749,10 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 		// Step 1: flush pending usage records
 		logger.Infof("reload: flushing collector...")
 		collector.Flush()
-		if awsCollector != nil {
-			awsCollector.Flush()
-		}
 
 		// Step 2: aggregate daily stats
 		logger.Infof("reload: aggregating daily stats...")
 		aggregator.RunNow()
-		if awsAggregator != nil {
-			awsAggregator.RunNow()
-		}
 
 		// Step 3: reload config file
 		logger.Infof("reload: loading config from %s", cfgPath)
@@ -838,10 +771,6 @@ func handleReload(sigCh <-chan os.Signal, cfgPath string,
 		awsStatsH.UpdateConfig(newCfg)
 		insightH.UpdateConfig(newCfg)
 		analyzeH.SetMaxRetry(newCfg.Analyze.MaxRetry)
-		if awsProxyH != nil {
-			awsProxyH.UpdateConfig(&newCfg.AWS)
-			awsProxyH.SetRootConfig(newCfg)
-		}
 
 		// Step 5: reload key store
 		if err := loadKeyStore(database, keyStore); err != nil {

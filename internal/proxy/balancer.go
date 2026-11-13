@@ -764,7 +764,6 @@ const activeProbeTick = 15 * time.Second
 func (lb *LoadBalancer) activeProbeLoop() {
 	ticker := time.NewTicker(activeProbeTick)
 	defer ticker.Stop()
-	client := &http.Client{Timeout: 15 * time.Second}
 	var lastGeneral int64
 	for range ticker.C {
 		now := lb.nowFn()
@@ -772,13 +771,15 @@ func (lb *LoadBalancer) activeProbeLoop() {
 		if general {
 			lastGeneral = now.Unix()
 		}
-		lb.runActiveProbes(client, now, general)
+		lb.runActiveProbes(now, general)
 	}
 }
 
 // runActiveProbes probes due balance-rest backends, then (when general is set)
-// the rest of the fleet. Probes run one backend at a time.
-func (lb *LoadBalancer) runActiveProbes(client *http.Client, now time.Time, general bool) {
+// the rest of the fleet. Probes run one backend at a time, each on its own
+// backend's client so they draw from the same per-host connection pool as live
+// traffic instead of opening their own connections.
+func (lb *LoadBalancer) runActiveProbes(now time.Time, general bool) {
 	lb.mu.RLock()
 	backends := append([]*Backend(nil), lb.backends...)
 	lb.mu.RUnlock()
@@ -790,7 +791,7 @@ func (lb *LoadBalancer) runActiveProbes(client *http.Client, now time.Time, gene
 		if now.Unix() < b.ttlUntil.Load() {
 			continue
 		}
-		lb.probeBalance(client, b, now)
+		lb.probeBalance(b, now)
 	}
 	if !general {
 		return
@@ -813,14 +814,14 @@ func (lb *LoadBalancer) runActiveProbes(client *http.Client, now time.Time, gene
 		if s := b.state.Load(); !isRoutable(s) && now.Unix() < b.ttlUntil.Load() {
 			continue
 		}
-		lb.probeReachable(client, b, now)
+		lb.probeReachable(b, now)
 	}
 }
 
 // probeBalance sends one tiny inference request. Success puts the account back
 // in normal rotation. Any failure keeps it out for another minute.
-func (lb *LoadBalancer) probeBalance(client *http.Client, b *Backend, now time.Time) {
-	code, err := ProbeBalance(client, b.URL, b.APIKey)
+func (lb *LoadBalancer) probeBalance(b *Backend, now time.Time) {
+	code, err := ProbeBalance(b.Client(), b.URL, b.APIKey)
 	if code != 0 {
 		lb.AddProbeCost(b.Name, ProbeMessageCostUSD)
 	}
@@ -835,9 +836,9 @@ func (lb *LoadBalancer) probeBalance(client *http.Client, b *Backend, now time.T
 }
 
 // probeReachable is the in-process form of check --health for one backend.
-func (lb *LoadBalancer) probeReachable(client *http.Client, b *Backend, now time.Time) {
+func (lb *LoadBalancer) probeReachable(b *Backend, now time.Time) {
 	start := time.Now()
-	code, ra, usedInference, err := ProbeReachableDetailed(client, b.URL, b.APIKey)
+	code, ra, usedInference, err := ProbeReachableDetailed(b.Client(), b.URL, b.APIKey)
 	latency := time.Since(start).Milliseconds()
 	if usedInference {
 		lb.AddProbeCost(b.Name, ProbeMessageCostUSD)
@@ -951,13 +952,6 @@ func (lb *LoadBalancer) newBackend(c config.BackendAPI) *Backend {
 // (rounded to int), ensuring traffic distribution matches quota proportions. Falls back to
 // c.Weight when cfg is nil or no quota is configured (quota lookup returns 0 = unlimited).
 func (lb *LoadBalancer) newBackendWithConfig(c config.BackendAPI, cfg *config.Config) *Backend {
-	transport := &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 20,
-		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  true, // prevent gzip on SSE streams (e.g. MiniMax returns compressed binary)
-	}
-
 	// Determine initial weight: quota-proportional if available, else config weight
 	weight := c.Weight
 	if cfg != nil {
@@ -979,11 +973,10 @@ func (lb *LoadBalancer) newBackendWithConfig(c config.BackendAPI, cfg *config.Co
 		APIKey:     c.APIKey,
 		Weight:     weight,
 		quotaReset: c.QuotaReset,
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   300 * time.Second, // long for streaming
-		},
-		owner: lb,
+		// Shared per-host transport: every backend on this host draws from one
+		// connection pool. The timeout stays per-client and long for streaming.
+		client: GetDedicatedClient(c.URL, 300*time.Second),
+		owner:  lb,
 	}
 }
 
@@ -2015,8 +2008,10 @@ func (lb *LoadBalancer) UpdateBackends(cfgs []config.BackendAPI) {
 // does not support the listing endpoint is NOT permanently disabled at startup
 // (FR-012) — the previous listing-only check silently lost such capacity.
 func validateBackend(b *Backend) bool {
-	client := &http.Client{Timeout: 15 * time.Second}
-	code, _, err := ProbeReachable(client, b.URL, b.APIKey)
+	// Reuse the backend's own client so startup validation warms the same
+	// per-host connection pool live traffic will use. ProbeReachable applies
+	// its own 15s context deadline.
+	code, _, err := ProbeReachable(b.Client(), b.URL, b.APIKey)
 	if err != nil {
 		log.Printf("[backend:%s] validate: FAIL — code=%d: %v", b.Name, code, err)
 		return false

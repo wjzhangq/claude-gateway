@@ -9,6 +9,10 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
+// txTimeout bounds how long a batch transaction may hold the single write
+// connection, so a stuck Commit/Exec cannot stall all other writers.
+const txTimeout = 10 * time.Second
+
 // InsertUsageLog writes a single usage record to the database.
 func (d *DB) InsertUsageLog(log *model.UsageLog) error {
 	_, err := d.Exec(

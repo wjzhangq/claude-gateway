@@ -73,7 +73,9 @@ func (d *DB) getRecentLogs(offset, limit int, channel string, hours int, errorsO
 		}
 	}
 
-	// Query AWS logs if channel is "" or "aws"
+	// Query AWS logs if channel is "" or "aws". The channel is retired and
+	// nothing writes aws_usage_logs any more, but the historical rows stay
+	// queryable here; for recent time windows this returns nothing.
 	if channel == "" || channel == "aws" {
 		awsSQL := fmt.Sprintf(`
 			SELECT l.id, l.user_id, COALESCE(u.itcode, ''), l.api_key_id, l.model, l.bedrock_model,

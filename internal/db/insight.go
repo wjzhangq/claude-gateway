@@ -161,6 +161,11 @@ type RankingUser struct {
 
 // GetUsageRanking returns users ranked by total tokens across backend and aws channels.
 // days=0 means all-time; otherwise the last N days (with +8h offset to match CST日界).
+//
+// The aws_daily_stats join is retained after the AWS channel's retirement: the
+// table still holds the historical rows, and this is the query that surfaces
+// them in the ranking. It contributes 0 for any period after retirement, so
+// recent windows show backend figures only while all-time totals stay correct.
 func (d *DB) GetUsageRanking(days, limit int, hidden []string) ([]*RankingUser, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500

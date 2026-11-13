@@ -18,7 +18,12 @@ const billingSyncPeriod = 15 * time.Minute
 // same 15-minute cadence the cron used. A failed read is logged and skipped.
 // This loop never calls /v1/models and never writes quotaExhausted.
 func (lb *LoadBalancer) billingSyncLoop() {
-	client := &http.Client{Timeout: 15 * time.Second}
+	// Dashboard billing reads hit the same hosts as live traffic, so they go
+	// through the shared per-host pool rather than a private transport.
+	client := &http.Client{
+		Transport: GetMultiHostTransport(),
+		Timeout:   15 * time.Second,
+	}
 	timer := time.NewTimer(time.Minute)
 	defer timer.Stop()
 	for {
