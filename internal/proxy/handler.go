@@ -30,6 +30,33 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/websearch"
 )
 
+// Buffer pools for zero-allocation streaming.
+var (
+	// streamBufPool pools 4KB buffers for reading from upstream responses.
+	streamBufPool = sync.Pool{
+		New: func() interface{} {
+			buf := make([]byte, streamReadBufSize)
+			return &buf
+		},
+	}
+
+	// bytesBufferPool pools bytes.Buffer for accumulating response bodies
+	// (only used for error responses that need logging).
+	bytesBufferPool = sync.Pool{
+		New: func() interface{} {
+			return new(bytes.Buffer)
+		},
+	}
+
+	// partialBufPool pools byte slices for SSE line parsing.
+	partialBufPool = sync.Pool{
+		New: func() interface{} {
+			buf := make([]byte, 0, 8192)
+			return &buf
+		},
+	}
+)
+
 // Handler forwards requests to upstream Claude backends.
 type Handler struct {
 	lb                *LoadBalancer
@@ -1011,6 +1038,61 @@ func rewriteClaudeLoginQuotaBody(ua string, status int, body []byte) (int, []byt
 
 const streamReadBufSize = 4096
 
+// maxLoggedBodyBytes caps how much of an error response body is accumulated
+// for anomaly logging. Beyond this the body is truncated — the logger itself
+// only keeps a prefix, so holding more wastes memory on large error payloads.
+const maxLoggedBodyBytes = 64 << 10 // 64KB
+
+// getStreamBuf borrows a read buffer from the pool.
+func getStreamBuf() (*[]byte, []byte) {
+	p := streamBufPool.Get().(*[]byte)
+	return p, *p
+}
+
+// putStreamBuf returns a read buffer to the pool.
+func putStreamBuf(p *[]byte) {
+	streamBufPool.Put(p)
+}
+
+// getBytesBuffer borrows a reset bytes.Buffer from the pool.
+func getBytesBuffer() *bytes.Buffer {
+	b := bytesBufferPool.Get().(*bytes.Buffer)
+	b.Reset()
+	return b
+}
+
+// putBytesBuffer returns a bytes.Buffer to the pool. Buffers that grew beyond
+// the logging cap are dropped so the pool does not retain large allocations.
+func putBytesBuffer(b *bytes.Buffer) {
+	if b.Cap() > maxLoggedBodyBytes {
+		return
+	}
+	bytesBufferPool.Put(b)
+}
+
+// getPartialBuf borrows a zero-length SSE line buffer from the pool.
+func getPartialBuf() *[]byte {
+	p := partialBufPool.Get().(*[]byte)
+	*p = (*p)[:0]
+	return p
+}
+
+// putPartialBuf returns an SSE line buffer to the pool, dropping ones that
+// grew past the cap to keep pooled capacity bounded.
+func putPartialBuf(p *[]byte) {
+	if cap(*p) > maxLoggedBodyBytes {
+		return
+	}
+	*p = (*p)[:0]
+	partialBufPool.Put(p)
+}
+
+// streamResponse proxies an SSE stream from the upstream backend to the client,
+// accumulating usage tokens as they arrive and estimating when none are present.
+// Buffers are borrowed from sync.Pool to minimize allocations; successful responses
+// skip body accumulation entirely, while errors buffer up to maxLoggedBodyBytes.
+//
+//noalloc:root
 func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendName, model string, keyInfo interface{}, keyStr string, statusCode int, start time.Time, isOpenClaw, isHermes, isDowngraded bool, reqBody []byte) {
 	c.Header("Content-Type", "text/event-stream")
 	c.Header("Cache-Control", "no-cache")
@@ -1018,15 +1100,30 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 
 	flusher, canFlush := c.Writer.(http.Flusher)
 	ctx := c.Request.Context()
+
 	// acc merges usage across SSE events field-by-field. Anthropic reports
 	// input_tokens (+ cache tokens) once in message_start, then only
 	// output_tokens in message_delta — a wholesale overwrite would lose input.
 	var acc usage.Accumulator
 	var outCounts tokenest.Counts
-	buf := make([]byte, streamReadBufSize)
-	// partial holds bytes of an incomplete SSE line across reads
-	var partial []byte
-	var respBuf []byte
+
+	// Borrow pooled buffers. The read buffer is returned immediately after the
+	// loop; partial and respBuf (if allocated) are kept alive until logging.
+	bufPtr, buf := getStreamBuf()
+	defer putStreamBuf(bufPtr)
+
+	partialPtr := getPartialBuf()
+	defer putPartialBuf(partialPtr)
+	partial := *partialPtr
+
+	// respBuf is only allocated for error responses (statusCode >= 400) that
+	// need their body logged. Successful streams skip the allocation entirely.
+	var respBuf *bytes.Buffer
+	if statusCode >= 400 {
+		respBuf = getBytesBuffer()
+		defer putBytesBuffer(respBuf)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1044,16 +1141,30 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 			if canFlush {
 				flusher.Flush()
 			}
-			respBuf = append(respBuf, chunk...)
-			// Parse SSE lines incrementally for token counting
+
+			// Accumulate response body only for errors, capped at maxLoggedBodyBytes.
+			if respBuf != nil && respBuf.Len() < maxLoggedBodyBytes {
+				toWrite := len(chunk)
+				if respBuf.Len()+toWrite > maxLoggedBodyBytes {
+					toWrite = maxLoggedBodyBytes - respBuf.Len()
+				}
+				respBuf.Write(chunk[:toWrite])
+			}
+
+			// Parse SSE lines incrementally for token counting. consumed tracks
+			// how much of partial has been parsed; the remainder is compacted to
+			// the front below so the pooled array is reused instead of resliced
+			// forward (which would eventually force append to reallocate).
 			partial = append(partial, chunk...)
+			consumed := 0
 			for {
-				idx := bytes.IndexByte(partial, '\n')
+				rest := partial[consumed:]
+				idx := bytes.IndexByte(rest, '\n')
 				if idx < 0 {
 					break
 				}
-				line := bytes.TrimSpace(partial[:idx])
-				partial = partial[idx+1:]
+				line := bytes.TrimSpace(rest[:idx])
+				consumed += idx + 1
 				if !bytes.HasPrefix(line, []byte("data:")) {
 					continue
 				}
@@ -1068,11 +1179,19 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 					outCounts.Add(t)
 				}
 			}
+			// Compact remaining unparsed bytes to the front of the pooled buffer.
+			if consumed > 0 && consumed < len(partial) {
+				copy(partial, partial[consumed:])
+			}
+			partial = partial[:len(partial)-consumed]
 		}
 		if err != nil {
 			break
 		}
 	}
+
+	// Store the final partial buffer state back before returning it to the pool.
+	*partialPtr = partial
 
 	// Estimate only when the stream carried NO usage data at all. A legitimate
 	// cache-hit response can report input_tokens=0 with large cache_read — that
@@ -1113,7 +1232,12 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 		if statusCode >= 400 {
 			msg = "backend error response"
 		}
-		logBackendAnomaly(msg, keyInfo, backendName, model, statusCode, reqBody, respBuf, latency, nil)
+		// Pass respBuf.Bytes() if we accumulated a body; nil otherwise.
+		var bodyForLog []byte
+		if respBuf != nil {
+			bodyForLog = respBuf.Bytes()
+		}
+		logBackendAnomaly(msg, keyInfo, backendName, model, statusCode, reqBody, bodyForLog, latency, nil)
 	}
 }
 
