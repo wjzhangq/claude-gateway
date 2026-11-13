@@ -80,3 +80,35 @@ func (a *Accumulator) Add(input, output, cacheRead, cacheWrite int) {
 		a.CacheWrite = cacheWrite
 	}
 }
+
+// InjectStreamOptions adds stream_options.include_usage to an OpenAI-protocol
+// streaming request body so the upstream reports real token counts in a final
+// usage chunk. Without it many OpenAI-compatible upstreams stream no usage at
+// all, forcing the caller onto heuristic estimation that overstates cost.
+//
+// The body is returned unchanged when it is not valid JSON, when stream is not
+// true (non-streaming responses always carry usage), or when the client already
+// set stream_options — a client's own choice is never overwritten.
+func InjectStreamOptions(body []byte) []byte {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+
+	var stream bool
+	if err := json.Unmarshal(m["stream"], &stream); err != nil || !stream {
+		return body
+	}
+
+	if _, exists := m["stream_options"]; exists {
+		return body
+	}
+
+	m["stream_options"] = json.RawMessage(`{"include_usage":true}`)
+
+	newBody, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return newBody
+}

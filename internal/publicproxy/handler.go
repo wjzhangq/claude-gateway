@@ -104,6 +104,11 @@ func (h *Handler) Forward(c *gin.Context, path string, body []byte, model string
 	// e.g. "https://api.moonshot.cn/v1" + "/chat/completions"
 	targetURL := buildTargetURL(baseURL, path)
 
+	// Inject stream_options for OpenAI endpoints
+	if baseURL == provider.OpenAIURL {
+		body = usage.InjectStreamOptions(body)
+	}
+
 	start := time.Now()
 
 	req, err := http.NewRequestWithContext(c.Request.Context(), c.Request.Method, targetURL, bytes.NewReader(body))

@@ -384,6 +384,11 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		}
 	}
 
+	// Inject stream_options for OpenAI endpoints
+	if strings.HasSuffix(upstreamPath, "/chat/completions") {
+		body = usage.InjectStreamOptions(body)
+	}
+
 	// Web-search simulation (backend channel only): if this is a /v1/messages
 	// request that declares Anthropic's web_search server tool and the feature
 	// is enabled, run the gateway agent loop instead of a plain passthrough.
@@ -706,6 +711,11 @@ func (h *Handler) doRequestWithDowngrade(c *gin.Context, backend *Backend, upstr
 			newBody := h.replaceModelInBody(body, originalModel, fallbackModel)
 			if newBody == nil {
 				newBody = body // use original body if model replacement failed
+			}
+
+			// Inject stream_options for OpenAI fallback endpoints
+			if strings.HasSuffix(upstreamPath, "/chat/completions") {
+				newBody = usage.InjectStreamOptions(newBody)
 			}
 
 			// Determine target base URL based on request path (same logic as publicproxy)
@@ -1070,8 +1080,24 @@ func (h *Handler) streamResponse(c *gin.Context, resp *http.Response, backendNam
 	if !acc.SawUsage {
 		acc.Input = tokenest.EstimateString(tokenest.ExtractRequestText(reqBody), tokenest.Default)
 		acc.Output = outCounts.Estimate(tokenest.Default)
-		logger.Warnf("stream carried no usage, estimated tokens: backend=%s model=%s in=%d out=%d",
-			backendName, model, acc.Input, acc.Output)
+		logger.WithFields(logrus.Fields{
+			"backend":       backendName,
+			"model":         model,
+			"estimated_in":  acc.Input,
+			"estimated_out": acc.Output,
+			"source":        "estimation_fallback",
+		}).Warn("stream carried no usage, tokens estimated")
+	} else {
+		// Log actual usage for comparison
+		logger.WithFields(logrus.Fields{
+			"backend":     backendName,
+			"model":       model,
+			"actual_in":   acc.Input,
+			"actual_out":  acc.Output,
+			"cache_read":  acc.CacheRead,
+			"cache_write": acc.CacheWrite,
+			"source":      "upstream_usage",
+		}).Debug("stream usage from upstream")
 	}
 	// rawZero after fallback: a genuinely empty stream (no request text, no
 	// streamed delta content). This avoids flagging truncated-but-successful
