@@ -655,6 +655,10 @@ type LoadBalancer struct {
 
 	quotaReportMu sync.Mutex    // guards quotaReports
 	quotaReports  []quotaReport // recent confirmed-quota reports, one row per backend
+
+	// cfg is retained so a backend added at runtime gets the same
+	// quota-proportional weighting as one built at startup. May be nil.
+	cfg *config.Config
 }
 
 // quotaReport is one backend's latest confirmed-quota failure inside the
@@ -711,6 +715,7 @@ func NewLoadBalancerWithConfig(cfgs []config.BackendAPI, cfg *config.Config) *Lo
 	lb := &LoadBalancer{
 		nowFn: time.Now,
 		rng:   rand.New(rand.NewSource(time.Now().UnixNano())),
+		cfg:   cfg,
 	}
 	for _, c := range cfgs {
 		if !c.Enabled {
@@ -1984,13 +1989,16 @@ func (lb *LoadBalancer) ValidateBackends() {
 }
 
 // UpdateBackends replaces the backend list with new config and validates them.
+// Backends are rebuilt through newBackendWithConfig so a reload keeps the same
+// quota-proportional weighting startup applies; building them without the config
+// would silently fall back to the raw config weights.
 func (lb *LoadBalancer) UpdateBackends(cfgs []config.BackendAPI) {
 	var newBackends []*Backend
 	for _, c := range cfgs {
 		if !c.Enabled {
 			continue
 		}
-		newBackends = append(newBackends, lb.newBackend(c))
+		newBackends = append(newBackends, lb.newBackendWithConfig(c, lb.cfg))
 	}
 
 	lb.mu.Lock()
@@ -1999,6 +2007,79 @@ func (lb *LoadBalancer) UpdateBackends(cfgs []config.BackendAPI) {
 
 	lb.updateCapacities()
 	lb.ValidateBackends()
+}
+
+// AddBackend adds one backend at runtime without disturbing the health state of
+// those already running, which UpdateBackends would discard by rebuilding the
+// whole slice. The new backend starts Healthy and is routable immediately, so
+// callers that want it proven first should probe it before announcing success.
+//
+// It reports an error when the name is already taken: names index health state
+// and per-backend quota, so a duplicate would make two accounts share counters.
+func (lb *LoadBalancer) AddBackend(c config.BackendAPI) error {
+	if c.Name == "" {
+		return fmt.Errorf("backend name is required")
+	}
+	if c.URL == "" || c.APIKey == "" {
+		return fmt.Errorf("backend %q: url and api_key are required", c.Name)
+	}
+
+	b := lb.newBackendWithConfig(c, lb.cfg)
+
+	lb.mu.Lock()
+	for _, existing := range lb.backends {
+		if existing.Name == c.Name {
+			lb.mu.Unlock()
+			return fmt.Errorf("backend %q already exists", c.Name)
+		}
+	}
+	lb.backends = append(lb.backends, b)
+	lb.mu.Unlock()
+
+	lb.updateCapacities()
+	log.Printf("[backend:%s] added at runtime (url=%s weight=%d)", b.Name, b.URL, b.Weight)
+	return nil
+}
+
+// SetBackendEnabled parks or restores one backend without removing it, so its
+// accumulated counters survive and its position in the fleet is unchanged.
+//
+// Parking uses the same Isolated state the passive error path uses, with a TTL
+// far enough out that releaseExpired will not promote it back on its own; only
+// another call here restores it. Restoring clears the balance hold too, since an
+// operator re-enabling a key is asserting it is usable again.
+func (lb *LoadBalancer) SetBackendEnabled(name string, enabled bool) error {
+	lb.mu.RLock()
+	var target *Backend
+	for _, b := range lb.backends {
+		if b.Name == name {
+			target = b
+			break
+		}
+	}
+	lb.mu.RUnlock()
+
+	if target == nil {
+		return fmt.Errorf("backend %q not found", name)
+	}
+
+	now := lb.nowFn()
+	if enabled {
+		target.ttlUntil.Store(0)
+		target.balanceHold.Store(false)
+		target.balanceRestCount.Store(0)
+		target.balanceRestSince.Store(0)
+		target.consecErr.Store(0)
+		target.setState(stateHealthy, now)
+		log.Printf("[backend:%s] re-enabled at runtime", name)
+		return nil
+	}
+
+	// Park far enough out that the reconcile pass leaves it alone.
+	target.ttlUntil.Store(now.Add(365 * 24 * time.Hour).Unix())
+	target.setState(stateIsolated, now)
+	log.Printf("[backend:%s] disabled at runtime", name)
+	return nil
 }
 
 // validateBackend returns true if the backend passes the /v1/models health check.

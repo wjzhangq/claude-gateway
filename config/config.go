@@ -39,6 +39,7 @@ type Config struct {
 	Auth                    AuthConfig                   `yaml:"auth"`
 	Groups                  []Group                      `yaml:"groups"`
 	Backends                []BackendAPI                 `yaml:"backends"`
+	BackendGroups           []BackendGroup               `yaml:"backend_groups"`
 	UsageSync               time.Duration                `yaml:"usage_sync_time"`
 	ModelReplacements       map[string]string            `yaml:"model_replacements"`
 	DowngradedTTL           time.Duration                `yaml:"downgraded_ttl"`            // how long to skip original model after downgrade
@@ -187,6 +188,30 @@ type BackendAPI struct {
 	QuotaReset string `yaml:"quota_reset"`
 }
 
+// BackendGroup declares several API keys that share one upstream host. It is a
+// more compact way to write what `backends` expresses one entry at a time: in
+// practice dozens of keys point at the same two or three hosts, so repeating
+// the URL per key makes the file long without adding information.
+//
+// A group expands into one BackendAPI per key, named "<name_prefix>-NNN"
+// starting at 001, in the order the keys appear. Those generated names are what
+// per-backend quota lookup (LookupBackendDailyLimit) and the admin UI see, so
+// name_prefix should match whatever prefix backend_daily_limits keys on.
+type BackendGroup struct {
+	Host       string   `yaml:"host"`
+	NamePrefix string   `yaml:"name_prefix"`
+	Keys       []string `yaml:"keys"`
+	// WeightPerKey is applied to every expanded backend. Quota-proportional
+	// weighting may still override it at construction time, exactly as it does
+	// for a hand-written backends entry.
+	WeightPerKey int `yaml:"weight_per_key"`
+	// QuotaReset is copied to every expanded backend; see BackendAPI.QuotaReset.
+	QuotaReset string `yaml:"quota_reset"`
+	// Disabled lists keys to expand with Enabled=false, so a key can be parked
+	// without deleting it and losing its position in the numbering.
+	Disabled []string `yaml:"disabled"`
+}
+
 // AWSConfig holds all AWS Bedrock channel configuration.
 type AWSConfig struct {
 	Region          string        `yaml:"region"`
@@ -305,11 +330,57 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config file: %w", err)
 	}
 
+	// Expand backend_groups before validation so everything downstream — the
+	// load balancer, quota lookup, the admin API — sees one flat Backends slice
+	// and needs no knowledge of which form the file used.
+	if err := cfg.normalizeBackends(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+
 	if err := validate(cfg); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
 	return cfg, nil
+}
+
+// normalizeBackends expands BackendGroups into Backends. Groups are appended
+// after any hand-written backends entries, so the two forms can coexist during
+// a migration. A group whose host or keys are missing is an error rather than a
+// silently empty expansion, since that would quietly shrink the pool.
+func (c *Config) normalizeBackends() error {
+	for gi, g := range c.BackendGroups {
+		if g.Host == "" {
+			return fmt.Errorf("backend_groups[%d].host is required", gi)
+		}
+		if len(g.Keys) == 0 {
+			return fmt.Errorf("backend_groups[%d] (%s) has no keys", gi, g.Host)
+		}
+		prefix := g.NamePrefix
+		if prefix == "" {
+			return fmt.Errorf("backend_groups[%d] (%s): name_prefix is required", gi, g.Host)
+		}
+
+		disabled := make(map[string]bool, len(g.Disabled))
+		for _, k := range g.Disabled {
+			disabled[k] = true
+		}
+
+		for ki, key := range g.Keys {
+			if key == "" {
+				return fmt.Errorf("backend_groups[%d] (%s): keys[%d] is empty", gi, g.Host, ki)
+			}
+			c.Backends = append(c.Backends, BackendAPI{
+				Name:       fmt.Sprintf("%s-%03d", prefix, ki+1),
+				URL:        g.Host,
+				APIKey:     key,
+				Weight:     g.WeightPerKey,
+				Enabled:    !disabled[key],
+				QuotaReset: g.QuotaReset,
+			})
+		}
+	}
+	return nil
 }
 
 func defaultConfig() *Config {
@@ -537,6 +608,7 @@ func validate(cfg *Config) error {
 	if len(cfg.Backends) == 0 {
 		return fmt.Errorf("at least one backend is required")
 	}
+	seen := make(map[string]int, len(cfg.Backends))
 	for i, b := range cfg.Backends {
 		if b.URL == "" {
 			return fmt.Errorf("backends[%d].url is required", i)
@@ -547,6 +619,16 @@ func validate(cfg *Config) error {
 		if b.Weight <= 0 {
 			cfg.Backends[i].Weight = 1
 		}
+		// Backend names index health state, per-backend quota and the admin UI,
+		// so a collision between a hand-written entry and a generated group
+		// name would make two accounts share one set of counters.
+		if b.Name == "" {
+			return fmt.Errorf("backends[%d].name is required", i)
+		}
+		if prev, dup := seen[b.Name]; dup {
+			return fmt.Errorf("duplicate backend name %q (backends[%d] and backends[%d])", b.Name, prev, i)
+		}
+		seen[b.Name] = i
 	}
 	return nil
 }

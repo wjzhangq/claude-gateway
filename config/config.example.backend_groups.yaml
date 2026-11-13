@@ -1,0 +1,80 @@
+# backend_groups — the compact form of the `backends` list.
+#
+# In practice dozens of upstream API keys point at the same two or three hosts,
+# so writing one `backends` entry per key repeats the URL without adding
+# information. A group states the host once and lists its keys.
+#
+# This file is an example, not a live config. To migrate, replace the
+# `backends:` block in config.yaml with a `backend_groups:` block of this shape.
+# Both forms may appear together during a migration: hand-written `backends`
+# entries are kept and groups are appended after them.
+
+# ── Expansion rules ────────────────────────────────────────────────────────────
+#
+# Each group expands to one backend per key, in the order the keys appear:
+#
+#   name:        "<name_prefix>-NNN", numbered from 001
+#   url:         the group's host
+#   api_key:     the key
+#   weight:      weight_per_key (falls back to 1 when omitted)
+#   enabled:     true, unless the key is listed under `disabled`
+#   quota_reset: the group's quota_reset
+#
+# Two things to keep in mind:
+#
+# 1. The generated names are what per-backend quota lookup
+#    (backend_daily_limits) and the admin UI see. Pick a name_prefix that
+#    matches the prefix your backend_daily_limits rules key on.
+#
+# 2. A key listed under `disabled` still expands and still consumes its
+#    position in the numbering. That is deliberate: parking a key does not
+#    renumber the keys after it, so their quota and health history stay put.
+#
+# A group missing its host, name_prefix or keys is a load error rather than an
+# empty expansion — a typo should not silently shrink the pool.
+
+backend_groups:
+  - host: https://upstream-a.example.com
+    name_prefix: alpha
+    weight_per_key: 10
+    # Released at CST midnight rather than on a jittered long TTL.
+    quota_reset: cst-midnight
+    keys:
+      - "sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" # -> alpha-001
+      - "sk-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" # -> alpha-002
+      - "sk-cccccccccccccccccccccccccccccccc" # -> alpha-003
+
+  - host: https://upstream-b.example.com
+    name_prefix: beta
+    weight_per_key: 25
+    keys:
+      - "sk-dddddddddddddddddddddddddddddddd" # -> beta-001
+      - "sk-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" # -> beta-002, parked below
+      - "sk-ffffffffffffffffffffffffffffffff" # -> beta-003
+    # Parked keys keep their slot, so beta-003 stays beta-003.
+    disabled:
+      - "sk-eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+# Per-backend daily limits match on a name prefix, so these rules cover every
+# key expanded from the groups above.
+backend_daily_limits:
+  - prefix: alpha
+    backend_daily_usd: 500
+  - prefix: beta
+    backend_daily_usd: 2000
+
+# ── Runtime key management ────────────────────────────────────────────────────
+#
+# Keys can also be added or parked without a restart. These calls change the
+# running fleet only — they do not write this file, so a restart loses them
+# unless config.yaml is updated to match.
+#
+#   POST /admin/api/backends
+#        {"name": "alpha-004", "url": "https://upstream-a.example.com",
+#         "api_key": "sk-...", "weight": 10}
+#
+#   POST /admin/api/backends/alpha-004/disable   {"reason": "balance exhausted"}
+#   POST /admin/api/backends/alpha-004/enable
+#
+# Disabling parks the backend: the entry and its counters are kept, it stops
+# being selected, and the reconcile pass will not promote it back on its own.

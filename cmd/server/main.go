@@ -404,6 +404,69 @@ func main() {
 			}
 			c.JSON(200, backends)
 		})
+
+		// Add one upstream key at runtime. The backend joins the rotation
+		// immediately and shares the per-host connection pool. This does NOT
+		// write config.yaml: a restart loses it unless the file is updated too.
+		adminAPI.POST("/backends", func(c *gin.Context) {
+			var req struct {
+				Name       string `json:"name"`
+				URL        string `json:"url"`
+				APIKey     string `json:"api_key"`
+				Weight     int    `json:"weight"`
+				QuotaReset string `json:"quota_reset"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			if req.Weight <= 0 {
+				req.Weight = 1
+			}
+			err := lb.AddBackend(config.BackendAPI{
+				Name:       req.Name,
+				URL:        req.URL,
+				APIKey:     req.APIKey,
+				Weight:     req.Weight,
+				Enabled:    true,
+				QuotaReset: req.QuotaReset,
+			})
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusCreated, gin.H{
+				"name":   req.Name,
+				"note":   "runtime only; update config.yaml to survive a restart",
+				"status": "added",
+			})
+		})
+
+		// Park or restore one backend by name. The entry and its counters are
+		// kept either way.
+		adminAPI.POST("/backends/:name/disable", func(c *gin.Context) {
+			var req struct {
+				Reason string `json:"reason"`
+			}
+			_ = c.ShouldBindJSON(&req)
+			name := c.Param("name")
+			if err := lb.SetBackendEnabled(name, false); err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+				return
+			}
+			logger.Infof("backend %s disabled via admin API (reason=%q)", name, req.Reason)
+			c.JSON(http.StatusOK, gin.H{"name": name, "status": "disabled"})
+		})
+
+		adminAPI.POST("/backends/:name/enable", func(c *gin.Context) {
+			name := c.Param("name")
+			if err := lb.SetBackendEnabled(name, true); err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+				return
+			}
+			logger.Infof("backend %s re-enabled via admin API", name)
+			c.JSON(http.StatusOK, gin.H{"name": name, "status": "enabled"})
+		})
 		adminAPI.GET("/groups", statsH.GetGroups)
 		adminAPI.GET("/groups/stats", statsH.GetGroupStats)
 		adminAPI.GET("/applications", appH.ListAll)
