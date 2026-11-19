@@ -175,7 +175,7 @@ export default function AdminAWSUserDailyPage() {
               <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={100} />
               <Tooltip
                 contentStyle={{ borderRadius: 8, border: '1px solid #e5e7eb', fontSize: 12 }}
-                formatter={(value?: number) => [`$${(value ?? 0).toFixed(4)}`, '费用']}
+                formatter={(value: unknown) => [`$${Number(value ?? 0).toFixed(4)}`, '费用']}
               />
               <Bar dataKey="cost" name="费用" radius={[0, 3, 3, 0]}>
                 {chartData.map((_, i) => (
