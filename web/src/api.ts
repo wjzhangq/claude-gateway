@@ -30,11 +30,14 @@ api.interceptors.response.use(
 export default api
 
 // Auth
-export const sendCode = (itcode: string, inviteCode?: string) =>
-  api.post("/api/auth/send-code", { itcode, invite_code: inviteCode || undefined })
+export const sendCode = (email: string) =>
+  api.post("/api/auth/send-code", { email })
 
-export const login = (itcode: string, code: string, inviteCode?: string, rememberMe?: boolean) =>
-  api.post("/api/auth/login", { itcode, code, invite_code: inviteCode || undefined, remember_me: rememberMe || undefined })
+export const login = (email: string, password: string, rememberMe?: boolean) =>
+  api.post("/api/auth/login", { email, password, remember_me: rememberMe })
+
+export const resetPassword = (email: string, code: string, newPassword: string) =>
+  api.post("/api/auth/reset-password", { email, code, new_password: newPassword })
 
 export const logout = () => {
   // Clear stored user info on logout

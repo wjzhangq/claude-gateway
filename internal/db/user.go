@@ -81,12 +81,16 @@ func (d *DB) CreateUser(u *model.User) error {
 	return nil
 }
 
+// GetUserByItcode looks up a user by itcode. The argument may also be a full
+// email address: NormalizeItcode strips the "@domain" part, so "zhangs1" and
+// "zhangs1@lenovo.com" resolve to the same row. Email is never stored — it is
+// derived as itcode + "@" + auth.email_domain wherever it is needed.
 func (d *DB) GetUserByItcode(itcode string) (*model.User, error) {
 	u := &model.User{}
 	err := d.QueryRowRead(
-		`SELECT id, itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, aws_enabled, created_at, updated_at
-		 FROM users WHERE itcode = ?`, itcode,
-	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaUSD, &u.AWSDailyQuotaUSD, &u.AWSEnabled, &u.CreatedAt, &u.UpdatedAt)
+		`SELECT id, itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, aws_enabled, password_hash, created_at, updated_at
+		 FROM users WHERE itcode = ?`, NormalizeItcode(itcode),
+	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaUSD, &u.AWSDailyQuotaUSD, &u.AWSEnabled, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -96,13 +100,34 @@ func (d *DB) GetUserByItcode(itcode string) (*model.User, error) {
 func (d *DB) GetUserByID(id int64) (*model.User, error) {
 	u := &model.User{}
 	err := d.QueryRowRead(
-		`SELECT id, itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, aws_enabled, created_at, updated_at
+		`SELECT id, itcode, name, role, status, group_id, daily_quota_usd, aws_daily_quota_usd, aws_enabled, password_hash, created_at, updated_at
 		 FROM users WHERE id = ?`, id,
-	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaUSD, &u.AWSDailyQuotaUSD, &u.AWSEnabled, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Itcode, &u.Name, &u.Role, &u.Status, &u.GroupID, &u.DailyQuotaUSD, &u.AWSDailyQuotaUSD, &u.AWSEnabled, &u.PasswordHash, &u.CreatedAt, &u.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	return u, err
+}
+
+// UpdateUserPassword stores a new bcrypt hash for the user. Used by the
+// password-reset flow, which is also how existing accounts (password_hash = '')
+// set their first password.
+func (d *DB) UpdateUserPassword(userID int64, passwordHash string) error {
+	res, err := d.Exec(
+		`UPDATE users SET password_hash=?, updated_at=? WHERE id=?`,
+		passwordHash, time.Now(), userID,
+	)
+	if err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("update password: user %d not found", userID)
+	}
+	return nil
 }
 
 func (d *DB) ListUsers() ([]*model.User, error) {

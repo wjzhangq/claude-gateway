@@ -169,8 +169,17 @@ type AuthConfig struct {
 	SessionMaxAge int           `yaml:"session_max_age"` // seconds
 	CodeExpiry    time.Duration `yaml:"code_expiry"`     // verification code TTL
 	AdminItcode   string        `yaml:"admin_itcode"`
-	SendCodeURL   string        `yaml:"send_code_url"`
-	InviteCode    string        `yaml:"invite_code"`
+
+	// Email-based authentication
+	EmailDomain         string        `yaml:"email_domain"`          // e.g. "lenovo.com"
+	ResendAPIKey        string        `yaml:"resend_api_key"`        // Resend.com API key
+	ResendFromAddress   string        `yaml:"resend_from_address"`   // e.g. "noreply@geovisi.com"
+	PasswordResetExpiry time.Duration `yaml:"password_reset_expiry"` // default 15m
+	EmailRateLimitSec   int           `yaml:"email_rate_limit_sec"`  // per-user cooldown, default 60
+
+	// Deprecated (kept for backward compatibility during migration)
+	SendCodeURL string `yaml:"send_code_url"` // old webhook, no longer used
+	InviteCode  string `yaml:"invite_code"`   // deprecated, can be removed later
 }
 
 // BackendAPI represents a single upstream Claude API endpoint.
@@ -398,8 +407,11 @@ func defaultConfig() *Config {
 			Format: "json",
 		},
 		Auth: AuthConfig{
-			SessionMaxAge: 86400,
-			CodeExpiry:    5 * time.Minute,
+			SessionMaxAge:       86400,
+			CodeExpiry:          5 * time.Minute,
+			EmailDomain:         "lenovo.com",
+			PasswordResetExpiry: 15 * time.Minute,
+			EmailRateLimitSec:   60,
 		},
 		UsageSync:     5 * time.Minute,
 		DowngradedTTL: 60 * time.Second,

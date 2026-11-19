@@ -6,6 +6,7 @@ import "time"
 type User struct {
 	ID               int64     `db:"id"                json:"id"`
 	Itcode           string    `db:"itcode"            json:"itcode"`
+	PasswordHash     string    `db:"password_hash"     json:"-"` // never expose in JSON
 	Name             string    `db:"name"              json:"name"`
 	Role             string    `db:"role"              json:"role"`
 	Status           string    `db:"status"            json:"status"`
@@ -23,6 +24,12 @@ type User struct {
 	IsDeparted       bool      `db:"is_departed"       json:"is_departed"` // 离职标记
 	CreatedAt        time.Time `db:"created_at"        json:"created_at"`
 	UpdatedAt        time.Time `db:"updated_at"        json:"updated_at"`
+}
+
+// Email returns the computed email address (itcode@domain).
+// The domain must be provided from config.
+func (u *User) Email(domain string) string {
+	return u.Itcode + "@" + domain
 }
 
 // APIKey represents a user's API key.

@@ -5,6 +5,7 @@ import { getMe } from '../api'
 interface AuthUser {
   id: number
   itcode: string
+  email: string
   role: string
   status: string
   aws_enabled: boolean

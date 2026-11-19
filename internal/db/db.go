@@ -337,6 +337,8 @@ FROM users WHERE daily_quota_usd > 0`},
 	// actually produces, so rows for already-pruned dates and the imported
 	// model='synced' rows are left as they are.
 	{56, backfillDailyStats},
+	// Email + password login migration
+	{57, `ALTER TABLE users ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''`},
 }
 
 // backfillDailyStats rebuilds daily_stats from the full usage_logs history,

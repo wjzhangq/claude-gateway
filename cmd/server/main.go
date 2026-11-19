@@ -91,7 +91,7 @@ func main() {
 		logger.Warnf("quota migration from config.yaml: %v", err)
 	}
 
-	codeStore := auth.NewCodeStore(cfg.Auth.CodeExpiry)
+	codeStore := auth.NewCodeStore(cfg.Auth.PasswordResetExpiry)
 	sessionStore := auth.NewSessionStore("sessions.json")
 
 	if cfg.Server.Mode == "release" {
@@ -241,6 +241,7 @@ func main() {
 		apiAuth.POST("/send-code", authH.SendCode)
 		apiAuth.POST("/login", authH.Login)
 		apiAuth.POST("/logout", authH.Logout)
+		apiAuth.POST("/reset-password", authH.ResetPassword)
 	}
 
 	// /v1/* — dispatch by channel attribute of the API key

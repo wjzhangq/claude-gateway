@@ -1,9 +1,7 @@
 package handler
 
 import (
-	"bytes"
 	cryptorand "crypto/rand"
-	"encoding/json"
 	"fmt"
 	"math/big"
 	"net/http"
@@ -18,142 +16,162 @@ import (
 	"github.com/wjzhangq/claude-gateway/internal/db"
 	"github.com/wjzhangq/claude-gateway/internal/logger"
 	"github.com/wjzhangq/claude-gateway/internal/middleware"
-	"github.com/wjzhangq/claude-gateway/internal/model"
 )
 
-// AuthHandler handles login/logout and verification code flows.
+// AuthHandler handles login/logout and password reset flows.
 type AuthHandler struct {
 	db           *db.DB
 	codeStore    *auth.CodeStore
 	sessionStore *auth.SessionStore
+	emailService *auth.EmailService
 	cfg          *config.AuthConfig
 	rootCfg      *config.Config // full config for aws_channel_closed etc.
 }
 
 func NewAuthHandler(database *db.DB, cs *auth.CodeStore, ss *auth.SessionStore, cfg *config.AuthConfig, rootCfg *config.Config) *AuthHandler {
-	return &AuthHandler{db: database, codeStore: cs, sessionStore: ss, cfg: cfg, rootCfg: rootCfg}
+	var emailSvc *auth.EmailService
+	if cfg.ResendAPIKey != "" {
+		emailSvc = auth.NewEmailService(cfg.ResendAPIKey, cfg.ResendFromAddress, cfg.EmailRateLimitSec)
+	}
+	return &AuthHandler{
+		db:           database,
+		codeStore:    cs,
+		sessionStore: ss,
+		emailService: emailSvc,
+		cfg:          cfg,
+		rootCfg:      rootCfg,
+	}
 }
 
 // SendCode godoc: POST /api/auth/send-code
+// Repurposed for password reset: sends a verification code to the user's email.
 func (h *AuthHandler) SendCode(c *gin.Context) {
 	var req struct {
-		Itcode     string `json:"itcode"      binding:"required"`
-		InviteCode string `json:"invite_code"`
+		Email string `json:"email" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
 		return
 	}
 
-	// Validate invite code before sending
-	if h.cfg.InviteCode != "" && req.InviteCode != h.cfg.InviteCode {
-		c.JSON(http.StatusForbidden, gin.H{"error": "invalid invite code"})
+	// Validate email format and domain
+	if !strings.Contains(req.Email, "@") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
 		return
 	}
 
+	// Extract itcode from email (strip @domain)
+	parts := strings.Split(req.Email, "@")
+	itcode := parts[0]
+	domain := parts[1]
+
+	// Validate email domain
+	if domain != h.cfg.EmailDomain {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("only @%s emails are accepted", h.cfg.EmailDomain)})
+		return
+	}
+
+	// Look up user by itcode
+	user, err := h.db.GetUserByItcode(itcode)
+	if err != nil {
+		logger.Errorf("send-code: db error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	if user == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	// Generate 6-digit code
 	n, _ := cryptorand.Int(cryptorand.Reader, big.NewInt(1000000))
 	code := fmt.Sprintf("%06d", n.Int64())
-	h.codeStore.Set(req.Itcode, code)
+	h.codeStore.Set(req.Email, code) // Store by email (not itcode) for reset flow
 
-	if h.cfg.SendCodeURL != "" {
-		if err := sendEmailCode(h.cfg.SendCodeURL, req.Itcode, code); err != nil {
-			logger.Warnf("send email code to %s: %v", req.Itcode, err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send verification code"})
+	// Send via Resend API
+	if h.emailService != nil {
+		if err := h.emailService.SendVerificationCode(req.Email, code); err != nil {
+			if strings.Contains(err.Error(), "rate limit") {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": err.Error()})
+			} else {
+				logger.Warnf("send email to %s: %v", req.Email, err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send verification code"})
+			}
 			return
 		}
+		logger.Infof("password reset code sent to %s", req.Email)
 	} else {
-		logger.Infof("verification code for %s: %s", req.Itcode, code)
+		// Fallback: log code if email service not configured (dev mode)
+		logger.Infof("verification code for %s: %s (email service not configured)", req.Email, code)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "code sent"})
 }
 
-func sendEmailCode(sendCodeURL, itcode, code string) error {
-	email := itcode
-	if !strings.Contains(itcode, "@") {
-		email = itcode + "@lenovo.com"
-	}
-
-	html := generateEmailTemplate(code)
-
-	payload := map[string]string{
-		"email": email,
-		"html":  html,
-	}
-	jsonPayload, _ := json.Marshal(payload)
-
-	resp, err := http.Post(sendCodeURL, "application/json", bytes.NewReader(jsonPayload))
-	if err != nil {
-		return fmt.Errorf("http post: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-
-	logger.Infof("verification code sent to %s", email)
-	return nil
-}
-
-func generateEmailTemplate(code string) string {
-	return fmt.Sprintf(`<!DOCTYPE html>
-<html>
-<body style="font-family:sans-serif;padding:24px;">
-  <h2>Claude Gateway 验证码</h2>
-  <p>您的验证码为：</p>
-  <p style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#4f46e5;">%s</p>
-  <p style="color:#6b7280;font-size:14px;">验证码 5 分钟内有效，请勿泄露给他人。</p>
-</body>
-</html>`, code)
-}
-
 // Login godoc: POST /api/auth/login
+// Email + password login.
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req struct {
-		Itcode     string `json:"itcode"      binding:"required"`
-		Code       string `json:"code"        binding:"required"`
-		InviteCode string `json:"invite_code"`
+		Email      string `json:"email"      binding:"required"`
+		Password   string `json:"password"   binding:"required"`
 		RememberMe bool   `json:"remember_me"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email and password are required"})
 		return
 	}
 
-	// Validate invite code
-	if h.cfg.InviteCode != "" && req.InviteCode != h.cfg.InviteCode {
-		c.JSON(http.StatusForbidden, gin.H{"error": "invalid invite code"})
+	// Validate email format
+	if !strings.Contains(req.Email, "@") {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
-	if !h.codeStore.Verify(req.Itcode, req.Code) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired code"})
+	// Extract itcode from email
+	parts := strings.Split(req.Email, "@")
+	itcode := parts[0]
+	domain := parts[1]
+
+	// Validate email domain
+	if domain != h.cfg.EmailDomain {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
-	user, err := h.db.GetUserByItcode(req.Itcode)
+	// Look up user by itcode (GetUserByItcode now returns password_hash)
+	user, err := h.db.GetUserByItcode(itcode)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		logger.Errorf("login: db error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
 		return
 	}
 	if user == nil {
-		// Auto-create user with pending status
-		user = &model.User{
-			Itcode: req.Itcode,
-			Name:   req.Itcode,
-			Role:   "user",
-			Status: "pending",
-		}
-		if err := h.db.CreateUser(user); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create user"})
-			return
-		}
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return
+	}
+
+	// Check if password is set
+	if user.PasswordHash == "" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "password_not_set", "message": "Please use 'Forgot/Reset Password' to set your initial password"})
+		return
+	}
+
+	// Compare password
+	if err := auth.ComparePassword(user.PasswordHash, req.Password); err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
+		return
+	}
+
+	// Check user status
+	if user.Status != "active" {
+		c.JSON(http.StatusForbidden, gin.H{"error": "user account is pending or disabled"})
+		return
 	}
 
 	sess := sessions.Default(c)
 	sess.Set("user_id", user.ID)
 	sess.Set("user_role", user.Role)
+
 	// Set session MaxAge: 7 days for remember_me, 1 day otherwise
 	maxAge := 86400 // 1 day default
 	if req.RememberMe {
@@ -162,11 +180,12 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	sess.Options(sessions.Options{
 		MaxAge:   maxAge,
 		Path:     "/",
-		HttpOnly: true, // 恢复 HttpOnly，防止 JS 访问
+		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   false, // 生产环境应设为 true（需要 HTTPS）
+		Secure:   false, // production should set true (requires HTTPS)
 	})
 	if err := sess.Save(); err != nil {
+		logger.Errorf("login: session save error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session error"})
 		return
 	}
@@ -180,12 +199,77 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		"user": gin.H{
 			"id":                 user.ID,
 			"itcode":             user.Itcode,
+			"email":              user.Email(h.cfg.EmailDomain),
 			"role":               user.Role,
 			"status":             user.Status,
 			"aws_enabled":        user.AWSEnabled,
 			"aws_channel_closed": h.awsChannelClosed(),
 		},
 	})
+}
+
+// ResetPassword godoc: POST /api/auth/reset-password
+// Verifies the code and sets a new password.
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	var req struct {
+		Email       string `json:"email"        binding:"required"`
+		Code        string `json:"code"         binding:"required"`
+		NewPassword string `json:"new_password" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email, code, and new_password are required"})
+		return
+	}
+
+	// Validate code
+	if !h.codeStore.Verify(req.Email, req.Code) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired code"})
+		return
+	}
+
+	// Validate password strength
+	if err := auth.ValidatePasswordStrength(req.NewPassword); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Extract itcode from email
+	parts := strings.Split(req.Email, "@")
+	if len(parts) != 2 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
+		return
+	}
+	itcode := parts[0]
+
+	// Look up user
+	user, err := h.db.GetUserByItcode(itcode)
+	if err != nil {
+		logger.Errorf("reset-password: db error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+	if user == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+
+	// Hash new password
+	passwordHash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		logger.Errorf("reset-password: hash error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
+	// Update password in DB
+	if err := h.db.UpdateUserPassword(user.ID, passwordHash); err != nil {
+		logger.Errorf("reset-password: update error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
+	logger.Infof("password reset successful for user %s", user.Itcode)
+	c.JSON(http.StatusOK, gin.H{"message": "password reset successfully"})
 }
 
 // Logout godoc: POST /api/auth/logout
@@ -223,6 +307,7 @@ func (h *AuthHandler) Me(c *gin.Context) {
 		"user": gin.H{
 			"id":                 user.ID,
 			"itcode":             user.Itcode,
+			"email":              user.Email(h.cfg.EmailDomain),
 			"role":               user.Role,
 			"status":             user.Status,
 			"aws_enabled":        user.AWSEnabled,
