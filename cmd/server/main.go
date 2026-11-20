@@ -238,6 +238,7 @@ func main() {
 
 	apiAuth := r.Group("/api/auth")
 	{
+		apiAuth.POST("/check-email", authH.CheckEmail)
 		apiAuth.POST("/send-code", authH.SendCode)
 		apiAuth.POST("/login", authH.Login)
 		apiAuth.POST("/logout", authH.Logout)

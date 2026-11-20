@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,6 +44,69 @@ func NewAuthHandler(database *db.DB, cs *auth.CodeStore, ss *auth.SessionStore, 
 	}
 }
 
+// parseEmailLocal extracts and validates the local part (itcode) from an email address.
+// Returns (itcode, error). Does not enforce any specific domain—caller decides what to do with it.
+func parseEmailLocal(email string) (string, error) {
+	email = strings.TrimSpace(email)
+	if !regexp.MustCompile(`^[^@]+@[^@]+\.[^@]+$`).MatchString(email) {
+		return "", fmt.Errorf("invalid email format")
+	}
+	parts := strings.Split(email, "@")
+	itcode := strings.TrimSpace(parts[0])
+	if itcode == "" {
+		return "", fmt.Errorf("empty local part")
+	}
+	return itcode, nil
+}
+
+// canonicalEmail returns the authoritative email address for an itcode (itcode@configured_domain).
+// This is the address where verification codes are sent, regardless of what domain the user typed.
+func (h *AuthHandler) canonicalEmail(itcode string) string {
+	return itcode + "@" + h.cfg.EmailDomain
+}
+
+// CheckEmail godoc: POST /api/auth/check-email
+// Checks if an email (itcode) exists and whether a password is set.
+// Used by login page on blur to provide early feedback and enable password reset flow.
+// Note: This is an account enumeration endpoint—requested for UX but exposes existence.
+func (h *AuthHandler) CheckEmail(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "email is required"})
+		return
+	}
+
+	// Extract itcode from email
+	itcode, err := parseEmailLocal(req.Email)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
+		return
+	}
+
+	// Look up user by itcode
+	user, err := h.db.GetUserByItcode(itcode)
+	if err != nil {
+		logger.Errorf("check-email: db error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+		return
+	}
+
+	if user == nil {
+		c.JSON(http.StatusOK, gin.H{
+			"exists":        false,
+			"password_set":  false,
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"exists":       true,
+		"password_set": user.PasswordHash != "",
+	})
+}
+
 // SendCode godoc: POST /api/auth/send-code
 // Repurposed for password reset: sends a verification code to the user's email.
 func (h *AuthHandler) SendCode(c *gin.Context) {
@@ -54,20 +118,10 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 		return
 	}
 
-	// Validate email format and domain
-	if !strings.Contains(req.Email, "@") {
+	// Extract itcode from email (any domain accepted, we send to canonical domain)
+	itcode, err := parseEmailLocal(req.Email)
+	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
-		return
-	}
-
-	// Extract itcode from email (strip @domain)
-	parts := strings.Split(req.Email, "@")
-	itcode := parts[0]
-	domain := parts[1]
-
-	// Validate email domain
-	if domain != h.cfg.EmailDomain {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("only @%s emails are accepted", h.cfg.EmailDomain)})
 		return
 	}
 
@@ -86,23 +140,24 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 	// Generate 6-digit code
 	n, _ := cryptorand.Int(cryptorand.Reader, big.NewInt(1000000))
 	code := fmt.Sprintf("%06d", n.Int64())
-	h.codeStore.Set(req.Email, code) // Store by email (not itcode) for reset flow
+	h.codeStore.Set(itcode, code) // Store by itcode (not email) for consistent lookup
 
-	// Send via Resend API
+	// Send to canonical email address (itcode@configured_domain), ignoring user's typed domain
+	canonicalAddr := h.canonicalEmail(itcode)
 	if h.emailService != nil {
-		if err := h.emailService.SendVerificationCode(req.Email, code); err != nil {
+		if err := h.emailService.SendVerificationCode(canonicalAddr, code); err != nil {
 			if strings.Contains(err.Error(), "rate limit") {
 				c.JSON(http.StatusTooManyRequests, gin.H{"error": err.Error()})
 			} else {
-				logger.Warnf("send email to %s: %v", req.Email, err)
+				logger.Warnf("send email to %s: %v", canonicalAddr, err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to send verification code"})
 			}
 			return
 		}
-		logger.Infof("password reset code sent to %s", req.Email)
+		logger.Infof("password reset code sent to %s", canonicalAddr)
 	} else {
 		// Fallback: log code if email service not configured (dev mode)
-		logger.Infof("verification code for %s: %s (email service not configured)", req.Email, code)
+		logger.Infof("verification code for %s: %s (email service not configured)", canonicalAddr, code)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "code sent"})
@@ -121,19 +176,9 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Validate email format
-	if !strings.Contains(req.Email, "@") {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
-		return
-	}
-
 	// Extract itcode from email
-	parts := strings.Split(req.Email, "@")
-	itcode := parts[0]
-	domain := parts[1]
-
-	// Validate email domain
-	if domain != h.cfg.EmailDomain {
+	itcode, err := parseEmailLocal(req.Email)
+	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
@@ -221,8 +266,15 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 		return
 	}
 
-	// Validate code
-	if !h.codeStore.Verify(req.Email, req.Code) {
+	// Extract itcode from email
+	itcode, err := parseEmailLocal(req.Email)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
+		return
+	}
+
+	// Validate code (keyed by itcode, not email)
+	if !h.codeStore.Verify(itcode, req.Code) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired code"})
 		return
 	}
@@ -232,14 +284,6 @@ func (h *AuthHandler) ResetPassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-
-	// Extract itcode from email
-	parts := strings.Split(req.Email, "@")
-	if len(parts) != 2 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid email format"})
-		return
-	}
-	itcode := parts[0]
 
 	// Look up user
 	user, err := h.db.GetUserByItcode(itcode)

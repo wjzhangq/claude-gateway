@@ -30,6 +30,9 @@ api.interceptors.response.use(
 export default api
 
 // Auth
+export const checkEmail = (email: string) =>
+  api.post("/api/auth/check-email", { email })
+
 export const sendCode = (email: string) =>
   api.post("/api/auth/send-code", { email })
 
