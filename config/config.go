@@ -59,6 +59,36 @@ type Config struct {
 	IPGeo                   IPGeoConfig                  `yaml:"ip_geo"`                 // per-request IP → city / HQ tagging
 	Analyze                 AnalyzeConfig                `yaml:"analyze"`                // offline traffic abuse analysis (feature 004)
 	WebSearch               WebSearchConfig              `yaml:"websearch"`              // gateway-simulated web_search server tool (backend channel)
+	ThinkingRewrite         ThinkingRewriteConfig        `yaml:"thinking_rewrite"`       // rewrite legacy thinking.type values for models that reject them
+}
+
+// ThinkingRewriteConfig configures gateway-side rewriting of the request's
+// "thinking" parameter so older clients keep working against models that
+// changed the parameter's contract.
+//
+// Claude Opus 5.5 / Sonnet 5.5 / Haiku 5.5 reject the pre-4.6 shapes with a
+// 400: thinking.type "enabled" (which carried budget_tokens) and, on Opus 5.5
+// and Sonnet 5.5, thinking.type "disabled". Clients pinned to an older SDK keep
+// sending those, so every one of their requests fails. Rewriting at the gateway
+// fixes the whole fleet at once instead of waiting for each client to upgrade.
+//
+// Mapping applied when Enabled (see proxy.RewriteThinking for the authority):
+//   - "enabled" / "extended_thinking" → "adaptive", dropping budget_tokens,
+//     which is itself a 400 on these models.
+//   - "disabled" → the field is removed, letting the model apply its default.
+//     Thinking cannot be turned off on Opus 5.5 at any effort level; Sonnet 5.5
+//     wants thinking.type "between_tools" instead, which is a different request
+//     shape than a legacy client's, so dropping the field is the safe mapping.
+//   - "adaptive" / "between_tools" → left untouched; both are current values.
+//   - any other value → the field is removed, since an unknown value is a 400.
+//
+// Models restricts the rewrite to models whose name contains one of the listed
+// patterns; "*" (or an empty list, when Enabled) applies it to every model.
+// LogRewrites emits one log line per rewritten request for impact measurement.
+type ThinkingRewriteConfig struct {
+	Enabled     bool     `yaml:"enabled"`         // master switch; when false the body is never touched
+	Models      []string `yaml:"apply_to_models"` // model-name substrings to apply to; "*" or empty = all models
+	LogRewrites bool     `yaml:"log_rewrites"`    // log each rewrite (itcode, model, original value, action)
 }
 
 // WebSearchConfig configures gateway-side simulation of Anthropic's web_search

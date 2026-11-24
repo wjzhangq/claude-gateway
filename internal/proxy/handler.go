@@ -415,6 +415,30 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		body = usage.InjectStreamOptions(body)
 	}
 
+	// Rewrite legacy thinking.type values. Clients pinned to an older SDK still
+	// send thinking.type "enabled" (with budget_tokens) or "disabled", both of
+	// which are a 400 on Opus 5.5 / Sonnet 5.5 / Haiku 5.5. Rewriting here fixes
+	// the whole fleet at once instead of waiting for every client to upgrade.
+	h.mu.RLock()
+	trCfg := config.ThinkingRewriteConfig{}
+	if h.config != nil {
+		trCfg = h.config.ThinkingRewrite
+	}
+	h.mu.RUnlock()
+	if trCfg.Enabled && thinkingRewriteApplies(trCfg.Models, reqModel) {
+		if rewritten, origType, action := RewriteThinking(body); action != "" {
+			body = rewritten
+			if trCfg.LogRewrites {
+				itcode := ""
+				if info, ok := keyInfo.(*auth.KeyInfo); ok && info != nil {
+					itcode = info.Itcode
+				}
+				logger.Infof("rewrote thinking: itcode=%s model=%s original=%s action=%s",
+					itcode, reqModel, origType, action)
+			}
+		}
+	}
+
 	// Web-search simulation (backend channel only): if this is a /v1/messages
 	// request that declares Anthropic's web_search server tool and the feature
 	// is enabled, run the gateway agent loop instead of a plain passthrough.
