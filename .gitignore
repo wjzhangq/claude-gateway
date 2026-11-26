@@ -5,6 +5,7 @@
 *.so
 *.dylib
 claude-gateway
+claude-gateway*
 /bin/
 
 # Test binary
@@ -23,6 +24,7 @@ vendor/
 # Build output
 dist/
 build/
+release/
 
 # IDE
 .idea/
@@ -55,6 +57,9 @@ web/.env.local
 # Temp files
 tmp/
 temp/
+*.tar.gz
+*.tar
+*.zip
 config/config.yaml
 .claude
 .gitnexus
