@@ -451,7 +451,7 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		vrCfg = h.config.VisionRewrite
 	}
 	h.mu.RUnlock()
-	if vrCfg.Enabled && isClaudeModel(reqModel) && strings.HasSuffix(upstreamPath, "/chat/completions") && visionRewriteAppliesToModel(vrCfg.Models, reqModel) {
+	if vrCfg.Enabled && strings.HasSuffix(upstreamPath, "/chat/completions") && visionRewriteAppliesToModel(vrCfg.Models, reqModel) {
 		if rewritten, action, count := RewriteVisionToAnthropicFormat(body); action != "" {
 			body = rewritten
 			if vrCfg.LogRewrites {

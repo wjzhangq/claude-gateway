@@ -226,7 +226,14 @@ backends:
 #
 # 注意：Backend 上游（new-api 中转商）通常已在自己的层面处理了格式转换，
 # 所以启用前请确认上游确实需要 Anthropic 格式。
+# apply_to_models 是白名单，也是唯一的模型开关。空列表 = 不匹配任何模型；
+# "*" = 匹配所有模型（包括 kimi/GPT 等非 Claude 模型，会把它们弄坏）。
+# 显式列出需要转换的模型名（子串匹配，大小写不敏感）。
 # vision_rewrite:
 #   enabled: false                        # 默认禁用；上游通常已做格式转换
-#   apply_to_models: []                   # 模式匹配（可用 "*" 表示所有）；空列表 = 匹配所有
+#   apply_to_models:                      # 白名单；空 = 不匹配任何模型
+#     - "claude-opus-5-5"
+#     - "claude-sonnet-5-5"
+#     - "claude-fable-5"
+#     - "claude-mythos-5"
 #   log_rewrites: false                   # 记录每次转换

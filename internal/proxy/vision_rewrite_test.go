@@ -236,8 +236,8 @@ func TestRewriteVisionPreservesOtherFields(t *testing.T) {
 }
 
 func TestVisionRewriteAppliesToModelEmpty(t *testing.T) {
-	if !visionRewriteAppliesToModel([]string{}, "claude-opus-5-5") {
-		t.Errorf("empty list should match every model")
+	if visionRewriteAppliesToModel([]string{}, "claude-opus-5-5") {
+		t.Errorf("empty list should match no models (whitelist semantics)")
 	}
 }
 
@@ -262,6 +262,29 @@ func TestVisionRewriteAppliesToModelCaseInsensitive(t *testing.T) {
 func TestVisionRewriteAppliesToModelDoesNotMatch(t *testing.T) {
 	if visionRewriteAppliesToModel([]string{"sonnet"}, "claude-opus-5-5") {
 		t.Errorf("non-matching pattern should not match")
+	}
+}
+
+// The handler no longer gates on isClaudeModel, so the whitelist is the only
+// thing keeping the conversion away from OpenAI-native models reachable through
+// public_providers. A whitelist of Claude models must not match them.
+func TestVisionRewriteAppliesToModelExcludesNonClaude(t *testing.T) {
+	whitelist := []string{"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5"}
+	for _, m := range []string{"kimi-k3", "gpt-4o", "mimo-v2.5-pro"} {
+		if visionRewriteAppliesToModel(whitelist, m) {
+			t.Errorf("model %q matched a Claude-only whitelist", m)
+		}
+	}
+}
+
+// fable and mythos were unreachable while the handler gated on isClaudeModel,
+// which only knows claude/sonnet/opus/haiku. The whitelist must now reach them.
+func TestVisionRewriteAppliesToModelReachesFableAndMythos(t *testing.T) {
+	whitelist := []string{"claude-fable-5", "claude-mythos-5"}
+	for _, m := range []string{"claude-fable-5-2", "claude-mythos-5"} {
+		if !visionRewriteAppliesToModel(whitelist, m) {
+			t.Errorf("model %q did not match whitelist %v", m, whitelist)
+		}
 	}
 }
 

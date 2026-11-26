@@ -202,10 +202,11 @@ func parseDataURI(uri string) (string, string) {
 }
 
 // visionRewriteAppliesToModel reports whether the rewrite should run for this model.
-// Same pattern as thinkingRewriteApplies.
+// Empty list means no models match (whitelist semantics); "*" means all models match.
+// Otherwise a model matches when its name contains one of the patterns, case-insensitively.
 func visionRewriteAppliesToModel(patterns []string, model string) bool {
 	if len(patterns) == 0 {
-		return true
+		return false // whitelist: empty = match nothing
 	}
 	m := strings.ToLower(model)
 	for _, p := range patterns {

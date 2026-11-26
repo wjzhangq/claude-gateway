@@ -78,9 +78,14 @@ type Config struct {
 // contains one. Text-only requests — which is nearly all traffic — fall through
 // after a single cheap scan, so enabling this does not change their behaviour.
 //
-// Models restricts the conversion to models whose name contains one of the
-// listed patterns; "*" (or an empty list, when Enabled) applies it to every
-// model. LogRewrites emits one log line per converted request.
+// Models is a whitelist and the only gate on which models are converted —
+// there is no built-in model-family check, so a model matches purely by this
+// list. A model matches when its name contains one of the listed patterns,
+// case-insensitively. An empty list matches nothing, so the conversion stays
+// off until models are named explicitly; "*" opts every model in, including the
+// non-Claude ones reachable through public_providers (kimi, GPT, ...), which
+// speak OpenAI format natively and would be broken by the conversion.
+// LogRewrites emits one log line per converted request.
 //
 // Default is disabled. The backend upstreams are third-party relays that
 // already translate OpenAI requests themselves, so converting here would hand
