@@ -439,6 +439,32 @@ func (h *Handler) forward(c *gin.Context, upstreamPath string) {
 		}
 	}
 
+	// Vision content rewrite (backend channel only): if this is a /v1/chat/completions
+	// request with OpenAI-format image_url content blocks and the feature is enabled,
+	// convert to Anthropic format. This is a content-triggered rewrite: the scan is
+	// fast for text-only requests (the common case), and only bodies containing
+	// image_url are rewritten. Leave disabled by default; the backend upstreams
+	// are third-party relays that already translate OpenAI format themselves.
+	h.mu.RLock()
+	vrCfg := config.VisionRewriteConfig{}
+	if h.config != nil {
+		vrCfg = h.config.VisionRewrite
+	}
+	h.mu.RUnlock()
+	if vrCfg.Enabled && isClaudeModel(reqModel) && strings.HasSuffix(upstreamPath, "/chat/completions") && visionRewriteAppliesToModel(vrCfg.Models, reqModel) {
+		if rewritten, action, count := RewriteVisionToAnthropicFormat(body); action != "" {
+			body = rewritten
+			if vrCfg.LogRewrites {
+				itcode := ""
+				if info, ok := keyInfo.(*auth.KeyInfo); ok && info != nil {
+					itcode = info.Itcode
+				}
+				logger.Infof("rewrote vision: itcode=%s model=%s action=%s count=%d",
+					itcode, reqModel, action, count)
+			}
+		}
+	}
+
 	// Web-search simulation (backend channel only): if this is a /v1/messages
 	// request that declares Anthropic's web_search server tool and the feature
 	// is enabled, run the gateway agent loop instead of a plain passthrough.

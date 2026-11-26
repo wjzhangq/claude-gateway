@@ -17,13 +17,13 @@ func TestLookupBackendDailyLimit(t *testing.T) {
 		name string
 		want float64
 	}{
-		{"lianxiang-sc031", 5000},          // prefix match
-		{"lianxiang-sc032", 5000},          // prefix match
-		{"dasheng-01", 400},                // other prefix
-		{"lianxiang-sc999-extra", 10},      // longest prefix wins
-		{"claude-primary", 100},            // exact name
-		{"unlimited-backend", 0},           // exact name, 0 = unlimited
-		{"no-match-backend", 0},            // no entry = unlimited
+		{"lianxiang-sc031", 5000},     // prefix match
+		{"lianxiang-sc032", 5000},     // prefix match
+		{"dasheng-01", 400},           // other prefix
+		{"lianxiang-sc999-extra", 10}, // longest prefix wins
+		{"claude-primary", 100},       // exact name
+		{"unlimited-backend", 0},      // exact name, 0 = unlimited
+		{"no-match-backend", 0},       // no entry = unlimited
 	}
 
 	for _, tc := range cases {

@@ -60,6 +60,36 @@ type Config struct {
 	Analyze                 AnalyzeConfig                `yaml:"analyze"`                // offline traffic abuse analysis (feature 004)
 	WebSearch               WebSearchConfig              `yaml:"websearch"`              // gateway-simulated web_search server tool (backend channel)
 	ThinkingRewrite         ThinkingRewriteConfig        `yaml:"thinking_rewrite"`       // rewrite legacy thinking.type values for models that reject them
+	VisionRewrite           VisionRewriteConfig          `yaml:"vision_rewrite"`         // convert OpenAI image_url content blocks to Anthropic image blocks
+}
+
+// VisionRewriteConfig configures gateway-side conversion of OpenAI-format
+// multimodal content into Anthropic format.
+//
+// OpenAI clients put images in a content block shaped
+// {"type":"image_url","image_url":{"url":"..."}}, where the url is either an
+// http(s) link or a data: URI. The Anthropic Messages API instead expects
+// {"type":"image","source":{...}}, with source.type "url" or "base64". A client
+// built against the OpenAI SDK therefore fails on any upstream that speaks
+// Anthropic format natively.
+//
+// The conversion is content-triggered, not path-triggered: when Enabled, the
+// gateway scans for image_url blocks and only rewrites a body that actually
+// contains one. Text-only requests — which is nearly all traffic — fall through
+// after a single cheap scan, so enabling this does not change their behaviour.
+//
+// Models restricts the conversion to models whose name contains one of the
+// listed patterns; "*" (or an empty list, when Enabled) applies it to every
+// model. LogRewrites emits one log line per converted request.
+//
+// Default is disabled. The backend upstreams are third-party relays that
+// already translate OpenAI requests themselves, so converting here would hand
+// them a format they do not expect. Enable this only for an upstream known to
+// require Anthropic-format content.
+type VisionRewriteConfig struct {
+	Enabled     bool     `yaml:"enabled"`         // master switch; when false the body is never touched
+	Models      []string `yaml:"apply_to_models"` // model-name substrings to apply to; "*" or empty = all models
+	LogRewrites bool     `yaml:"log_rewrites"`    // log each conversion (itcode, model, converted block count)
 }
 
 // ThinkingRewriteConfig configures gateway-side rewriting of the request's
