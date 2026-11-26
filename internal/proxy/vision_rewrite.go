@@ -11,7 +11,6 @@ import (
 // Vision rewrite actions.
 const (
 	visionActionConverted = "converted"
-	visionActionDetected  = "detected_no_convert"
 )
 
 // RewriteVisionToAnthropicFormat checks if the request body contains OpenAI-format
@@ -32,12 +31,16 @@ const (
 // 2. For each found, extracts the URL and converts to Anthropic format
 // 3. Preserves all other content and message structure
 // 4. Returns original body unchanged if not valid JSON or on any rewrite error
-// 5. Logs what was detected and whether conversion occurred
 //
-// Returns: (rewritten body, detected action, converted count)
-// - action is "" if no vision content found
-// - action is "detected_no_convert" if vision found but conversion disabled
-// - action is "converted" if one or more conversions performed
+// The scan is the cheap path: a body with no image_url block — nearly all
+// traffic — is returned as the caller's own slice with no allocation and no
+// rewrite, so enabling the feature does not change text-only requests.
+//
+// Returns: (rewritten body, action, converted count)
+//   - action is "" and count 0 if nothing was converted; the returned body is
+//     then the caller's own slice
+//   - action is "converted" if one or more blocks were converted, and count is
+//     how many
 func RewriteVisionToAnthropicFormat(body []byte) (out []byte, action string, count int) {
 	// Validate JSON first to avoid gjson reading garbage out of truncated input.
 	if !gjson.ValidBytes(body) {

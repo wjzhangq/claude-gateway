@@ -194,3 +194,39 @@ backends:
 #   snippet_max_chars: 800                # 每条结果 content 截断长度
 #   timeout: 10s                          # SearXNG 请求超时
 #   default_max_uses: 5                   # 请求未指定 max_uses 时的上限
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 旧版 SDK 兼容：thinking 参数改写。
+# Claude Opus 5.5 / Sonnet 5.5 / Haiku 5.5 拒绝旧格式 thinking 参数（返回 400）：
+# - thinking.type "enabled"（同时携带 budget_tokens）
+# - thinking.type "disabled"（Opus 5.5 和 Sonnet 5.5 上）
+#
+# 旧版 SDK 客户端仍在发送这些值，所以他们的每个请求都失败。
+# 启用后网关会改写：
+# - "enabled" / "extended_thinking" → "adaptive"，同时删除 budget_tokens
+# - "disabled" → 删除整个 thinking 字段（模型应用默认值）
+# - 其他非法值 → 删除字段
+#
+# 该功能整个舰队只需配置一次，所有客户端不用升级就能继续工作。
+# thinking_rewrite:
+#   enabled: false                        # 默认禁用
+#   apply_to_models: ["opus-5-5", "sonnet-5-5", "haiku-5-5"]  # 模式匹配（可用 "*" 表示所有）
+#   log_rewrites: true                    # 记录每次改写（评估影响面）
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenAI 多模态格式转 Anthropic 格式。
+# OpenAI 客户端用 image_url 格式发送图片，但某些上游（特别是直接 Anthropic API）
+# 需要 Anthropic 格式（image + source）。启用后网关会转换：
+#   {"type":"image_url","image_url":{"url":"..."}}
+#   →
+#   {"type":"image","source":{"type":"url","url":"..."}}
+#
+# 该改写是**内容触发**的：只有请求实际包含 image_url 块时才触发；
+# 纯文本请求通过单次廉价的 gjson 扫描后直接透传（零开销）。
+#
+# 注意：Backend 上游（new-api 中转商）通常已在自己的层面处理了格式转换，
+# 所以启用前请确认上游确实需要 Anthropic 格式。
+# vision_rewrite:
+#   enabled: false                        # 默认禁用；上游通常已做格式转换
+#   apply_to_models: []                   # 模式匹配（可用 "*" 表示所有）；空列表 = 匹配所有
+#   log_rewrites: false                   # 记录每次转换
